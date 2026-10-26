@@ -65,3 +65,12 @@ test("the HUD still gets real health and armour from the server", () => {
   assert.match(plugin, /show_hudmessage\(g_camId, "%s   %d HP   %d AR"/, "the readable HUD line is gone");
   assert.match(plugin, /get_pcvar_num\(cvar_hud\)/, "stcam_hud no longer gates the line");
 });
+
+test("the HUD line sits below the spectator band the encoder cuts off", () => {
+  // hudmessage y is a fraction of the render height, and the stream entrypoint cuts the client's two
+  // 20% bands before scaling. A line anchored at 0.20 lands exactly on the cut and loses the tops of
+  // its glyphs - seen on frames once the render went portrait.
+  const anchor = /set_hudmessage\(255, 255, 255, -1\.0, ([0-9.]+),/.exec(plugin)?.[1];
+  assert.ok(anchor, "the HUD line anchor is gone");
+  assert.ok(Number(anchor) > 0.2, `the HUD line at ${anchor} is clipped by the band cut`);
+});

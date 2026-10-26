@@ -278,8 +278,10 @@ stock FeedHud()
 	get_user_name(g_target, name, charsmax(name));
 
 	// One line near the top of the frame: the nickname plus the two numbers the client's own spectator
-	// HUD reports as 0. y=0.12 disappeared into the old spectator bar, 0.20 stays readable.
-	set_hudmessage(255, 255, 255, -1.0, 0.20, 0, 0.0, 1.6, 0.1, 0.2, 3);
+	// HUD reports as 0. The anchor is a fraction of the *render* height, and the encoder cuts the
+	// client's two 20% spectator bands off before scaling, so anything at or above 0.20 is clipped:
+	// 0.20 lost the tops of the glyphs, 0.12 disappeared into the band, 0.24 leaves the line whole.
+	set_hudmessage(255, 255, 255, -1.0, 0.24, 0, 0.0, 1.6, 0.1, 0.2, 3);
 	show_hudmessage(g_camId, "%s   %d HP   %d AR", name, hp, armor);
 }
 

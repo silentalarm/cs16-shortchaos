@@ -192,24 +192,42 @@ console eats the first keystroke. All of that was removed once the `wait` chain 
 
 ### The spectator bands
 
-The stock spectator GUI paints a translucent band with the team scores, map and round timer on top of
-the game. CS16Client draws it in code: there is not a single `resource/UI` string in `client.so` or
-`menu.so`, so editing `cstrike/resource/UI/Spectator.res` (all `visible` fields to 0) changes nothing —
-verified on recorded frames, the bands stayed exactly where they were. The switches that do exist are
-client cvars in `cstrike/userconfig.cfg`, written by `stream-entrypoint.sh`: `spec_drawstatus 0`
-removes the top band, `spec_drawnames`, `spec_drawcone` and `spec_decal` remove the rest of the
-spectator extras. `hud_spectator` is not a cvar in this client — the engine answers
-`Unknown command "hud_spectator"`.
+CS16Client paints two translucent bands over the picture: one at the top (team scores, map, round
+timer) and one at the bottom (observed player's nickname). They are not a resource file and not a
+cvar. `CHudSpectatorGui::Draw()` in `cl_dll/hud/spectator_gui.cpp` fills a strip of `INT_YPOS(2)` at
+the top and at the bottom of the frame, and this HUD defines `YPOS(y)` as `y/10`, so every strip is
+exactly 20% of the render height: 144 rows of the 960x720 capture, which matches the recorded frame
+row for row. The two `FillRGBABlend` calls are unconditional.
 
-Neither bar can be removed on its own. `hud_draw 0` does remove them (they are painted by the client
-HUD), but it takes the whole HUD with them: health, armour, ammo, radar, kill feed and the server's
-`NAME  100 HP  100 AR` hudmessage. That was tried on frames and rejected — without the HUD the picture
-stops reading as a game. The four `spec_*` cvars are where this client stops: the bars keep their
-translucent background and lose their content.
+What does exist and what was tried, in order:
 
-Cropping the bands out of the frame in ffmpeg was tried first (19% top, 22% bottom) and thrown away:
-it cost a third of the picture and zoomed the rest, which looks worse on a phone than the full 4:3
-frame. To review the result without going live:
+- `cstrike/resource/UI/Spectator.res` and `BottomSpectator.res`, all `visible` fields to 0: no effect.
+  There is not a single `resource/UI` string in `client.so` or `menu.so`, the client never opens
+  those VGUI files. Dead end, verified on frames.
+- Client cvars in `cstrike/userconfig.cfg`, written by the stream entrypoint: `spec_drawstatus 0`
+  empties the top band, `spec_drawnames`, `spec_drawcone`, `spec_decal` remove the remaining
+  spectator extras. `hud_spectator` is not a cvar here, the engine answers `Unknown command`.
+- `hud_draw 0` removes the bands (they are painted by the client HUD) but takes the whole HUD with
+  them: health, armour, ammo, radar, kill feed and the server's `NAME  100 HP  100 AR` hudmessage.
+  Rejected, without the HUD the picture stops reading as a game.
+
+So the encoder cuts the bands instead. The crop runs **before** the scale, and the vertical layout asks
+the client for the extra height the bands will take: with the default `STREAM_BAND_PERCENT=20` each band
+is 426 rows of the 720x2134 render, so the 720x1280 that survive are exactly the canvas — the game fills
+the Shorts frame edge to edge and nothing is padded. The render size follows from that (`CAP_W` is the
+canvas width, `CAP_H` is derived), so `STREAM_CAPTURE_*` no longer exists and a stale value in `.env`
+cannot quietly bring the padded 4:3 composition back; `STREAM_BAND_PERCENT=0` is the only way to keep
+the bands now. Rendering portrait also changes the view: the engine keeps the horizontal field of view
+and grows the vertical one, so a tall frame shows more sky and ground than a 4:3 one. Measured cost of
+the taller render: 253% CPU at 720x1280 against 266% at 720x2134, the encoder included.
+
+The known price of a full frame: the client draws the kill feed at `YRES(96)` as well, so its first line
+starts two rows below the top band and the cut shaves the tops of those glyphs (the operator's own HUD
+line is pushed to `y=0.24` in `stream_cam.sma` for exactly that reason). Keeping a few rows of the band
+would restore the kill feed and bring a thin dark edge back at the top; the clean frame was chosen
+instead. `STREAM_BAND_PERCENT` is the only switch: `0` keeps both bands and the padding comes back.
+
+To review the result without going live:
 
 ```powershell
 ./infra/compose.ps1 run --rm -e STREAM_OUTPUT=/game/check.mkv -e STREAM_RECORD_SEC=40 stream

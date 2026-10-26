@@ -101,8 +101,12 @@ services:
       STREAM_ORIENTATION: ${STREAM_ORIENTATION:-vertical}
       STREAM_WIDTH: ${STREAM_WIDTH:-720}
       STREAM_HEIGHT: ${STREAM_HEIGHT:-1280}
-      STREAM_CAPTURE_WIDTH: ${STREAM_CAPTURE_WIDTH:-960}
-      STREAM_CAPTURE_HEIGHT: ${STREAM_CAPTURE_HEIGHT:-720}
+      # No STREAM_CAPTURE_* here on purpose: the client renders at the canvas width, and the vertical
+      # layout derives the render height from the canvas and the band height so the picture fills the
+      # frame (stale values in .env used to leave a 4:3 render and a padded frame).
+      # Height of each spectator band in percent of the capture; the encoder cuts them off. 0 keeps
+      # the bands (and the dimmed picture behind them).
+      STREAM_BAND_PERCENT: ${STREAM_BAND_PERCENT:-20}
       STREAM_FPS: ${STREAM_FPS:-30}
       STREAM_BITRATE_KBPS: ${STREAM_BITRATE_KBPS:-2000}
       # Software OpenGL renders with 2 threads by default: llvmpipe otherwise takes every core and

@@ -61,34 +61,62 @@ log() { printf '%s [stream] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 # are the ones that fit a small VPS: 720x1280 encodes in about 0.7 of a core, 1080x1920 needs 1.5.
 ORIENTATION="${STREAM_ORIENTATION:-vertical}"
 case "$ORIENTATION" in
-  vertical)   DEF_OUT_W=720;  DEF_OUT_H=1280; DEF_CAP_W=960;  DEF_CAP_H=720; TOP=140 ;;
-  horizontal) DEF_OUT_W=1280; DEF_OUT_H=720;  DEF_CAP_W=1280; DEF_CAP_H=720; TOP=0   ;;
+  # vertical renders the client itself in 9:16. The render height is derived below from the canvas and
+  # the band height, so the picture fills the frame; FILL_CANVAS switches that on.
+  vertical)   DEF_OUT_W=720;  DEF_OUT_H=1280; DEF_CAP_H=0;   FILL_CANVAS=1 ;;
+  horizontal) DEF_OUT_W=1280; DEF_OUT_H=720;  DEF_CAP_H=720; FILL_CANVAS=0 ;;
   *) log "STREAM_ORIENTATION must be vertical or horizontal, got '$ORIENTATION'"; exit 2 ;;
 esac
 OUT_W="${STREAM_WIDTH:-$DEF_OUT_W}"
 OUT_H="${STREAM_HEIGHT:-$DEF_OUT_H}"
-CAP_W="${STREAM_CAPTURE_WIDTH:-$DEF_CAP_W}"
-CAP_H="${STREAM_CAPTURE_HEIGHT:-$DEF_CAP_H}"
+# The client renders at the canvas width: the picture is scaled down to the canvas anyway, so a wider
+# render only costs CPU. This also removes two settings that used to sit stale in .env and silently
+# brought the 4:3 composition back.
+CAP_W=$OUT_W
+
+# The two translucent spectator bands belong to the client overlay, not of the picture:
+# CHudSpectatorGui::Draw() fills a strip of INT_YPOS(2) at the top and at the bottom of the frame, and
+# this HUD defines YPOS(y) as y/10, so each strip is exactly 20% of the render height (measured: 144
+# rows of a 720-row capture, 426 of 2134). Both FillRGBABlend calls are unconditional: spec_drawstatus
+# only empties the strips, `hud_draw 0` removes them together with the whole HUD. So the strips are cut
+# here, before the scale, and never stretched back.
+#
+# For the vertical layout the bands would eat 40% of the frame, so the render height is derived instead
+# of configured: ask the client for canvas_height / (1 - 2 * band) rows and what survives the cut is
+# exactly the canvas. Deriving it also means a stale STREAM_CAPTURE_HEIGHT in .env cannot break the
+# composition, and STREAM_CAPTURE_WIDTH stays the only render knob.
+BAND_PCT="${STREAM_BAND_PERCENT:-20}"
+case "$BAND_PCT" in ''|*[!0-9]*) log "STREAM_BAND_PERCENT must be an integer 0..40"; exit 2 ;; esac
+(( BAND_PCT <= 40 )) || { log "STREAM_BAND_PERCENT must be 0..40, got ${BAND_PCT}"; exit 2; }
+if [ "$FILL_CANVAS" = 1 ]; then
+  (( 100 - 2 * BAND_PCT > 0 )) || { log "STREAM_BAND_PERCENT=${BAND_PCT} leaves no picture"; exit 2; }
+  CAP_H=$(( (CAP_W * OUT_H * 100) / (OUT_W * (100 - 2 * BAND_PCT)) ))
+  (( CAP_H % 2 )) && CAP_H=$(( CAP_H + 1 ))
+else
+  CAP_H="${STREAM_CAPTURE_HEIGHT:-$DEF_CAP_H}"
+fi
 
 for v in "$OUT_W" "$OUT_H" "$CAP_W" "$CAP_H"; do
   case "$v" in ''|*[!0-9]*) log "resolution values must be integers"; exit 2 ;; esac
   (( v % 2 )) && { log "resolution values must be even for yuv420p, got $v"; exit 2; }
 done
 
-# Fit the captured frame into the canvas by width, then place it at TOP. yuv420p requires even
-# numbers everywhere: an odd size makes libx264 fail with a cryptic "width not divisible by 2".
+BAND_PX=$(( CAP_H * BAND_PCT / 100 ))
+(( BAND_PX % 2 )) && BAND_PX=$(( BAND_PX - 1 ))
+VIEW_H=$(( CAP_H - 2 * BAND_PX ))
+(( VIEW_H > 0 )) || { log "STREAM_BAND_PERCENT=${BAND_PCT} leaves no picture"; exit 2; }
+
+# Fit the visible part into the canvas by width and centre it. yuv420p requires even numbers
+# everywhere: an odd size makes libx264 fail with a cryptic "width not divisible by 2".
 GAME_W=$OUT_W
-GAME_H=$(( OUT_W * CAP_H / CAP_W ))
+GAME_H=$(( OUT_W * VIEW_H / CAP_W ))
 (( GAME_H % 2 )) && GAME_H=$(( GAME_H - 1 ))
 (( GAME_H > OUT_H )) && GAME_H=$OUT_H
-PAD_Y=$TOP
+PAD_Y=$(( (OUT_H - GAME_H) / 2 ))
 (( PAD_Y % 2 )) && PAD_Y=$(( PAD_Y - 1 ))
-(( PAD_Y + GAME_H > OUT_H )) && PAD_Y=$(( (OUT_H - GAME_H) / 2 ))
 (( PAD_Y < 0 )) && PAD_Y=0
-# The whole frame is kept. The spectator bands are switched off with client cvars in
-# write_client_config() (`spec_drawstatus` and friends) instead of being cropped out: a crop threw away
-# a third of the picture and zoomed the rest, which looks worse on a phone than a clean 4:3 view.
-VF="scale=${GAME_W}:${GAME_H}:flags=bicubic"
+
+VF="crop=${CAP_W}:${VIEW_H}:0:${BAND_PX},scale=${GAME_W}:${GAME_H}:flags=bicubic"
 if [ "$GAME_H" -ne "$OUT_H" ] || [ "$GAME_W" -ne "$OUT_W" ]; then
   VF="${VF},pad=${OUT_W}:${OUT_H}:0:${PAD_Y}:color=0x101014"
 fi
@@ -203,20 +231,19 @@ write_client_config() {
     # sent, so the client at least has to keep drawing "v_" models.
     echo "r_drawviewmodel 1"
     echo "cl_righthand 1"
-    # The spectator overlay (top band with the scores, map and round timer) is drawn by the client in
-    # code: the VGUI resources under cstrike/resource/UI are never read by CS16Client - there is not a
-    # single "resource/UI" string in client.so or menu.so - so editing Spectator.res does nothing.
-    # These cvars are the switches it does implement, and `spec_drawstatus 0` is the one that removes
-    # the top band. The thin bar under the game with the observed player's nickname has no switch at
-    # all; it is left in place instead of being cropped out of the frame.
+    # The spectator overlay is drawn by the client in code: the VGUI resources under
+    # cstrike/resource/UI are never read by CS16Client - there is not a single "resource/UI" string in
+    # client.so or menu.so - so editing Spectator.res does nothing. These cvars empty the bands
+    # (scores, map, round timer, view cone). The translucent background of the bands has no switch at
+    # all, the encoder cuts it off instead (STREAM_BAND_PERCENT in the filter chain above).
     echo "spec_drawstatus 0"
     echo "spec_drawnames 0"
     echo "spec_drawcone 0"
     echo "spec_decal 0"
     # `hud_draw 0` removes the translucent bars completely (they are painted by the client HUD), but it
     # takes the whole HUD with them: health, armour, ammo, radar, kill feed and our own hudmessage. That
-    # was tried and rejected - the HUD is what makes the picture readable as a game. With these four
-    # cvars the bars keep their background and lose their content, which is the best this client allows.
+    # was tried and rejected - the HUD is what makes the picture readable as a game. With these cvars
+    # the bands lose their content, and the encoder takes care of the background.
     for i in $(seq 1 400); do echo "wait"; done
     echo "connect $SERVER_ADDR"
     # the team menu is open after the join; 6 = Spectator

@@ -95,12 +95,12 @@ The output is 720p30 H.264 (CBR at `STREAM_BITRATE_KBPS`, keyframe every
 
 ### Vertical canvas for the Shorts feed
 
-`STREAM_ORIENTATION` picks the layout. `vertical` (the default) composes a 720x1280 canvas: the
-engine still renders a 4:3 picture (`STREAM_CAPTURE_WIDTH/HEIGHT`, 960x720 by default), ffmpeg
-scales it to the canvas width and pads the rest, so `scale=720:540,pad=720:1280:0:140` puts the
-game in the upper part and leaves the band below for donation text and for the Shorts UI. Stretching
-the game itself to 9:16 would ruin the field of view, which is why the composition is done in ffmpeg.
-`horizontal` is the old 16:9 passthrough.
+`STREAM_ORIENTATION` picks the layout. `vertical` (the default) makes the client itself render 9:16:
+it draws at the canvas width (`STREAM_WIDTH`), and the render *height* is derived from the canvas and
+the band height — 2134 rows for the default 720x1280 canvas, because each of the two spectator bands
+CS16Client paints over the frame is 20% of its height and 2134 = 1280 / (1 - 2 x 0.20). ffmpeg cuts the
+bands off before scaling and pads nothing, so the game fills the Shorts frame edge to edge. `horizontal`
+is the old 16:9 passthrough with a 4:3 render and padding.
 
 Without a stream key the picture can still be reviewed: `STREAM_OUTPUT=/game/rec.mkv` records
 instead of going live, `STREAM_WARMUP_SEC` waits for the spectator client to join, and
