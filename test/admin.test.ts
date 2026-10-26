@@ -216,8 +216,8 @@ test("running an activity with parameters sends them and refuses values that wou
     });
     assert.equal(withParams.status, 200);
     const body = (await withParams.json()) as { command: string };
-    assert.equal(body.command, "amx_de bot_rain extraBots=10 maxBots=24");
-    assert.ok(commands.includes("amx_de bot_rain extraBots=10 maxBots=24"));
+    assert.equal(body.command, "amx_de bot_rain extraBots=10 maxBots=22");
+    assert.ok(commands.includes("amx_de bot_rain extraBots=10 maxBots=22"));
 
     const injected = await api(url, "/api/trigger", {
       method: "POST",

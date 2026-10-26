@@ -11,7 +11,7 @@ services:
     restart: unless-stopped
     environment:
       MAP: ${MAP:-de_dust2}
-      MAXPLAYERS: ${MAXPLAYERS:-16}
+      MAXPLAYERS: ${MAXPLAYERS:-22}
       RCON_PASSWORD: ${RCON_PASSWORD:?set RCON_PASSWORD in .env}
     ports:
       - "27015:27015/tcp"

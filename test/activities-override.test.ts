@@ -33,7 +33,7 @@ test("params are merged over the defaults instead of replacing them", () => {
   const document = parseOverrides({ version: 1, activities: { bot_rain: { params: { extraBots: 10 } } } });
   const merged = applyOverrides(base, document);
   const rain = merged.activities.find((activity) => activity.code === "bot_rain");
-  assert.deepEqual(rain?.params, { extraBots: 10, maxBots: 24 });
+  assert.deepEqual(rain?.params, { extraBots: 10, maxBots: 22 });
 });
 
 test("a disabled activity stops winning the amount mapping", () => {

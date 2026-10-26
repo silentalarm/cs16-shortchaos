@@ -79,6 +79,12 @@ archive layout inside the ReHLDS/ReGameDLL/Metamod-R/YaPB zips, exact YaPB cvar 
   from `addons/amxmodx/scripting` and make sure `libc6-i386` is installed. The plugin compiles.
 - YaPB ships `addons/yapb/bin/yapb.so`; the archive already mirrors `cstrike/`, so it unpacks over it.
   Its cvars are confirmed from `conf/yapb.cfg`: `yb_quota`, `yb_quota_mode`, `yb_difficulty`.
+- Bots play 10 vs 10: `yb_quota 20` and `yb_autovacate 0`, because the stream camera is a real
+  connection and vacating a bot for it would leave 10 vs 9. `MAXPLAYERS=22` (20 bots + camera +
+  one spare) or the camera cannot join at all.
+- Bot chat and radio are off (`yb_radio_mode 0`, `yb_chat 0`, `yb_chat_percent 0`,
+  `yb_display_welcome_text 0`): on a stream it is noise over the picture, and the watchdog log is
+  kept alive by the `stream_cam` heartbeat instead.
 - Metamod-R reads the game DLL from `addons/metamod/config.ini` (`gamedll dlls/cs.so`), not from
   `liblist.gam`, once `liblist.gam` points at Metamod itself.
 - **Resolved: ReHLDS 3.15 + current depot.** `engine_i486.so: undefined symbol:
@@ -198,7 +204,10 @@ Matching is case-insensitive, and it includes `Server issued disconnect` and
 idle, and the old capitalised `Disconnected` pattern missed it, so the client stayed in its menu
 and the stream showed a static picture while `ffmpeg` happily kept encoding.
 
-The log also has to grow. Bots chat and die constantly, so `LOG_STALE_SEC` (120 s) of silence means
+The log also has to grow. Bot chat used to be what kept it alive; `yb_radio_mode 0` in
+`infra/server.cfg` silenced it, so `stream_cam` now prints its own heartbeat into the client
+console (`[stcam] target=... hp=... pov=...`, every `stcam_heartbeat` = 60 s). `LOG_STALE_SEC`
+(120 s) of silence still means "the client is not on the server".
 "the client is not on the server" even when no disconnect line was printed at all.
 
 A second failure looks identical from outside: the client is on the server, the log grows, but the
@@ -221,8 +230,18 @@ menu (~60) from a bright map (de_dust2 at 640x480 is ~120). `freezedetect` compa
 of absolute brightness, so it works in both.
 
 Camera director check: `amx_stcam status` prints
-`stream_cam status: enabled=1 interval=8.0 mode=4 spectator=<name> target=<name> candidates=<n>`,
-and the server log gets one `camera target <bot> (score …)` line per switch.
+`stream_cam status: enabled=1 interval=25.0 mode=1 spectator=<name> target=<name> candidates=<n> pov=<0|1> dwell=12.0 hp=<n> active=<mode>`,
+and the server log gets one `camera target <bot> (<reason>, score ...)` line per switch. `mode=1`
+is chase locked (third person), `active` is what the client has right now (`4` while it is in
+first person after the followed bot fired), and `candidates` must be 20 on a 10 vs 10 server.
+
+Why third person by default: a director that re-picked the busiest bot every 8 s looked like the
+camera teleporting around the map, and the open-source client draws no view model for a
+spectator, so first person had no weapon at all. The camera holds one bot until it dies, stops
+moving or the hold time is up, shows it in third person, and cuts to first person for
+`stcam_pov_sec` when that bot shoots or kills. In first person `WeaponList` + `CurWeapon` give
+the client a weapon to draw, and `Health` + `ArmorValue` + one HUD line give viewers real
+numbers instead of an empty health bar.
 
 ### Gate
 
@@ -378,3 +397,14 @@ Expected: `"status":"applied","activityCode":"meat_round"`, and in the server co
   catalogue (10 activities, unique prices, sorted order).
 
 
+
+## Camera limits of the open-source client (verified 2026-10-26)
+
+In first person the client draws no view model (no hands, no weapon) and no HUD text: the HUD line
+from `stream_cam` shows in third person only, and `WeaponList` + `CurWeapon` are accepted without
+producing a gun. First person is therefore a clean action cut, not a way to show the weapon; the
+gun a viewer sees comes from the third person camera, where the bot model holds it.
+
+`cs_get_user_bpammo` on a knife (weapon id 29) raises "Invalid weapon id" and aborts the rest of
+the HUD update, which is why the HUD line disappeared whenever a bot pulled a knife. The plugin now
+skips the ammo lookup for weapons that have no ammo type.

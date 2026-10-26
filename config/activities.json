@@ -80,7 +80,7 @@
       "cooldownSec": 60,
       "globalCooldownSec": 0,
       "enabled": true,
-      "params": { "extraBots": 6, "maxBots": 24 }
+      "params": { "extraBots": 2, "maxBots": 22 }
     },
     {
       "code": "terminators",

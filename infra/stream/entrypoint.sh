@@ -37,14 +37,15 @@ BITRATE="${STREAM_BITRATE_KBPS:-2000}"
 RTMP_BASE="${STREAM_RTMP:-rtmp://a.rtmp.youtube.com/live2}"
 PLAYER_NAME="${STREAM_CAM_NAME:-StreamCam}"
 
-# Spectator camera. 4 = OBS_IN_EYE (through the followed player's eyes); 6 is OBS_MAP_CHASE, which
-# is the map overview the first recording showed.
+# Spectator camera, kept in sync with plugins/stream_cam: 1 = chase locked (third person),
+# 4 = OBS_IN_EYE, 6 = OBS_MAP_CHASE (map overview, no gameplay). The director itself
+# switches between third and first person on the interesting moments (stcam_pov).
 #
 # The target itself is chosen by the game server (plugins/stream_cam): only the server knows which
 # bot is alive and actually moving, and the client cannot leave the team menu it was kicked into.
 # Setting STREAM_SPEC_SWITCH_SEC above zero re-enables the old client-side spec_next cycling as a
 # fallback for a server that does not run the plugin.
-SPEC_MODE="${STREAM_SPEC_MODE:-4}"
+SPEC_MODE="${STREAM_SPEC_MODE:-1}"
 SPEC_SWITCH_SEC="${STREAM_SPEC_SWITCH_SEC:-0}"
 
 # How long to wait for the spectator client to appear in the game before the encoder starts, and
@@ -84,7 +85,31 @@ PAD_Y=$TOP
 (( PAD_Y % 2 )) && PAD_Y=$(( PAD_Y - 1 ))
 (( PAD_Y + GAME_H > OUT_H )) && PAD_Y=$(( (OUT_H - GAME_H) / 2 ))
 (( PAD_Y < 0 )) && PAD_Y=0
-VF="scale=${GAME_W}:${GAME_H}:flags=bicubic"
+# The CS 1.6 spectator HUD paints two translucent bands over the game (team scores, map and timer
+# on top, the watched player name at the bottom) and keeps them there for as long as the client
+# watches somebody. The client has no switch for them - `hud_draw` does not even exist in this
+# build - so they are removed from the picture: crop the clean band, take the widest 4:3 window
+# out of it, and let the layout below scale that as usual. Measured on live frames: 19% / 22%.
+CROP_TOP="${STREAM_CROP_TOP_PERCENT:-19}"
+CROP_BOTTOM="${STREAM_CROP_BOTTOM_PERCENT:-22}"
+CROP=""
+case "$CROP_TOP$CROP_BOTTOM" in
+  *[!0-9]*) log "STREAM_CROP_*_PERCENT must be integers"; exit 2 ;;
+esac
+if (( 100 - CROP_TOP - CROP_BOTTOM >= 60 )); then
+  CROP_H=$(( CAP_H * (100 - CROP_TOP - CROP_BOTTOM) / 100 ))
+  (( CROP_H % 2 )) && CROP_H=$(( CROP_H - 1 ))
+  CROP_Y=$(( CAP_H * CROP_TOP / 100 ))
+  CROP_W=$(( CROP_H * 4 / 3 ))
+  (( CROP_W % 2 )) && CROP_W=$(( CROP_W - 1 ))
+  (( CROP_W > CAP_W )) && CROP_W=$CAP_W
+  CROP_X=$(( (CAP_W - CROP_W) / 2 ))
+  CROP="crop=${CROP_W}:${CROP_H}:${CROP_X}:${CROP_Y},"
+  log "cutting the spectator bars: ${CROP_W}x${CROP_H} at ${CROP_X},${CROP_Y} of ${CAP_W}x${CAP_H}"
+else
+  log "STREAM_CROP_*_PERCENT would cut more than 40% of the frame, cropping stays off"
+fi
+VF="${CROP}scale=${GAME_W}:${GAME_H}:flags=bicubic"
 if [ "$GAME_H" -ne "$OUT_H" ] || [ "$GAME_W" -ne "$OUT_W" ]; then
   VF="${VF},pad=${OUT_W}:${OUT_H}:0:${PAD_Y}:color=0x101014"
 fi
@@ -195,6 +220,10 @@ write_client_config() {
     # GoldSrc mixes at full scale and clips into the capture: peaks measured at +8 dB. Lowering the
     # client volume is the only place where this can be fixed without distorting the stream.
     echo "volume ${STREAM_GAME_VOLUME:-0.6}"
+    # The weapon in first person is a client-side view model: the server cannot draw one it never
+    # sent, so the client at least has to keep drawing "v_" models.
+    echo "r_drawviewmodel 1"
+    echo "cl_righthand 1"
     for i in $(seq 1 400); do echo "wait"; done
     echo "connect $SERVER_ADDR"
     # the team menu is open after the join; 6 = Spectator

@@ -502,6 +502,15 @@ public EffectBotRain()
 		g_quotaSaved = true;
 	}
 
+	// One slot stays free for the spectator camera: it is a real connection, and a quota
+	// that fills every slot keeps it out of the server.
+	new slots = get_maxplayers() - 1;
+	if (maxBots > slots)
+	{
+		log_amx("bot_rain: maxBots %d clamped to %d (server slots)", maxBots, slots);
+		maxBots = slots;
+	}
+
 	new target = current + extra;
 	if (target > maxBots)
 		target = maxBots;

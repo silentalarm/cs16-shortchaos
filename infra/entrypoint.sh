@@ -4,7 +4,7 @@ set -euo pipefail
 
 : "${RCON_PASSWORD:?RCON_PASSWORD must be set, refusing to run an open server}"
 MAP="${MAP:-de_dust2}"
-MAXPLAYERS="${MAXPLAYERS:-16}"
+MAXPLAYERS="${MAXPLAYERS:-22}"
 PORT="${PORT:-27015}"
 SERVER_CFG=/hlds/cstrike/server.cfg
 AMXX=/hlds/cstrike/addons/amxmodx
@@ -35,6 +35,24 @@ grep -q '^rcon_password' "$SERVER_CFG" || echo "rcon_password \"${RCON_PASSWORD}
 sed -i -E "s|^sv_lan.*$|sv_lan ${SV_LAN:-1}|" "$SERVER_CFG"
 grep -q '^sv_lan' "$SERVER_CFG" || echo "sv_lan ${SV_LAN:-1}" >> "$SERVER_CFG"
 chmod 600 "$SERVER_CFG" || true
+
+# YaPB re-executes its own conf/yapb.cfg on every map change, and that silently reverts cvars set in
+# server.cfg: verified live, yb_radio_mode went back to 2 and the bot chat spam returned in the
+# middle of a stream while yb_quota stayed put. Appending our values makes them the last
+# assignment the bot plugin sees, and the guard keeps the file from growing on every restart.
+YAPB_CFG=/hlds/cstrike/addons/yapb/conf/yapb.cfg
+if [ -f "$YAPB_CFG" ] && ! grep -q "cs16-youtube overrides" "$YAPB_CFG"; then
+  {
+    echo "// cs16-youtube overrides: this file is re-executed on every map change"
+    echo "yb_radio_mode \"${BOT_RADIO_MODE:-0}\""
+    echo "yb_chat \"0\""
+    echo "yb_chat_percent \"0\""
+    echo "yb_display_welcome_text \"0\""
+    echo "yb_autovacate \"0\""
+    echo "yb_quota \"${BOT_QUOTA:-20}\""
+  } >> "$YAPB_CFG"
+  echo "yapb.cfg: chat and radio disabled, quota ${BOT_QUOTA:-20}"
+fi
 
 echo "starting hlds: map=${MAP} maxplayers=${MAXPLAYERS} port=${PORT} sv_lan=${SV_LAN:-1}"
 exec /hlds/hlds_run \
