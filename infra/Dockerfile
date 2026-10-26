@@ -40,8 +40,6 @@ ENV WITH_REHLDS=${WITH_REHLDS} WITH_REGAMEDLL=${WITH_REGAMEDLL} \
 
 COPY infra/build-hlds.sh /usr/local/bin/build-hlds.sh
 COPY infra/entrypoint.sh /usr/local/bin/entrypoint.sh
-COPY infra/server.cfg /src/server.cfg
-COPY infra/plugins.ini /src/plugins.ini
 
 RUN --mount=type=cache,target=/var/cache/steamcmd \
     chmod +x /usr/local/bin/build-hlds.sh /usr/local/bin/entrypoint.sh \
@@ -55,10 +53,18 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 COPY infra/build-plugin.sh /usr/local/bin/build-plugin.sh
+COPY infra/server.cfg /src/server.cfg
+COPY infra/plugins.ini /src/plugins.ini
 COPY plugins /src/plugins
 
+# stream_cam needs the cstrike module to assign the camera a team, and the base AMXX package ships
+# the whole module list commented out.
 RUN chmod +x /usr/local/bin/build-plugin.sh \
- && bash /usr/local/bin/build-plugin.sh
+ && bash /usr/local/bin/build-plugin.sh \
+ && cp /src/plugins.ini /hlds/cstrike/addons/amxmodx/configs/plugins.ini \
+ && cp /src/server.cfg /hlds/cstrike/server.cfg \
+ && sed -i 's/^;cstrike\(\r\?\)$/cstrike\1/' /hlds/cstrike/addons/amxmodx/configs/modules.ini \
+ && grep -qx 'cstrike' /hlds/cstrike/addons/amxmodx/configs/modules.ini
 
 FROM ${BASE_IMAGE} AS runtime
 ENV DEBIAN_FRONTEND=noninteractive
@@ -71,6 +77,15 @@ RUN apt-get update \
 
 COPY --from=build --chown=10001:10001 /hlds /hlds
 
+# /hlds is a named volume at runtime, and Docker seeds a volume from the image only once. A rebuilt
+# plugin or an edited config would therefore never reach an existing volume, which makes image
+# updates silently ineffective. Pristine copies live outside the mount point; the entrypoint syncs
+# them over the volume on every start.
+COPY --from=build --chown=10001:10001 /hlds/cstrike/server.cfg /opt/defaults/server.cfg
+COPY --from=build --chown=10001:10001 /hlds/cstrike/addons/amxmodx/configs/plugins.ini /opt/defaults/plugins.ini
+COPY --from=build --chown=10001:10001 /hlds/cstrike/addons/amxmodx/configs/modules.ini /opt/defaults/modules.ini
+COPY --from=build --chown=10001:10001 /hlds/cstrike/addons/amxmodx/plugins /opt/defaults/plugins
+
 # The entrypoint must live outside /hlds: that directory is a named volume in compose, and a
 # volume is populated from the image only once. An entrypoint stored there would keep executing
 # the copy from the first image version forever, silently ignoring updates.
@@ -82,7 +97,9 @@ WORKDIR /hlds
 EXPOSE 27015/tcp
 EXPOSE 27015/udp
 
+# pgrep lives in procps, which this image does not install; the server's own /proc entry is enough
+# and needs nothing but grep. `hlds_run` execs `hlds_linux`, so the comm name contains "hlds".
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-  CMD ["/bin/sh", "-c", "pgrep -f hlds >/dev/null || exit 1"]
+  CMD ["/bin/sh", "-c", "grep -l hlds /proc/[0-9]*/comm >/dev/null 2>&1 || exit 1"]
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

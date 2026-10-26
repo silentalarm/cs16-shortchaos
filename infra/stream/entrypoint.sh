@@ -18,13 +18,19 @@
 #   horizontal - plain 16:9 passthrough, the old behaviour.
 #
 # Output (STREAM_OUTPUT / YOUTUBE_STREAM_KEY):
-#   empty STREAM_OUTPUT - push to RTMP, YOUTUBE_STREAM_KEY is required;
+#   empty STREAM_OUTPUT - push to YouTube RTMP, YOUTUBE_STREAM_KEY is required;
 #   STREAM_OUTPUT=path  - record to that file for STREAM_RECORD_SEC seconds and exit, so the
-#                         picture can be reviewed without going live and without a stream key.
+#                         picture can be reviewed without going live and without a stream key;
+#   STREAM_OUTPUT=url   - push to any receiver: rtmp:// (flv) is the same code path YouTube uses,
+#                         which is how the local MediaMTX hub is fed for debugging, tcp:// / udp://
+#                         / srt:// wrap the same encoded stream in MPEG-TS.
 set -uo pipefail
 
 GAME_DIR="${GAME_DIR:-/game}"
 SERVER_DIR="${SERVER_DIR:-/server}"
+# Where the encoder publishes its own telemetry (status.json + progress.txt). The control API
+# mounts the same volume read-only and shows it in the admin panel.
+STATUS_DIR="${STREAM_STATUS_DIR:-${GAME_DIR:-/game}/.stream}"
 SERVER_ADDR="${SERVER_ADDR:-127.0.0.1:27015}"
 FPS="${STREAM_FPS:-30}"
 BITRATE="${STREAM_BITRATE_KBPS:-2000}"
@@ -32,10 +38,20 @@ RTMP_BASE="${STREAM_RTMP:-rtmp://a.rtmp.youtube.com/live2}"
 PLAYER_NAME="${STREAM_CAM_NAME:-StreamCam}"
 
 # Spectator camera. 4 = OBS_IN_EYE (through the followed player's eyes); 6 is OBS_MAP_CHASE, which
-# is the map overview the first recording showed. spec_next is the only client-side way to move
-# between players, so the generated config cycles through them on a timer.
+# is the map overview the first recording showed.
+#
+# The target itself is chosen by the game server (plugins/stream_cam): only the server knows which
+# bot is alive and actually moving, and the client cannot leave the team menu it was kicked into.
+# Setting STREAM_SPEC_SWITCH_SEC above zero re-enables the old client-side spec_next cycling as a
+# fallback for a server that does not run the plugin.
 SPEC_MODE="${STREAM_SPEC_MODE:-4}"
-SPEC_SWITCH_SEC="${STREAM_SPEC_SWITCH_SEC:-6}"
+SPEC_SWITCH_SEC="${STREAM_SPEC_SWITCH_SEC:-0}"
+
+# How long to wait for the spectator client to appear in the game before the encoder starts, and
+# how long to let it settle after the connect line (map load + audio device open).
+JOIN_TIMEOUT="${STREAM_JOIN_TIMEOUT_SEC:-90}"
+JOIN_SETTLE="${STREAM_JOIN_SETTLE_SEC:-6}"
+AUDIO_TIMEOUT="${STREAM_AUDIO_TIMEOUT_SEC:-90}"
 
 log() { printf '%s [stream] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 
@@ -75,17 +91,25 @@ fi
 VF="${VF},format=yuv420p"
 
 # --- output -----------------------------------------------------------------------------------
+# The container format follows the scheme of the target, never a separate setting: an RTMP server
+# rejects anything that is not FLV, while a file must not get the FLV wrapper.
 RECORD_SEC="${STREAM_RECORD_SEC:-0}"
 case "$RECORD_SEC" in ''|*[!0-9]*) log "STREAM_RECORD_SEC must be an integer"; exit 2 ;; esac
 WARMUP="${STREAM_WARMUP_SEC:-25}"
 if [ -n "${STREAM_OUTPUT:-}" ]; then
   TARGET="$STREAM_OUTPUT"
-  TARGET_FORMAT=matroska
-  TARGET_LABEL="file:$STREAM_OUTPUT"
+  case "$TARGET" in
+    rtmp://*|rtmps://*)        TARGET_FORMAT=flv ;     TARGET_KIND=rtmp ;;
+    tcp://*|udp://*|srt://*)   TARGET_FORMAT=mpegts ;  TARGET_KIND=mpegts ;;
+    *://*) log "unsupported scheme in STREAM_OUTPUT: $TARGET (rtmp, tcp, udp, srt or a file path)"; exit 2 ;;
+    *)                     TARGET_FORMAT=matroska ; TARGET_KIND=file ;;
+  esac
+  TARGET_LABEL="$TARGET"
 else
-  : "${YOUTUBE_STREAM_KEY:?YOUTUBE_STREAM_KEY is required (YouTube Studio -> Go live -> stream key), or set STREAM_OUTPUT to record locally}"
+  : "${YOUTUBE_STREAM_KEY:?YOUTUBE_STREAM_KEY is required (YouTube Studio -> Go live -> stream key), or set STREAM_OUTPUT to record locally or to push to a local hub}"
   TARGET="${RTMP_BASE}/${YOUTUBE_STREAM_KEY}"
   TARGET_FORMAT=flv
+  TARGET_KIND=rtmp
   TARGET_LABEL="${RTMP_BASE} (key hidden)"
   RECORD_SEC=0
 fi
@@ -179,12 +203,15 @@ write_client_config() {
     for i in $(seq 1 60); do echo "wait"; done
     echo "spec_mode $SPEC_MODE"
     # `wait` counts frames and the engine runs at fps_max = FPS, so SEC*FPS waits is about SEC
-    # seconds. Each step switches to the next player, otherwise the camera sits on one bot forever.
-    local frames=$(( SPEC_SWITCH_SEC * FPS )) n
-    for n in $(seq 1 20); do
-      for i in $(seq 1 "$frames"); do echo "wait"; done
-      echo "spec_next"
-    done
+    # seconds. Each step switches to the next player; off by default, because the server plugin
+    # (plugins/stream_cam) drives the camera and two directors fight each other.
+    if [ "$SPEC_SWITCH_SEC" -gt 0 ]; then
+      local frames=$(( SPEC_SWITCH_SEC * FPS )) n
+      for n in $(seq 1 20); do
+        for i in $(seq 1 "$frames"); do echo "wait"; done
+        echo "spec_next"
+      done
+    fi
   } > "$cfg" || { log "could not write $cfg"; return 1; }
   log "client config written: $cfg ($(wc -l < "$cfg") lines)"
 }
@@ -212,6 +239,11 @@ start_audio() {
   fi
   pactl load-module module-null-sink sink_name=cs sink_properties=device.description=CS > /dev/null 2>&1
   pactl set-default-sink cs > /dev/null 2>&1
+  # An idle null sink gets suspended by module-suspend-on-idle, and a suspended monitor delivers no
+  # packets at all. ffmpeg then waits for its audio input, never writes the FLV header, and the RTMP
+  # server closes an idle publisher after its read timeout. Dropping the module keeps silence
+  # flowing from the first second, before the engine has even opened its audio stream.
+  pactl unload-module module-suspend-on-idle > /dev/null 2>&1
   AUDIO_OK=1
   log "audio ready: null sink 'cs', capturing $PULSE_MONITOR"
   return 0
@@ -245,11 +277,17 @@ run_client() {
 
 run_encoder() {
   local -a args=(
-    -hide_banner -loglevel warning -nostdin -y
+    -hide_banner -loglevel "${STREAM_FFMPEG_LOGLEVEL:-warning}" -nostdin -y
+    # thread_queue_size: X11 and PulseAudio are not pulled by ffmpeg, they push; without a queue
+    # ffmpeg logs "Thread message queue blocking" and starts dropping frames on a busy CPU.
+    # analyzeduration/probesize are pinned to zero because both inputs are raw: the default five
+    # seconds of probing delay the first packet past MediaMTX's 10 s publisher read timeout, and
+    # the push dies with "Broken pipe" before a single frame is sent.
+    -thread_queue_size 512 -analyzeduration 0 -probesize 32
     -f x11grab -draw_mouse 0 -framerate "$FPS" -video_size "${CAP_W}x${CAP_H}" -i ":99.0"
   )
   if [ "${AUDIO_OK:-0}" = 1 ]; then
-    args+=(-f pulse -i "$PULSE_MONITOR")
+    args+=(-thread_queue_size 512 -analyzeduration 0 -probesize 32 -f pulse -i "$PULSE_MONITOR")
     # PulseAudio timestamps drift against the X11 clock; without this ffmpeg prints
     # "Non-monotonic DTS" and the audio stutters in the final file.
     # alimiter must run with level=false: its default auto-level applies makeup gain and the
@@ -268,11 +306,136 @@ run_encoder() {
     -c:a aac -b:a 128k -shortest
   )
   if [ "$RECORD_SEC" -gt 0 ]; then args+=(-t "$RECORD_SEC"); fi
+  # A TCP receiver connects to us, so ffmpeg has to listen; anything else dials the peer.
+  case "$TARGET" in tcp://*) args+=(-listen 1) ;; esac
   args+=(-f "$TARGET_FORMAT" "$TARGET")
   log "ffmpeg <- ${OUT_W}x${OUT_H}@${FPS}, capture ${CAP_W}x${CAP_H}, game ${GAME_W}x${GAME_H} at y=${PAD_Y}, ${BITRATE}k -> $TARGET_LABEL"
   # The command itself is logged without the last two arguments: for RTMP they hold the stream key.
   log "ffmpeg args: ${args[*]:0:${#args[@]}-2}"
-  ffmpeg "${args[@]}"
+  # ffmpeg writes its stderr to a file, never into a pipe: with a process substitution (or any pipe
+  # whose reader runs in this shell) the encoder stalled right after the FLV header — two frames in
+  # ten seconds, then the RTMP server dropped the idle publisher. The metrics tap below reads the
+  # same file and forwards it to the container log, so nothing is lost.
+  ffmpeg "${args[@]}" 2>> /tmp/ffmpeg.log
+}
+
+# Tails the encoder log: copies every line to the container log, so `docker logs` still shows what
+# ffmpeg says while the encoder itself never writes into a pipe. Separate process on purpose.
+start_metrics_tap() {
+  : > /tmp/ffmpeg.log
+  ( tail -F -n 0 /tmp/ffmpeg.log 2>/dev/null ) &
+}
+
+# What the encoder is doing right now, readable by the control API through the shared volume.
+# Written before the encoder starts so the UI never sees a stale layout from an earlier run.
+write_stream_status() {
+  mkdir -p "$STATUS_DIR" 2>/dev/null || { log "cannot create $STATUS_DIR, the admin UI will not see the stream"; return 0; }
+  printf '{"kind":"%s","label":"%s","width":%s,"height":%s,"captureWidth":%s,"captureHeight":%s,"fps":%s,"bitrateKbps":%s,"recordSec":%s,"audio":%s,"startedAt":"%s"}\n' \
+    "$TARGET_KIND" "${TARGET_LABEL//\"/}" "$OUT_W" "$OUT_H" "$CAP_W" "$CAP_H" "$FPS" "$BITRATE" "$RECORD_SEC" \
+    "$([ "${AUDIO_OK:-0}" = 1 ] && echo true || echo false)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    > "$STATUS_DIR/status.json" 2>/dev/null || log "cannot write $STATUS_DIR/status.json"
+  : > "$STATUS_DIR/progress.txt" 2>/dev/null
+}
+
+# An RTMP server drops a publisher that sends nothing for its read timeout (MediaMTX: 10 s), and
+# ffmpeg writes the FLV header only after it has probed every input. The PulseAudio monitor is
+# silent until the engine actually plays, so a push started before the client joins dies with
+# "Broken pipe" while the local recording of the same command works. Waiting for the join line in
+# the client log is the cheapest reliable fix: the string is printed by the engine on connect.
+wait_for_client() {
+  local waited=0
+  while [ "$waited" -lt "$JOIN_TIMEOUT" ]; do
+    # The engine prints this when it starts the handshake; "entered the game" comes from the game
+    # server, not from the client log, so it is useless here.
+    if grep -qa 'Trying to connect with GoldSrc\|Server IPv4 address' /tmp/xash.log 2>/dev/null; then
+      # Connecting is not playing: the map still has to load and the engine has to open its audio
+      # stream. Starting the encoder before that leaves a silent audio input, which is exactly the
+      # case that used to time out.
+      log "client connected after ${waited}s, settling ${JOIN_SETTLE}s"
+      sleep "$JOIN_SETTLE"
+      return 0
+    fi
+    sleep 2
+    waited=$((waited + 2))
+  done
+  log "client did not connect within ${JOIN_TIMEOUT}s, starting the encoder anyway"
+  return 1
+}
+
+# The client draws the CS "SELECT TEAM" VGUI panel over the game, and no console command closes it:
+# `jointeam`, `menuselect` and `cancelselect` are ignored, and commands arriving from the server are
+# rejected outright (`Could not execute privileged command`). The panel is hidden only by the
+# client's own VGUI code, so the key is pressed for real through X11, exactly like a human would:
+# 6 = SPECTATE in the CS 1.6 team menu.
+press_team_key() {
+  command -v xdotool > /dev/null 2>&1 || { log "xdotool is missing, the team panel may stay on screen"; return 0; }
+  # Without a window manager the X focus is PointerRoot, so the pointer has to be over the client
+  # window for the key event to reach it.
+  DISPLAY="$DISPLAY" xdotool mousemove 480 360 2>/dev/null || true
+  DISPLAY="$DISPLAY" xdotool key --clearmodifiers 6 2>/dev/null || log "xdotool could not send the key"
+  log "sent key 6 (SPECTATE) to the client window"
+}
+
+# The panel can appear several seconds after the join (and again after every reconnect), so the key
+# is pressed often for the first minute and then rarely, forever: this loop must never exit, because
+# the entrypoint stops the whole container when any child process ends (`wait -n`).
+press_team_key_loop() {
+  local waited=0
+  while true; do
+    press_team_key
+    if [ "$waited" -lt 60 ]; then
+      sleep 5
+      waited=$((waited + 5))
+    else
+      sleep 60
+    fi
+  done
+}
+
+# A harder, measured version of the same problem: the engine opens its audio stream long before it
+# plays anything (map load on llvmpipe takes ~20-30 s), and a sink-input alone proves nothing —
+# ffmpeg then waits for the first audio packet, never writes the FLV header, and the RTMP server
+# drops the publisher after its read timeout. So the test is actual data: one second of the monitor
+# source must deliver bytes. If it never does, the stream degrades to silence instead of dying.
+wait_for_audio() {
+  [ "${AUDIO_OK:-0}" = 1 ] || return 1
+  local waited=0
+  while [ "$waited" -lt "$AUDIO_TIMEOUT" ]; do
+    # 1 s of 48 kHz stereo PCM is ~192 KB when the sink is running; an idle sink delivers nothing.
+    timeout 2 parec --device="$PULSE_MONITOR" --format=s16le --rate=48000 --channels=2 \
+      > /tmp/audio-probe.raw 2>/dev/null
+    if [ -s /tmp/audio-probe.raw ]; then
+      log "engine audio is flowing after ${waited}s ($(wc -c < /tmp/audio-probe.raw) bytes/s)"
+      return 0
+    fi
+    sleep 2
+    waited=$((waited + 2))
+  done
+  log "engine never produced audio within ${AUDIO_TIMEOUT}s: the stream will carry silence"
+  AUDIO_OK=0
+  return 1
+}
+
+# Until the map is loaded the X server is busy serving the engine, and x11grab can return no frames
+# at all for the first seconds: the FLV header is never written and the RTMP server drops the idle
+# publisher. Waiting for the "right" moment is guesswork, so the encoder is supervised instead: a
+# failed attempt costs one retry, not the whole stream. This is also what YouTube needs — a dropped
+# publisher must come back on its own, without a human restarting a container.
+run_encoder_forever() {
+  local attempt=0 delay
+  while true; do
+    attempt=$((attempt + 1))
+    log "encoder attempt ${attempt}"
+    run_encoder
+    local code=$?
+    if [ "$RECORD_SEC" -gt 0 ]; then
+      log "encoder finished ($code)"
+      return "$code"
+    fi
+    delay=$(( attempt < 5 ? 5 : 15 ))
+    log "encoder exited ($code), retrying in ${delay}s"
+    sleep "$delay"
+  done
 }
 
 prepare_game_dir || exit 1
@@ -281,25 +444,42 @@ write_client_config || exit 1
 start_x || exit 1
 # Sound is optional: a broken PulseAudio must not stop the picture.
 start_audio || true
+write_stream_status
 
 run_client &
 
-# A recording run is a one-shot: warm the client up so the capture is not a menu screen, film for
-# STREAM_RECORD_SEC and leave. The client is started anyway, otherwise there is nothing to watch.
+# The client window only exists once the engine is up, and the team panel appears a few seconds after
+# the join: start pressing early and keep going for the first minute (see press_team_key).
+press_team_key_loop &
+
+# The encoder writes its stderr to a file; this tap turns it back into container logs plus telemetry.
+start_metrics_tap
+
+# The encoder must not start before the client is actually in the game: see wait_for_client().
+wait_for_client || true
+# ...and before the engine produces audio: see wait_for_audio().
+wait_for_audio || true
+
+# A timed run is a one-shot: capture for STREAM_RECORD_SEC and leave. The extra warm-up sleep is
+# kept for the case where the join line appears long before the first frame is rendered.
 if [ "$RECORD_SEC" -gt 0 ]; then
-  log "warm-up ${WARMUP}s before recording ${RECORD_SEC}s"
+  log "warm-up ${WARMUP}s before capturing ${RECORD_SEC}s -> $TARGET_LABEL"
   sleep "$WARMUP"
   run_encoder
   log "ffmpeg exited ($?)"
-  if [ -f "$TARGET" ]; then log "recorded $(du -h "$TARGET" | cut -f1) -> $TARGET"; else log "no file produced at $TARGET"; fi
+  if [ "$TARGET_KIND" = file ]; then
+    if [ -f "$TARGET" ]; then log "recorded $(du -h "$TARGET" | cut -f1) -> $TARGET"; else log "no file produced at $TARGET"; fi
+  fi
   # `kill 0` would take the whole process group including this shell, leaving exit code 143;
-  # a recording run is a success, so kill the children and exit cleanly.
+  # a timed run is a success, so kill the children and exit cleanly.
   kill $(jobs -p) 2>/dev/null
   exit 0
 fi
 
-run_encoder &
-/usr/local/bin/watchdog.sh &
+run_encoder_forever &
+# The watchdog needs the layout to sample the same framebuffer ffmpeg grabs, and STATUS_DIR to write
+# its heartbeat next to status.json.
+STATUS_DIR="$STATUS_DIR" CAP_W="$CAP_W" CAP_H="$CAP_H" DISPLAY="$DISPLAY" /usr/local/bin/watchdog.sh &
 
 # tini forwards SIGTERM; keep the container alive while either loop is running.
 wait -n

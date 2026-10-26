@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 import { loadActivities } from "./activities.ts";
+import { applyOverrides, OverrideStore } from "./activities-override.ts";
+import { createAdminServer } from "./admin/server.ts";
 import { CODES_PROBE } from "./command.ts";
 import type { DonationRow } from "./db.ts";
 import { openStore } from "./db.ts";
@@ -10,7 +12,11 @@ import { RconClient } from "./rcon.ts";
 import { TokenStore } from "./token-store.ts";
 
 const env = loadEnv();
-const catalog = loadActivities(env.activitiesPath);
+const baseCatalog = loadActivities(env.activitiesPath);
+// A corrupt override file must stop the process here: silently ignoring it would run a catalogue
+// whose prices differ from what the owner sees in the panel.
+const overrideStore = new OverrideStore(env.admin.overridePath);
+let catalog = applyOverrides(baseCatalog, overrideStore.read());
 const store = openStore(env.dbPath);
 
 function log(event: string, details: Record<string, unknown> = {}): void {
@@ -63,6 +69,7 @@ function liveSource(clientId: string, clientSecret: string, redirectUri: string)
 }
 
 let rcon: RconClient | null = null;
+let admin: import("node:http").Server | null = null;
 
 async function apply(command: string): Promise<string> {
   if (env.rcon.dryRun) {
@@ -102,6 +109,42 @@ async function checkPluginContract(): Promise<void> {
   }
 }
 
+/**
+ * The panel is optional: without ADMIN_TOKEN it simply does not start. That keeps a half-configured
+ * deployment from exposing RCON-backed endpoints with an empty password.
+ */
+function startAdmin(): import("node:http").Server | null {
+  if (env.admin.token === "") {
+    log("admin.disabled", { hint: "set ADMIN_TOKEN in .env to enable the panel" });
+    return null;
+  }
+
+  const server = createAdminServer({
+    token: env.admin.token,
+    publicDir: env.admin.publicDir,
+    store,
+    getCatalog: () => catalog,
+    getBaseCatalog: () => baseCatalog,
+    setCatalog: (next) => { catalog = next; },
+    overrides: overrideStore,
+    apply,
+    streamStatusDir: env.admin.streamStatusDir,
+    playback: { port: env.admin.hlsPort, path: env.admin.hlsPath },
+    mode: { mock: env.mock, dryRun: env.rcon.dryRun, simAllowed: env.admin.simAllowed },
+    log,
+  });
+
+  server.on("error", (error) => log("admin.error", { message: error.message }));
+  server.listen(env.admin.port, env.admin.bind, () => {
+    log("admin.listening", {
+      url: `http://${env.admin.bind}:${env.admin.port}`,
+      simAllowed: env.admin.simAllowed,
+      overrides: env.admin.overridePath,
+    });
+  });
+  return server;
+}
+
 async function main(): Promise<void> {
   const source = env.mock ? mockSource() : liveSource(env.da.clientId, env.da.clientSecret, env.da.redirectUri);
   log("started", {
@@ -137,10 +180,14 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  // The panel starts after the first poll so it opens on real state, not on an empty screen.
+  admin = startAdmin();
+
   const timer = setInterval(() => void tick(), env.pollSec * 1000);
 
   const shutdown = (): void => {
     clearInterval(timer);
+    admin?.close();
     rcon?.close();
     store.close();
     log("stopped");

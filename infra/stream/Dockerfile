@@ -34,7 +34,7 @@ RUN dpkg --add-architecture i386 \
  && apt-get upgrade -y --no-install-recommends \
  && apt-get install -y --no-install-recommends \
       ca-certificates curl xz-utils \
-      xvfb x11-utils xauth \
+      xvfb x11-utils xauth xdotool \
       libc6-i386 libstdc++6:i386 zlib1g:i386 \
       libpulse0:i386 libasound2t64:i386 libasound2-plugins:i386 \
       libgl1:i386 libglx-mesa0:i386 libgl1-mesa-dri:i386 \
@@ -76,11 +76,16 @@ RUN chmod +x /usr/local/bin/stream-entrypoint.sh /usr/local/bin/watchdog.sh \
  && chown -R 10002:10002 /game
 # The engine resolves its base directory from the binary location, so the entrypoint copies the
 # engine next to valve/ and cstrike/ inside /game instead of running it from /opt/xash.
+# llvmpipe spreads rasterisation over every core it can see: measured 625% CPU (of 12 cores) for the
+# CS 1.6 client alone, which starved the encoder and made HLS segments arrive too late for the
+# browser player to start. Two threads cost ~1.7 cores and look the same at 960x720; raise it only
+# if the picture at 30 fps is visibly not enough.
 ENV DISPLAY=:99 \
     LIBGL_ALWAYS_SOFTWARE=1 \
     GALLIUM_DRIVER=llvmpipe \
     SDL_AUDIODRIVER=dummy \
-    XDG_RUNTIME_DIR=/tmp/xdg
+    XDG_RUNTIME_DIR=/tmp/xdg \
+    LP_NUM_THREADS=2
 
 USER 10002
 WORKDIR /game

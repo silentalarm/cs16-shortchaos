@@ -32,14 +32,26 @@ services:
     restart: unless-stopped
     depends_on:
       - hlds
-    network_mode: "service:hlds"
     working_dir: /app
     env_file:
       - ../.env
     environment:
-      RCON_HOST: 127.0.0.1
+      # Own network namespace, not the game server's: publishing a port for a container that shares
+      # another container's namespace gives an empty reply from Docker's proxy on Windows. RCON is
+      # reached by service name instead.
+      RCON_HOST: hlds
       RCON_PORT: "27015"
       DB_PATH: /app/data/control.db
+      ADMIN_BIND: 0.0.0.0
+      ADMIN_PORT: ${ADMIN_PORT:-8080}
+      # Runtime tweaks live in the data volume, not in the git-tracked catalogue.
+      ACTIVITIES_OVERRIDE_PATH: /app/data/activities.override.json
+      # Telemetry written by the capture container (mounted read-only below).
+      STREAM_STATUS_DIR: /game/.stream
+    ports:
+      # Loopback only: the panel can send RCON commands, so it must never be reachable from the
+      # network. On a VPS reach it through an SSH tunnel.
+      - "127.0.0.1:${ADMIN_PORT:-8080}:${ADMIN_PORT:-8080}"
     command: ["node", "src/main.ts"]
     cap_drop:
       - ALL
@@ -48,6 +60,34 @@ services:
     volumes:
       - ..:/app
       - control-data:/app/data
+      - client-data:/game:ro
+
+  # Local debugging hub: receives exactly the RTMP push the stream container sends to YouTube,
+  # so the picture can be watched in a browser without a stream key and without going live.
+  # Only started with `--profile local-view`; the production stack never brings it up.
+  # No config file on purpose: the shipped defaults accept any publish path and expose
+  # RTMP 1935, HLS 8888, WebRTC 8889 — see docs/runbook.md.
+  mediamtx:
+    image: bluenviron/mediamtx:1.21.3
+    restart: unless-stopped
+    profiles: ["local-view"]
+    environment:
+      # The publisher (our CPU encoder) can take more than the default 10 s to produce its first
+      # packet on a loaded machine, and the hub then drops it as idle. 60 s only affects this local
+      # debugging hub; YouTube's ingest is not involved.
+      MTX_READTIMEOUT: 60s
+      # WebRTC ICE: without this the browser is offered the container's private address and gives up.
+      MTX_WEBRTCADDITIONALHOSTS: 127.0.0.1
+      MTX_WEBRTCIPSFROMINTERFACES: "no"
+    ports:
+      - "127.0.0.1:1935:1935"
+      - "127.0.0.1:8888:8888"
+      - "127.0.0.1:8889:8889"
+      - "127.0.0.1:8189:8189/udp"
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
 
   stream:
     image: cs16-stream:local
@@ -65,6 +105,15 @@ services:
       STREAM_CAPTURE_HEIGHT: ${STREAM_CAPTURE_HEIGHT:-720}
       STREAM_FPS: ${STREAM_FPS:-30}
       STREAM_BITRATE_KBPS: ${STREAM_BITRATE_KBPS:-2000}
+      # Software OpenGL renders with 2 threads by default: llvmpipe otherwise takes every core and
+      # starves the encoder (see infra/stream/Dockerfile).
+      LP_NUM_THREADS: ${LP_NUM_THREADS:-2}
+      # Inside the container the encoder writes next to the game dir, which is the volume the
+      # control API mounts read-only. Overrides the host path from the env file.
+      STREAM_STATUS_DIR: /game/.stream
+      # Empty by default: the encoder then pushes to YouTube with YOUTUBE_STREAM_KEY.
+      # For local viewing: rtmp://mediamtx:1935/live/test (see docs/runbook.md).
+      STREAM_OUTPUT: ${STREAM_OUTPUT:-}
     cap_drop:
       - ALL
     security_opt:

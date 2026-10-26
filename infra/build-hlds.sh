@@ -136,8 +136,9 @@ grep -q 'addons/metamod/metamod_i386.so' "$HLDS/cstrike/liblist.gam" \
   || echo 'gamedll_linux "addons/metamod/metamod_i386.so"' >> "$HLDS/cstrike/liblist.gam"
 
 AMXX="$HLDS/cstrike/addons/amxmodx"
-cp /src/plugins.ini "$AMXX/configs/plugins.ini"
-cp /src/server.cfg "$HLDS/cstrike/server.cfg"
+# server.cfg and plugins.ini are installed by the *next* Dockerfile layer on purpose: they are the
+# files edited most often, and copying them here would invalidate this layer, which re-downloads
+# the whole game server (~800 MB) on every config tweak.
 # No entrypoint copy on purpose: /hlds becomes a named volume at runtime, and files inside a
 # volume are only seeded once, so an entrypoint stored there would never be updated. It lives in
 # /usr/local/bin in the runtime stage instead.

@@ -4,6 +4,8 @@
  * Contract with the control API (src/command.ts):
  *   amx_de codes                     -> prints "donation_events codes: a,b,c"
  *   amx_de version                   -> prints API and plugin version
+ *   amx_de status                    -> prints "donation_events status: api=1 active=<code|none> queued=<n> nick=<nick|none>"
+ *   amx_de clear                     -> cancels the running activity, the nickname and the queue
  *   amx_de <code> key=value ...      -> queues the activity for the next round
  *
  * Rules: one activity per round, round effects are cleaned up on round end,
@@ -15,7 +17,7 @@
 #include <fun>
 
 #define PLUGIN_NAME "Donation Events"
-#define PLUGIN_VERSION "0.2.0"
+#define PLUGIN_VERSION "0.3.0"
 #define API_VERSION 1
 
 #define MAX_EFFECTS 32
@@ -117,6 +119,36 @@ public CmdDonationEvent(id, level, cid)
 	if (equal(code, "version"))
 	{
 		server_print("donation_events version: %s api: %d activities: %d", PLUGIN_VERSION, API_VERSION, g_effectCount);
+		return PLUGIN_HANDLED;
+	}
+
+	if (equal(code, "status"))
+	{
+		// One line, key=value, no spaces inside values: the admin panel parses exactly this.
+		new active[CODE_LEN];
+		if (g_activeCode[0])
+			copy(active, CODE_LEN - 1, g_activeCode);
+		else
+			copy(active, CODE_LEN - 1, "none");
+
+		new nick[NICK_LEN];
+		copy(nick, NICK_LEN - 1, "none");
+		if (g_nickActive && g_nickBot > 0 && is_user_connected(g_nickBot))
+		{
+			get_user_name(g_nickBot, nick, NICK_LEN - 1);
+			if (nick[0] == '^0')
+				copy(nick, NICK_LEN - 1, "none");
+		}
+
+		server_print("donation_events status: api=%d active=%s queued=%d nick=%s", API_VERSION, active, g_queueSize, nick);
+		return PLUGIN_HANDLED;
+	}
+
+	if (equal(code, "clear"))
+	{
+		ClearAll();
+		log_amx("cleared by request");
+		server_print("donation_events cleared");
 		return PLUGIN_HANDLED;
 	}
 
@@ -318,6 +350,20 @@ stock CleanupActive()
 		SetCvarFirst("yb_quota", "pb_quota", g_savedBotQuota);
 		g_quotaSaved = false;
 	}
+}
+
+/* Cancels everything at once: the round effect, the persistent nickname and the pending queue.
+   Used by `amx_de clear` (the panel's "stop everything") and by nothing else. */
+stock ClearAll()
+{
+	CleanupActive();
+
+	if (g_nickActive)
+		RestoreNick();
+
+	g_activeCode[0] = '^0';
+	g_paramCount = 0;
+	g_queueSize = 0;
 }
 
 public plugin_end()

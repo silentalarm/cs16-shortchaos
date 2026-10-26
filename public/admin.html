@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CS 1.6 donation panel</title>
+<!--
+  Local operator panel. No build step and no dependencies on purpose: it is served by the same
+  Node process that talks RCON to the game server, and every asset here would be another thing to
+  audit. Everything user-controlled (donor nicknames!) is rendered through textContent or escaped.
+-->
+<style>
+  :root { color-scheme: dark; --bg:#0f1115; --panel:#171a21; --line:#262b36; --text:#e6e8ee; --muted:#8b94a7; --accent:#4f8cff; --ok:#3fb950; --warn:#d29922; --bad:#f85149; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--bg); z-index:5; }
+  h1 { font-size:16px; margin:0; letter-spacing:.02em; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin:0 0 10px; }
+  main { display:grid; gap:16px; padding:16px 18px 60px; max-width:1180px; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; }
+  .chip { font-size:12px; padding:3px 9px; border-radius:999px; border:1px solid var(--line); background:#11141a; color:var(--muted); }
+  .chip.ok { color:var(--ok); border-color:#1f4429; }
+  .chip.warn { color:var(--warn); border-color:#4a3a16; }
+  .chip.bad { color:var(--bad); border-color:#4a1f1f; }
+  .row { display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; }
+  label { display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--muted); }
+  label.check { flex-direction:row; align-items:center; gap:6px; padding-bottom:8px; }
+  label.grow { flex:1 1 180px; }
+  input, button, textarea, select { font:inherit; color:var(--text); background:#11141a; border:1px solid var(--line); border-radius:7px; padding:6px 8px; }
+  input[type=checkbox] { width:16px; height:16px; padding:0; }
+  button { cursor:pointer; background:#1d2330; }
+  button:hover { border-color:#3a4356; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#06122a; font-weight:600; }
+  button.danger { background:#2a1416; border-color:#5d2a2a; color:#ffb4b4; }
+  .hint { color:var(--muted); font-size:12px; margin:6px 0 10px; }
+  .presets { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0 0; }
+  .result { margin:10px 0 0; padding:10px; background:#0c0e12; border:1px solid var(--line); border-radius:8px; font-size:12px; white-space:pre-wrap; overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; color:var(--muted); font-weight:500; font-size:11px; text-transform:uppercase; letter-spacing:.06em; border-bottom:1px solid var(--line); padding:6px 8px; }
+  td { border-bottom:1px solid #1c2028; padding:6px 8px; vertical-align:top; }
+  td input[type=number] { width:84px; }
+  .code { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }
+  .tag { font-size:11px; padding:1px 7px; border-radius:999px; border:1px solid var(--line); color:var(--muted); }
+  .tag.applied { color:var(--ok); border-color:#1f4429; }
+  .tag.rejected, .tag.failed { color:var(--bad); border-color:#4a1f1f; }
+  .tag.cooldown { color:var(--warn); border-color:#4a3a16; }
+  .tag.sim { color:#a78bfa; border-color:#3b2f66; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:10px; }
+  .stat { background:#11141a; border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
+  .stat b { display:block; font-size:16px; }
+  .stat span { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.06em; }
+  details summary { cursor:pointer; color:var(--muted); font-size:12px; }
+  textarea { width:100%; min-height:56px; font-family:ui-monospace, monospace; font-size:12px; }
+  .muted { color:var(--muted); }
+  .player { position:relative; background:#000; border:1px solid var(--line); border-radius:10px; overflow:hidden; display:flex; justify-content:center; }
+  .player video { width:100%; max-height:60vh; display:block; background:#000; object-fit:contain; }
+  .player-overlay { position:absolute; top:10px; left:10px; display:flex; gap:6px; }
+  .player-overlay .chip { background:rgba(12,14,18,.82); }
+</style>
+</head>
+<body>
+<header>
+  <h1>CS 1.6 · donation panel</h1>
+  <div id="chips" class="chips"></div>
+</header>
+
+<section id="auth" hidden style="margin:16px 18px">
+  <h2>Token required</h2>
+  <p class="hint">Paste ADMIN_TOKEN from .env. It is kept in this tab only (sessionStorage) and sent as the X-Admin-Token header.</p>
+  <form id="auth-form" class="row">
+    <label class="grow">token <input id="auth-token" type="password" autocomplete="off" required></label>
+    <button class="primary">Unlock</button>
+  </form>
+  <pre id="auth-result" class="result" hidden></pre>
+</section>
+
+<main id="app" hidden>
+  <section id="watch">
+    <h2>Stream</h2>
+    <div class="player">
+      <video id="player" playsinline muted autoplay controls></video>
+      <div class="player-overlay"><span id="player-badge" class="chip">idle</span></div>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="player-sound" type="button">Sound on</button>
+      <button id="player-full" type="button">Fullscreen</button>
+      <span class="hint" id="player-hint"></span>
+    </div>
+  </section>
+
+  <section>
+    <h2>Debug donation</h2>
+    <p class="hint">Goes through the real pipeline: minimum amount, mapping to the most expensive affordable activity, cooldown, nickname sanitising, RCON. Rows are tagged <code>sim</code> and can be deleted below.</p>
+    <form id="sim-form" class="row">
+      <label>RUB<input id="sim-amount" type="number" min="1" step="1" value="50" required></label>
+      <label>nick<input id="sim-user" type="text" value="TestDonor" maxlength="64"></label>
+      <label class="grow">message<input id="sim-message" type="text" maxlength="200" placeholder="optional"></label>
+      <label class="check"><input id="sim-bypass" type="checkbox">bypass cooldown</label>
+      <button class="primary" type="submit">Send donation</button>
+    </form>
+    <div id="sim-presets" class="presets"></div>
+    <pre id="sim-result" class="result" hidden></pre>
+  </section>
+
+  <section>
+    <h2>Active now</h2>
+    <div id="active" class="row"></div>
+    <p><button id="clear-all" class="danger" type="button">Stop everything (amx_de clear)</button></p>
+  </section>
+
+  <section>
+    <h2>Activities</h2>
+    <p class="hint">Run sends <code>amx_de &lt;code&gt;</code> with the parameters shown under "params" and queues it for the next round. The panel does not wait for cooldowns; donations do.</p>
+    <table id="activities">
+      <thead><tr><th>code</th><th>price</th><th>duration</th><th>cooldown</th><th>on</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <pre id="action-result" class="result" hidden></pre>
+  </section>
+
+  <section>
+    <h2>Actions from the panel</h2>
+    <table id="history"><tbody></tbody></table>
+  </section>
+
+  <section>
+    <h2>Encoder telemetry</h2>
+    <div id="stream"></div>
+  </section>
+
+  <section>
+    <h2>Donations</h2>
+    <table id="donations"><tbody></tbody></table>
+    <p><button id="sim-reset" type="button">Delete simulated rows</button></p>
+  </section>
+
+  <section>
+    <h2>Settings</h2>
+    <form id="settings-form" class="row">
+      <label>min amount, RUB<input id="set-min" type="number" min="1" step="1"></label>
+      <label>default cooldown, s<input id="set-cooldown" type="number" min="0" step="1"></label>
+      <button type="submit">Save</button>
+    </form>
+    <p id="settings-result" class="hint"></p>
+  </section>
+</main>
+
+<script src="/hls.min.js"></script>
+<script src="/admin.js" type="module"></script>
+</body>
+</html>

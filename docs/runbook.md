@@ -184,21 +184,45 @@ console eats the first keystroke. All of that was removed once the `wait` chain 
    `-insecure`) never took effect and the client was rejected with `STEAM validation rejected`.
    The entrypoint now lives in `/usr/local/bin` — outside every volume.
 
-### Reconnect behaviour
+### Reconnect behaviour and the frozen-picture case
 
 The client has no scripting interface, so the watchdog reads the engine's own output. With `-dev`
 the engine prints `Connecting to ... (retry #N)`, `Server connection timed out` and
 `execing mainui.cfg` to stdout, which is redirected to `/tmp/xash.log`. After two strikes
-(30 s apart) `watchdog.sh` kills the engine and the client loop restarts it, which rejoins through
+(15 s apart) `watchdog.sh` kills the engine and the client loop restarts it, which rejoins through
 `userconfig.cfg`. Retries 1–4 are ignored on purpose: a server that is still booting makes the
 client retry a few times during a normal start.
 
+Matching is case-insensitive, and it includes `Server issued disconnect` and
+`has been idle for too long`: that is what the engine printed when it kicked the camera for being
+idle, and the old capitalised `Disconnected` pattern missed it, so the client stayed in its menu
+and the stream showed a static picture while `ffmpeg` happily kept encoding.
+
+The log also has to grow. Bots chat and die constantly, so `LOG_STALE_SEC` (120 s) of silence means
+"the client is not on the server" even when no disconnect line was printed at all.
+
+A second failure looks identical from outside: the client is on the server, the log grows, but the
+picture does not change (the team menu, or the camera on a dead body). Every `MOTION_SEC` the
+watchdog grabs three seconds of the Xvfb display through `freezedetect`; four static samples in a
+row (~1 min) restart the client, while one or two are normal between rounds.
+
+`watchdog.sh` also writes `/game/.stream/runtime.json` every `CHECK_SEC`:
+`{"ts":…,"xashAlive":true,"logAgeSec":3,"frozen":false,"restarts":0}`. The admin panel turns this
+into one verdict - `live`, `frozen`, `stalled` (heartbeat older than 45 s) or `offline` - and shows
+the log silence and the restart count.
+
 Verified by stopping and starting the game server: the client dropped, the engine was restarted,
 and after the server came back the log showed `[Xash3D]StreamCam ... entered the game` and
-`joined team "SPECTATOR"` without any human action.
+`joined team "SPECTATOR"` without any human action. The idle kick was verified by watching
+`Game_idle_kick` disappear from the server log after `mp_autokick 0`.
 
 A frame-brightness watchdog was tried first and thrown away: mean luma cannot separate the main
-menu (~60) from a bright map (de_dust2 at 640x480 is ~120).
+menu (~60) from a bright map (de_dust2 at 640x480 is ~120). `freezedetect` compares frames instead
+of absolute brightness, so it works in both.
+
+Camera director check: `amx_stcam status` prints
+`stream_cam status: enabled=1 interval=8.0 mode=4 spectator=<name> target=<name> candidates=<n>`,
+and the server log gets one `camera target <bot> (score …)` line per switch.
 
 ### Gate
 
@@ -233,3 +257,124 @@ is judged by the server, not by the picture, because brightness is not a reliabl
 - `npm test` green, `amx_de codes` matches the catalogue;
 - one test donation of 50 RUB -> bot nickname changes, row appears in the DB;
 - RCON password rotated if the server was exposed, `.env` not world readable.
+## Local testing: watch the stream, drive the panel
+
+Everything below runs on one machine, without a stream key, without going live and without spending
+a donation.
+
+### 1. The stream in a browser
+
+The capture container pushes RTMP exactly like it does to YouTube; only the target changes.
+
+```powershell
+./infra/compose.ps1 --profile local-view up -d mediamtx hlds
+./infra/compose.ps1 run --rm -e STREAM_OUTPUT=rtmp://mediamtx:1935/live/test stream
+./infra/compose.ps1 logs -f mediamtx      # expect: is publishing to path 'live/test'
+```
+
+Use `compose.ps1` (or `docker compose --env-file .env -f infra/docker-compose.yml ...`): the compose
+file lives in `infra/`, so compose looks for the environment file there and refuses to start with
+`RCON_PASSWORD is missing a value` otherwise.
+
+Then open `http://localhost:8889/live/test?muted=false` (WebRTC) or `http://localhost:8888/live/test`
+(HLS). If WebRTC shows nothing, the UDP port 8189 is blocked — HLS is the fallback.
+
+`STREAM_OUTPUT` resolves the container by scheme: `rtmp(s)://` → FLV, `tcp://`, `udp://`, `srt://` →
+MPEG-TS (TCP also gets `-listen 1`, so a player connects to us), anything else → a Matroska file. A
+file target still needs `STREAM_RECORD_SEC` to stop by itself.
+
+### 2. One page: the stream and the panel
+
+```powershell
+./infra/compose.ps1 up -d hlds control-api
+./infra/compose.ps1 run -d --name cs16-panel-stream -e STREAM_OUTPUT=rtmp://mediamtx:1935/live/test stream
+# open http://127.0.0.1:8085 (or ADMIN_PORT) and paste ADMIN_TOKEN
+```
+
+The page holds everything: the picture (HLS through hls.js, with sound) on top, then the activity
+cards with a **Run** button, the live `active`/`queued` state from the plugin, the debug donation
+form, the history of what the panel sent, the donations, and the encoder layout. No second URL.
+
+Two things that made the player hang forever, both fixed and worth knowing:
+
+- `docker compose run` does not apply `restart:` — a push started that way stays down after a Docker
+  or machine restart. For a preview that survives, put `STREAM_OUTPUT=rtmp://mediamtx:1935/live/test`
+  in `.env` and use `./infra/compose.ps1 --profile local-view up -d mediamtx stream`.
+- The software OpenGL renderer (llvmpipe) used every core it could see: measured **625% CPU for the
+  client alone**, which starved the encoder until HLS segments arrived too late and the browser
+  spinner never stopped. `LP_NUM_THREADS=2` brings the whole capture container to ~200% on a 12-core
+  machine and keeps 30 fps at 960x720. Do not remove it on a small VPS.
+- The game client draws its own "SELECT TEAM" panel over the picture and nothing closes it: the
+  console commands `jointeam`/`menuselect`/`cancelselect` do nothing, and commands sent by the server
+  are refused by the client (`Could not execute privileged command`, visible in `/tmp/xash.log`).
+  Only a key press works, so `stream-entrypoint.sh` runs `xdotool key 6` (SPECTATE) for the first
+  minute and once a minute after that. Verified on a frame: the panel is gone and the stream shows
+  the followed bot's view.
+
+- **Run** sends `amx_de <code>` with the parameters shown in the row (edit them under `params`), so a
+  run needs no donation and ignores cooldowns. The plugin queues it and the round that starts next
+  plays it; the card shows `queued` until then.
+- **Debug donation** injects a fake donation through the same pipeline as a real one and prints the
+  verdict with the exact command.
+- **Stop everything** sends `amx_de clear`.
+- Every command the panel sends is stored in the `admin_actions` table (kind, code, params, exact
+  RCON line, reply) and listed on the page: that is the audit trail for "who started this round".
+
+If port 8080 is taken, set `ADMIN_PORT` (e.g. `ADMIN_PORT=8085`); the compose file publishes the
+panel on loopback only. `STREAM_HLS_PORT` / `STREAM_HLS_PATH` (default 8888 and `live/test`) tell the
+page where the hub is; the browser uses its own hostname, so the same page works from a phone in the
+LAN as long as the port is published.
+
+Three ffmpeg facts learned the hard way, all encoded in `infra/stream/entrypoint.sh`:
+
+- **never pipe ffmpeg's stderr into the entrypoint** and never use `-progress <file>`: both stall the
+  encoder right after the FLV header (2 frames in 10 s, `speed=0.017x`), and the hub then drops the
+  idle publisher with `Broken pipe`. stderr goes to `/tmp/ffmpeg.log`, a separate `tail -F` copies it
+  to the container log;
+- an RTMP server drops a publisher that sends nothing for its read timeout, and our first packet can
+  arrive around 11 s on a loaded CPU: the local hub runs with `MTX_READTIMEOUT=60s`;
+- the encoder waits for the client's connect line (`Trying to connect with GoldSrc`) plus
+  `STREAM_JOIN_SETTLE_SEC`, and it is supervised: a failed attempt is retried, never fatal.
+
+Endpoints (all require `X-Admin-Token`, mutations require `application/json`, body limit 64 KiB):
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/state` | catalogue, active activity, last 20 donations, history, stream layout |
+| POST | `/api/simulate` | `{amount, username, message?, bypassCooldown?}` — fake donation through the real pipeline |
+| POST | `/api/trigger` | `{code, params?, nick?}` — `amx_de <code>` now |
+| POST | `/api/activity/<code>` | `{price?, cooldownSec?, globalCooldownSec?, enabled?, params?}` |
+| POST | `/api/activity/<code>/reset` | drop the override for one activity |
+| POST | `/api/settings` | `{minAmount?, defaultCooldownSec?}` |
+| POST | `/api/clear` | `amx_de clear` — round effect, renamed bot, queue |
+| POST | `/api/sim-reset` | delete rows with `source = 'sim'` |
+
+Milestone check without the browser:
+
+```powershell
+curl -s -H "x-admin-token: $env:ADMIN_TOKEN" http://127.0.0.1:8085/api/state
+curl -s -H "x-admin-token: $env:ADMIN_TOKEN" -H "content-type: application/json" `
+  -d '{"code":"bot_rain","params":{"extraBots":10}}' http://127.0.0.1:8085/api/trigger
+
+```
+
+Expected: `"status":"applied","activityCode":"meat_round"`, and in the server console
+`donation_events queued meat_round`, then `started meat_round` at the next round start.
+
+### 3. What the panel can and cannot change
+
+- **Can, live**: prices, cooldowns, `enabled`, `params`, default cooldown; they go into
+  `data/activities.override.json` and are applied in memory at once.
+- **Cannot**: `minAmount` above the cheapest price (the catalogue parser refuses it — raise every
+  price first), and anything that lives outside the control API: `DA_POLL_SEC`, DonationAlerts keys,
+  stream resolution/bitrate, the capture camera. Those stay in `.env` and need a restart, on purpose:
+  a panel that restarts the encoder needs the Docker socket, and the Docker socket is root.
+
+### 4. Rules the panel inherits
+
+- simulated donations consume cooldowns unless "bypass cooldown" is ticked, and are tagged `sim`;
+- simulated ids are negative, so they never affect the poll cursor for real donations;
+- editing a price does not affect `config/activities.json`; `npm test` still asserts the shipped
+  catalogue (10 activities, unique prices, sorted order).
+
+

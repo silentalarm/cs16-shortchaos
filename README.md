@@ -106,10 +106,25 @@ Without a stream key the picture can still be reviewed: `STREAM_OUTPUT=/game/rec
 instead of going live, `STREAM_WARMUP_SEC` waits for the spectator client to join, and
 `STREAM_RECORD_SEC` stops the recording and exits the container.
 
-The camera is a spectator client, and its mode matters: `STREAM_SPEC_MODE=4` is `OBS_IN_EYE`
-(through the followed player's eyes), while `spec_mode 6` is `OBS_MAP_CHASE` — the map overview,
-which shows no gameplay at all. A `spec_next` chain every `STREAM_SPEC_SWITCH_SEC` seconds moves
-the camera between players, otherwise it stays on one bot forever.
+The camera is driven by the game server, not by the client: `plugins/stream_cam` picks the living
+bot that moved the most in the last second and aims the observer at it every `stcam_interval`
+seconds (8 by default, never the same target twice in a row while there is a choice). The server
+also re-sends `jointeam 6`, which is the only way to close the client-side "choose a team" panel —
+while it is up the stream shows a frozen menu. `STREAM_SPEC_MODE=4` is `OBS_IN_EYE` (through the
+followed player's eyes); `spec_mode 6` is `OBS_MAP_CHASE`, the map overview, which shows no gameplay
+at all. `STREAM_SPEC_SWITCH_SEC` re-enables the old client-side `spec_next` cycling (0 = off, the
+server is the director); two directors fight each other, so leave it at 0 with the plugin.
+
+The stream camera is also the reason `mp_autokick 0` is set in `infra/server.cfg`: the client never
+presses a key, and the engine used to remove it after two minutes ("has been idle for too long"),
+which left the stream showing the menu the client fell back to.
+
+`infra/stream/watchdog.sh` covers both failure modes and writes `runtime.json` next to
+`status.json`: the heartbeat age proves the capture side is alive, and a `freezedetect` sample every
+`MOTION_SEC` proves the picture moves. The panel shows the verdict as one word — `live`, `frozen`
+(on the server, nothing moving: menu or a dead camera target), `stalled` (no heartbeat) or
+`offline` (no telemetry at all). A static picture restarts the client only after
+`FROZEN_STRIKES` samples in a row, because the pause between rounds is legitimately static.
 
 Sound needs three pieces, because a container has no sound card: PulseAudio runs with a null sink,
 `/etc/asound.conf` routes ALSA into it (the bundled SDL2 in the Xash3D release has no PulseAudio
@@ -123,6 +138,17 @@ at +8 dB, i.e. clipped — and the encoder adds a limiter as a safety net.
 GoldSrc engine, GPLv3) runs the CS 1.6 client inside a virtual X display, Mesa llvmpipe
 rasterises on the CPU and ffmpeg pushes the result to YouTube. Nothing needs a logged-in
 Steam client, a GPU or a window manager.
+
+llvmpipe is told to use two threads (`LP_NUM_THREADS=2`): left alone it took **625% of a 12-core
+machine for the client alone**, which starved the encoder until the HLS player in the panel never
+started. With the cap the whole capture container costs ~200% and still holds 30 fps.
+
+The CS "SELECT TEAM" panel is drawn over the game and stays there for the whole stream unless a
+*key* closes it: `jointeam`, `menuselect` and `cancelselect` are ignored, and any command that
+arrives from the server is rejected by the client itself (`Could not execute privileged command`).
+So the entrypoint presses the real key through X11 (`xdotool`, 6 = SPECTATE) for the first minute
+after the client starts and once a minute afterwards. `plugins/stream_cam` assigns the spectator team
+through the cstrike module, which keeps the server side consistent while the panel is being closed.
 
 ```powershell
 ./infra/update-checksums.ps1 -Only XASH3D,CS16CLIENT   # pin the two capture assets (keeps the rest)
@@ -144,7 +170,53 @@ The client joins on its own: `stream-entrypoint.sh` writes `cstrike/userconfig.c
 commands during `Host_Init`, before the network client exists, and silently drops them. See
 `docs/runbook.md` for the full explanation.
 
-## Adding an activity
+## Watching and driving it locally
+
+Two things make local testing possible without going live and without touching the channel.
+
+### The stream on your desktop
+
+`STREAM_OUTPUT` accepts a URL, not only a path, and the container format follows the scheme:
+`rtmp://` gives FLV, which is exactly the code path YouTube uses. Compose has an optional
+`mediamtx` service (`--profile local-view`) that receives that push and serves it to a browser:
+
+```powershell
+./infra/compose.ps1 --profile local-view up -d mediamtx hlds
+./infra/compose.ps1 run --rm -e STREAM_OUTPUT=rtmp://mediamtx:1935/live/test stream
+```
+
+`compose.ps1` is a thin wrapper that passes the repository-root environment file explicitly:
+compose would otherwise look for it next to `infra/docker-compose.yml` and fail with
+`required variable RCON_PASSWORD is missing a value`.
+
+Then open `http://localhost:8889/live/test?muted=false` (WebRTC, about a second of latency) or
+`http://localhost:8888/live/test` (HLS, a few seconds, no UDP ports involved). Only loopback ports
+are published, and the profile is never part of a normal `up`.
+
+### The operator panel (one page: picture + controls)
+
+`src/admin` serves a single page on `127.0.0.1:${ADMIN_PORT}` (8080 by default, 8085 in the sample
+env because 8080 is often taken). Everything lives there: the live picture through HLS/hls.js (with
+sound), the activity list with a **Run** button, the `active`/`queued` state reported by the plugin,
+the debug donation form, the log of commands the panel sent, and the donations table.
+
+- **Run** sends `amx_de <code>` with the parameters shown in the row (editable under `params`): no
+  donation needed, cooldowns ignored. The plugin takes it at the next round start.
+- **Debug donation** runs the exact donation pipeline: minimum amount, amount→activity mapping,
+  cooldowns, nickname sanitising, RCON, and it prints the verdict with the command that was sent.
+  Simulated rows have negative ids (they can never collide with a DonationAlerts id or move the poll
+  cursor) and `source = 'sim'`, so they can be deleted with one button.
+- **Stop everything** sends `amx_de clear`.
+- **Edit** changes price, cooldown, `enabled` and `params` per activity; the value goes to
+  `data/activities.override.json`, is re-validated by the same parser as the catalogue and applied in
+  memory at once. `config/activities.json` in git stays the default and "Reset" drops the override.
+- Every command is written to `admin_actions` (kind, code, params, exact RCON line, reply), so a
+  strange round can be explained afterwards.
+
+The panel needs `ADMIN_TOKEN` in `.env`; without it the server does not start. It binds loopback and
+expects the token in `X-Admin-Token`, because it can send RCON commands. On a VPS reach it through
+`ssh -L 8085:127.0.0.1:8085`.
+
 
 1. append an entry to `config/activities.json` (unique `code`, price >= 50, new price
    keeps mapping unambiguous);

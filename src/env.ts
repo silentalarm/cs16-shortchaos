@@ -24,6 +24,23 @@ export interface Env {
     /** true when no rcon_password is configured: commands are logged, not sent. */
     dryRun: boolean;
   };
+  admin: {
+    /** Interface the panel binds to. 127.0.0.1 on purpose: RCON rights do not belong on a LAN. */
+    bind: string;
+    port: number;
+    /** Shared secret for /api; when empty the panel is not started at all. */
+    token: string;
+    /** Debug donations from the panel; off in production so the panel cannot fake revenue. */
+    simAllowed: boolean;
+    publicDir: string;
+    /** Runtime tweaks from the panel, kept out of the versioned catalogue. */
+    overridePath: string;
+    /** Directory the capture container writes status.json/progress.txt into (read-only here). */
+    streamStatusDir: string;
+    /** MediaMTX HLS endpoint the embedded player uses (built into the page on the client side). */
+    hlsPort: number;
+    hlsPath: string;
+  };
 }
 
 function text(name: string, fallback = ""): string {
@@ -73,6 +90,17 @@ export function loadEnv(envFile = ".env"): Env {
       password,
       timeoutMs: integer("RCON_TIMEOUT_MS", 5000, 100),
       dryRun: password === "",
+    },
+    admin: {
+      bind: text("ADMIN_BIND", "127.0.0.1"),
+      port: integer("ADMIN_PORT", 8080, 1),
+      token: text("ADMIN_TOKEN"),
+      simAllowed: flag("ADMIN_SIM_ALLOWED", true),
+      publicDir: text("ADMIN_PUBLIC_DIR", "public"),
+      overridePath: text("ACTIVITIES_OVERRIDE_PATH", "data/activities.override.json"),
+      streamStatusDir: text("STREAM_STATUS_DIR", "data/stream"),
+      hlsPort: integer("STREAM_HLS_PORT", 8888, 1),
+      hlsPath: text("STREAM_HLS_PATH", "live/test").replace(/^\/+|\/+$/g, ""),
     },
   };
 }
