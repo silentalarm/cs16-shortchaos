@@ -201,12 +201,11 @@ removes the top band, `spec_drawnames`, `spec_drawcone` and `spec_decal` remove 
 spectator extras. `hud_spectator` is not a cvar in this client — the engine answers
 `Unknown command "hud_spectator"`.
 
-The thin bar under the game with the observed player's nickname has no switch of its own either: both
-bars are painted by the client HUD, and `hud_draw 0` in `cstrike/userconfig.cfg` (written by
-`stream-entrypoint.sh`) is the only thing that removes them. The price is that hudmessages stop
-drawing as well — the server's `NAME  100 HP  100 AR` line disappears with them — while the kill feed
-and the scoreboard keep working, because they are not part of that path. Set `hud_draw 1` there to get
-the line back and the bars with it.
+Neither bar can be removed on its own. `hud_draw 0` does remove them (they are painted by the client
+HUD), but it takes the whole HUD with them: health, armour, ammo, radar, kill feed and the server's
+`NAME  100 HP  100 AR` hudmessage. That was tried on frames and rejected — without the HUD the picture
+stops reading as a game. The four `spec_*` cvars are where this client stops: the bars keep their
+translucent background and lose their content.
 
 Cropping the bands out of the frame in ffmpeg was tried first (19% top, 22% bottom) and thrown away:
 it cost a third of the picture and zoomed the rest, which looks worse on a phone than the full 4:3

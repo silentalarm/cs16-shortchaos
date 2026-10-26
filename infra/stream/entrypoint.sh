@@ -213,10 +213,10 @@ write_client_config() {
     echo "spec_drawnames 0"
     echo "spec_drawcone 0"
     echo "spec_decal 0"
-    # The translucent bars themselves are painted by the client's own HUD code, not by the panels the
-    # cvars above switch off. `hud_draw 0` is the only switch that reaches them; the server-side HP/AR
-    # line is a hudmessage and keeps drawing.
-    echo "hud_draw 0"
+    # `hud_draw 0` removes the translucent bars completely (they are painted by the client HUD), but it
+    # takes the whole HUD with them: health, armour, ammo, radar, kill feed and our own hudmessage. That
+    # was tried and rejected - the HUD is what makes the picture readable as a game. With these four
+    # cvars the bars keep their background and lose their content, which is the best this client allows.
     for i in $(seq 1 400); do echo "wait"; done
     echo "connect $SERVER_ADDR"
     # the team menu is open after the join; 6 = Spectator

@@ -25,9 +25,10 @@ test("the spectator overlay is switched off with the client cvars that exist", (
     assert.match(entrypoint, new RegExp(`echo "${cvar} 0"`), `${cvar} is never written to userconfig`);
   }
 
-  // The cvars above only hide the *contents* of the panels; the translucent bars themselves are painted
-  // by the client HUD, and `hud_draw 0` is the only switch that reaches them.
-  assert.match(entrypoint, /echo "hud_draw 0"/, "the bars are back: hud_draw stays off");
+  // `hud_draw 0` would remove the translucent bars completely, but it also removes the whole HUD -
+  // health, armour, ammo, radar, kill feed and the server's hudmessage. Tried on frames and rejected:
+  // the HUD is what makes the picture readable as a game.
+  assert.doesNotMatch(entrypoint, /echo "hud_draw 0"/, "hud_draw 0 takes the whole HUD with the bars");
 
   // `hud_spectator` looks like the obvious switch but is not a cvar in this client: the engine answers
   // "Unknown command" and the setting silently does nothing.
