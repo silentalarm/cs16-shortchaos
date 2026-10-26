@@ -1,0 +1,22 @@
+{
+  "name": "cs16-youtube",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CS 1.6 bot server where viewer donations trigger in-game activities, streamed to YouTube",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "tsc -p tsconfig.json",
+    "start": "node src/main.ts",
+    "fake-donation": "node scripts/fake-donation.ts",
+    "oauth-login": "node scripts/oauth-login.ts",
+    "stream": "node scripts/stream.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
+  }
+}

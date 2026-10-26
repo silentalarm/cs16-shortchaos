@@ -1,0 +1,85 @@
+# Runs the game server (image built by infra/update-checksums.ps1 + docker buildx), the
+# control API next to it, and the capture container that puts the match on YouTube.
+#
+# hlds and stream share the server-data volume: the stream container reads valve/ and cstrike/
+# from it (read-only) and keeps its own writable copy for the engine in client-data.
+name: cs16-youtube
+
+services:
+  hlds:
+    image: cs16-hlds:local
+    restart: unless-stopped
+    environment:
+      MAP: ${MAP:-de_dust2}
+      MAXPLAYERS: ${MAXPLAYERS:-16}
+      RCON_PASSWORD: ${RCON_PASSWORD:?set RCON_PASSWORD in .env}
+    ports:
+      - "27015:27015/tcp"
+      - "27015:27015/udp"
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+    tmpfs:
+      - /tmp
+    volumes:
+      # Populated from the image on first start, then shared read-only with the stream service.
+      - server-data:/hlds
+      - hlds-logs:/hlds/cstrike/logs
+
+  control-api:
+    image: node:24-bookworm-slim
+    restart: unless-stopped
+    depends_on:
+      - hlds
+    network_mode: "service:hlds"
+    working_dir: /app
+    env_file:
+      - ../.env
+    environment:
+      RCON_HOST: 127.0.0.1
+      RCON_PORT: "27015"
+      DB_PATH: /app/data/control.db
+    command: ["node", "src/main.ts"]
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+    volumes:
+      - ..:/app
+      - control-data:/app/data
+
+  stream:
+    image: cs16-stream:local
+    restart: unless-stopped
+    depends_on:
+      - hlds
+    env_file:
+      - ../.env
+    environment:
+      SERVER_ADDR: hlds:27015
+      STREAM_ORIENTATION: ${STREAM_ORIENTATION:-vertical}
+      STREAM_WIDTH: ${STREAM_WIDTH:-720}
+      STREAM_HEIGHT: ${STREAM_HEIGHT:-1280}
+      STREAM_CAPTURE_WIDTH: ${STREAM_CAPTURE_WIDTH:-960}
+      STREAM_CAPTURE_HEIGHT: ${STREAM_CAPTURE_HEIGHT:-720}
+      STREAM_FPS: ${STREAM_FPS:-30}
+      STREAM_BITRATE_KBPS: ${STREAM_BITRATE_KBPS:-2000}
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+    # ffmpeg and the engine need a bit of shared memory for X11 buffers.
+    shm_size: "256m"
+    tmpfs:
+      - /tmp
+    volumes:
+      - server-data:/server:ro
+      - client-data:/game
+
+volumes:
+  hlds-logs:
+  control-data:
+  server-data:
+  client-data:
+

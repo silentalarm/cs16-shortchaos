@@ -1,0 +1,8 @@
+HANDOFF.md
+node_modules/
+.env
+data/
+*.log
+infra/.cache/
+infra/checksums.env
+out/

@@ -1,0 +1,55 @@
+{
+  "_comment": "Sources for the image. An empty tag means 'latest release'; update-checksums.ps1 prints the resolved tag so it can be pinned here afterwards.",
+  "components": {
+    "REHLDS": {
+      "repo": "rehlds/ReHLDS",
+      "tag": "3.14.0.857",
+      "asset": "^rehlds-bin-.*\\.zip$",
+      "provides": ["engine_i486.so"]
+    },
+    "REGAMEDLL": {
+      "repo": "rehlds/ReGameDLL_CS",
+      "tag": "5.30.0.814",
+      "asset": "^regamedll-bin-.*\\.zip$",
+      "provides": ["cstrike/dlls/cs.so"]
+    },
+    "METAMOD": {
+      "repo": "rehlds/Metamod-R",
+      "tag": "1.3.0.149",
+      "asset": "^metamod-bin-.*\\.zip$",
+      "provides": ["cstrike/addons/metamod/metamod_i386.so"]
+    },
+    "AMXX_BASE": {
+      "repo": "alliedmodders/amxmodx",
+      "tag": "1.10.0.5487",
+      "asset": "base-linux\\.tar\\.gz$",
+      "provides": ["cstrike/addons/amxmodx"]
+    },
+    "AMXX_CSTRIKE": {
+      "repo": "alliedmodders/amxmodx",
+      "tag": "1.10.0.5487",
+      "asset": "cstrike-linux\\.tar\\.gz$",
+      "provides": ["cstrike/addons/amxmodx/configs"]
+    },
+    "YAPB": {
+      "repo": "yapb/yapb",
+      "tag": "4.4.957",
+      "asset": "linux\\.tar\\.xz$",
+      "provides": ["cstrike/addons/yapb/yapb_mm_i386.so"]
+    },
+    "XASH3D": {
+      "_comment": "'continuous' is a rolling tag, so the SHA256 in checksums.env is the real pin. The i386 build is required: HLDS content ships 32-bit cl_dlls/client.so and dlls/mp.so, while the amd64 build only loads *_amd64.so.",
+      "repo": "FWGS/xash3d-fwgs",
+      "tag": "continuous",
+      "asset": "^xash3d-fwgs-linux-i386\\.tar\\.gz$",
+      "provides": ["xash3d"]
+    },
+    "CS16CLIENT": {
+      "_comment": "Open-source CS 1.6 client library for Xash3D. Valve's own client.so requires a Steam session (SteamInternal_ContextInit), which would break unattended streaming. Needs glibc 2.38+, hence trixie in infra/stream.",
+      "repo": "FWGS/cs16-client",
+      "tag": "continuous",
+      "asset": "^CS16Client-Linux-i386\\.tar\\.gz$",
+      "provides": ["cstrike/cl_dlls/client.so"]
+    }
+  }
+}
