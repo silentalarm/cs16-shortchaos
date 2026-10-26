@@ -85,31 +85,10 @@ PAD_Y=$TOP
 (( PAD_Y % 2 )) && PAD_Y=$(( PAD_Y - 1 ))
 (( PAD_Y + GAME_H > OUT_H )) && PAD_Y=$(( (OUT_H - GAME_H) / 2 ))
 (( PAD_Y < 0 )) && PAD_Y=0
-# The CS 1.6 spectator HUD paints two translucent bands over the game (team scores, map and timer
-# on top, the watched player name at the bottom) and keeps them there for as long as the client
-# watches somebody. The client has no switch for them - `hud_draw` does not even exist in this
-# build - so they are removed from the picture: crop the clean band, take the widest 4:3 window
-# out of it, and let the layout below scale that as usual. Measured on live frames: 19% / 22%.
-CROP_TOP="${STREAM_CROP_TOP_PERCENT:-19}"
-CROP_BOTTOM="${STREAM_CROP_BOTTOM_PERCENT:-22}"
-CROP=""
-case "$CROP_TOP$CROP_BOTTOM" in
-  *[!0-9]*) log "STREAM_CROP_*_PERCENT must be integers"; exit 2 ;;
-esac
-if (( 100 - CROP_TOP - CROP_BOTTOM >= 60 )); then
-  CROP_H=$(( CAP_H * (100 - CROP_TOP - CROP_BOTTOM) / 100 ))
-  (( CROP_H % 2 )) && CROP_H=$(( CROP_H - 1 ))
-  CROP_Y=$(( CAP_H * CROP_TOP / 100 ))
-  CROP_W=$(( CROP_H * 4 / 3 ))
-  (( CROP_W % 2 )) && CROP_W=$(( CROP_W - 1 ))
-  (( CROP_W > CAP_W )) && CROP_W=$CAP_W
-  CROP_X=$(( (CAP_W - CROP_W) / 2 ))
-  CROP="crop=${CROP_W}:${CROP_H}:${CROP_X}:${CROP_Y},"
-  log "cutting the spectator bars: ${CROP_W}x${CROP_H} at ${CROP_X},${CROP_Y} of ${CAP_W}x${CAP_H}"
-else
-  log "STREAM_CROP_*_PERCENT would cut more than 40% of the frame, cropping stays off"
-fi
-VF="${CROP}scale=${GAME_W}:${GAME_H}:flags=bicubic"
+# The whole frame is kept. The spectator bands are switched off with client cvars in
+# write_client_config() (`spec_drawstatus` and friends) instead of being cropped out: a crop threw away
+# a third of the picture and zoomed the rest, which looks worse on a phone than a clean 4:3 view.
+VF="scale=${GAME_W}:${GAME_H}:flags=bicubic"
 if [ "$GAME_H" -ne "$OUT_H" ] || [ "$GAME_W" -ne "$OUT_W" ]; then
   VF="${VF},pad=${OUT_W}:${OUT_H}:0:${PAD_Y}:color=0x101014"
 fi
@@ -224,6 +203,16 @@ write_client_config() {
     # sent, so the client at least has to keep drawing "v_" models.
     echo "r_drawviewmodel 1"
     echo "cl_righthand 1"
+    # The spectator overlay (top band with the scores, map and round timer) is drawn by the client in
+    # code: the VGUI resources under cstrike/resource/UI are never read by CS16Client - there is not a
+    # single "resource/UI" string in client.so or menu.so - so editing Spectator.res does nothing.
+    # These cvars are the switches it does implement, and `spec_drawstatus 0` is the one that removes
+    # the top band. The thin bar under the game with the observed player's nickname has no switch at
+    # all; it is left in place instead of being cropped out of the frame.
+    echo "spec_drawstatus 0"
+    echo "spec_drawnames 0"
+    echo "spec_drawcone 0"
+    echo "spec_decal 0"
     for i in $(seq 1 400); do echo "wait"; done
     echo "connect $SERVER_ADDR"
     # the team menu is open after the join; 6 = Spectator

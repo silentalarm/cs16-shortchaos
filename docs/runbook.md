@@ -190,6 +190,28 @@ console eats the first keystroke. All of that was removed once the `wait` chain 
    `-insecure`) never took effect and the client was rejected with `STEAM validation rejected`.
    The entrypoint now lives in `/usr/local/bin` — outside every volume.
 
+### The spectator bands
+
+The stock spectator GUI paints a translucent band with the team scores, map and round timer on top of
+the game. CS16Client draws it in code: there is not a single `resource/UI` string in `client.so` or
+`menu.so`, so editing `cstrike/resource/UI/Spectator.res` (all `visible` fields to 0) changes nothing —
+verified on recorded frames, the bands stayed exactly where they were. The switches that do exist are
+client cvars in `cstrike/userconfig.cfg`, written by `stream-entrypoint.sh`: `spec_drawstatus 0`
+removes the top band, `spec_drawnames`, `spec_drawcone` and `spec_decal` remove the rest of the
+spectator extras. `hud_spectator` is not a cvar in this client — the engine answers
+`Unknown command "hud_spectator"`.
+
+The thin bar under the game with the observed player's nickname has no switch at all and stays in the
+picture. Cropping the bands out of the frame in ffmpeg was tried first (19% top, 22% bottom) and thrown
+away: it cost a third of the picture and zoomed the rest, which looks worse on a phone than the full
+4:3 frame. To review the result without going live:
+
+```powershell
+./infra/compose.ps1 run --rm -e STREAM_OUTPUT=/game/check.mkv -e STREAM_RECORD_SEC=40 stream
+docker run --rm -v cs16-youtube_client-data:/game -v "$PWD/out/shots:/shots" --entrypoint sh cs16-stream:local `
+  -c "ffmpeg -y -ss 20 -i /game/check.mkv -frames:v 1 /shots/check.jpg"
+```
+
 ### Reconnect behaviour and the frozen-picture case
 
 The client has no scripting interface, so the watchdog reads the engine's own output. With `-dev`
