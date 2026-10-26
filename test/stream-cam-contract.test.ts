@@ -26,34 +26,42 @@ test("the client's default camera mode matches stcam_mode", () => {
   assert.equal(envMode, clientMode, ".env.example would start the client in another mode");
 });
 
-test("the director keeps the third person base and a first person window", () => {
+test("the director is third person only", () => {
   assert.equal(cvarDefault("stcam_mode"), "1", "the base mode must be chase locked (third person)");
-  assert.equal(cvarDefault("stcam_pov_mode"), "4", "the POV window must be OBS_IN_EYE");
-  assert.equal(cvarDefault("stcam_pov"), "1", "the POV window is the point of the director");
-  assert.ok(Number(cvarDefault("stcam_pov_sec")) > 0, "a zero-length POV window never shows");
   assert.ok(Number(cvarDefault("stcam_dwell")) > 0, "dwell is what stops the camera from hopping");
   assert.ok(Number(cvarDefault("stcam_interval")) > 0, "the hold time must be positive");
+
+  // The in-eye window was removed on purpose: a spectator has no view model, so it had to be faked
+  // with WeaponList + CurWeapon, and every cut to and from first person read as the camera glitching.
+  // The patterns below match code, not the explanatory comments above them.
+  const dead = [
+    /stcam_pov/,
+    /IsPov/,
+    /EventDamage/,
+    /register_event\("Damage"/,
+    /get_user_msgid\("WeaponList"\)/,
+    /get_user_msgid\("CurWeapon"\)/,
+  ];
+  for (const pattern of dead) {
+    assert.doesNotMatch(plugin, pattern, `${pattern} is back: the director must stay in third person`);
+  }
 });
 
 test("the status line still answers every key the runbook greps", () => {
   const status = /server_print\("stream_cam status:([^"]+)"/.exec(plugin)?.[1] ?? "";
-  for (const key of ["enabled", "interval", "mode", "spectator", "target", "candidates", "pov", "dwell"]) {
+  for (const key of ["enabled", "interval", "mode", "spectator", "target", "candidates", "dwell", "hp", "active"]) {
     assert.match(status, new RegExp(`${key}=`), `amx_stcam status lost the ${key} key`);
   }
+  assert.doesNotMatch(status, /pov=/, "there is no first person mode to report any more");
 });
 
-test("first person feeds the client health, armour and a weapon it can draw", () => {
-  for (const message of ["Health", "ArmorValue", "CurWeapon", "WeaponList"]) {
+test("the HUD still gets real health and armour from the server", () => {
+  // A spectator has no player state of its own, so both numbers are pushed every second: without them
+  // the client draws an empty health bar and the bot name with 0 HP.
+  for (const message of ["Health", "ArmorValue"]) {
     assert.match(plugin, new RegExp(`get_user_msgid\\("${message}"\\)`), `${message} is never looked up`);
   }
 
-  // WeaponList is a fixed nine field message: one string (the model name) and eight bytes. A field
-  // missing or reordered here is a client that draws nothing, or the wrong gun.
-  const body = /message_begin\(MSG_ONE, g_msgWeaponList, _, g_camId\);([\s\S]*?)message_end\(\);/.exec(plugin)?.[1];
-  assert.ok(body, "SendWeaponList does not build the message");
-  assert.equal((body.match(/write_string\(/g) ?? []).length, 1, "WeaponList carries exactly one string");
-  assert.equal((body.match(/write_byte\(/g) ?? []).length, 8, "WeaponList carries exactly eight bytes");
-
-  // Leaving first person must switch the view model off, otherwise it hangs in front of the chase camera.
-  assert.match(plugin, /SendCurWeapon\(g_camId, 0, 0, 0\)/, "the weapon is never switched off");
+  assert.match(plugin, /show_hudmessage\(g_camId, "%s   %d HP   %d AR"/, "the readable HUD line is gone");
+  assert.match(plugin, /get_pcvar_num\(cvar_hud\)/, "stcam_hud no longer gates the line");
 });

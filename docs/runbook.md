@@ -201,10 +201,16 @@ removes the top band, `spec_drawnames`, `spec_drawcone` and `spec_decal` remove 
 spectator extras. `hud_spectator` is not a cvar in this client — the engine answers
 `Unknown command "hud_spectator"`.
 
-The thin bar under the game with the observed player's nickname has no switch at all and stays in the
-picture. Cropping the bands out of the frame in ffmpeg was tried first (19% top, 22% bottom) and thrown
-away: it cost a third of the picture and zoomed the rest, which looks worse on a phone than the full
-4:3 frame. To review the result without going live:
+The thin bar under the game with the observed player's nickname has no switch of its own either: both
+bars are painted by the client HUD, and `hud_draw 0` in `cstrike/userconfig.cfg` (written by
+`stream-entrypoint.sh`) is the only thing that removes them. The price is that hudmessages stop
+drawing as well — the server's `NAME  100 HP  100 AR` line disappears with them — while the kill feed
+and the scoreboard keep working, because they are not part of that path. Set `hud_draw 1` there to get
+the line back and the bars with it.
+
+Cropping the bands out of the frame in ffmpeg was tried first (19% top, 22% bottom) and thrown away:
+it cost a third of the picture and zoomed the rest, which looks worse on a phone than the full 4:3
+frame. To review the result without going live:
 
 ```powershell
 ./infra/compose.ps1 run --rm -e STREAM_OUTPUT=/game/check.mkv -e STREAM_RECORD_SEC=40 stream
@@ -252,18 +258,22 @@ menu (~60) from a bright map (de_dust2 at 640x480 is ~120). `freezedetect` compa
 of absolute brightness, so it works in both.
 
 Camera director check: `amx_stcam status` prints
-`stream_cam status: enabled=1 interval=25.0 mode=1 spectator=<name> target=<name> candidates=<n> pov=<0|1> dwell=12.0 hp=<n> active=<mode>`,
-and the server log gets one `camera target <bot> (<reason>, score ...)` line per switch. `mode=1`
-is chase locked (third person), `active` is what the client has right now (`4` while it is in
-first person after the followed bot fired), and `candidates` must be 20 on a 10 vs 10 server.
+`stream_cam status: enabled=1 interval=25.0 mode=1 spectator=<name> target=<name> candidates=<n> dwell=12.0 hp=<n> active=<mode>`,
+and the server log gets one `camera target <bot> (<reason>, score ...)` line per switch. `mode=1` is
+chase locked (third person), `active` is the mode the server wrote to the client last second, and
+`candidates` must be 20 on a 10 vs 10 server.
 
-Why third person by default: a director that re-picked the busiest bot every 8 s looked like the
-camera teleporting around the map, and the open-source client draws no view model for a
-spectator, so first person had no weapon at all. The camera holds one bot until it dies, stops
-moving or the hold time is up, shows it in third person, and cuts to first person for
-`stcam_pov_sec` when that bot shoots or kills. In first person `WeaponList` + `CurWeapon` give
-the client a weapon to draw, and `Health` + `ArmorValue` + one HUD line give viewers real
-numbers instead of an empty health bar.
+Why third person and nothing else: a director that re-picked the busiest bot every 8 s looked like
+the camera teleporting around the map, and an in-eye window on every kill was worse — a spectator
+has no view model of its own, so the weapon had to be faked with `WeaponList` + `CurWeapon`, and
+every cut to and from first person read on screen as the camera glitching. Plugin 0.3.0 is chase
+locked only: it holds one bot until it dies, stops moving or the hold time is up. `Health` +
+`ArmorValue` + one HUD line give viewers real numbers instead of an empty health bar.
+
+One engine detail the director depends on, found the hard way: the PVS is built from the spectator's
+own `origin`, so a camera entity parked at the map origin stops receiving updates for a bot that
+walks away — the picture freezes with the bot gone. `ApplyCamera()` copies the target's origin onto
+the invisible spectator entity every second for exactly that reason.
 
 ### Gate
 
@@ -422,11 +432,10 @@ Expected: `"status":"applied","activityCode":"meat_round"`, and in the server co
 
 ## Camera limits of the open-source client (verified 2026-10-26)
 
-In first person the client draws no view model (no hands, no weapon) and no HUD text: the HUD line
-from `stream_cam` shows in third person only, and `WeaponList` + `CurWeapon` are accepted without
-producing a gun. First person is therefore a clean action cut, not a way to show the weapon; the
-gun a viewer sees comes from the third person camera, where the bot model holds it.
+In first person the client draws no view model (no hands, no weapon) and no HUD text: `WeaponList`
+and `CurWeapon` are accepted without producing a gun. First person is therefore no way to show the
+weapon, and the director does not use it at all any more (plugin 0.3.0, chase locked only): the gun a
+viewer sees comes from the third person camera, where the bot model holds it.
 
-`cs_get_user_bpammo` on a knife (weapon id 29) raises "Invalid weapon id" and aborts the rest of
-the HUD update, which is why the HUD line disappeared whenever a bot pulled a knife. The plugin now
-skips the ammo lookup for weapons that have no ammo type.
+`cs_get_user_bpammo` on a knife (weapon id 29) raises "Invalid weapon id" and aborts the rest of the
+HUD update. The HUD line carries no ammo any more, so that call is gone with it.

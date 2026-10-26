@@ -107,13 +107,13 @@ instead of going live, `STREAM_WARMUP_SEC` waits for the spectator client to joi
 `STREAM_RECORD_SEC` stops the recording and exits the container.
 
 The camera is driven by the game server, not by the client: `plugins/stream_cam` picks the living
-bot that moved the most in the last second and aims the observer at it every `stcam_interval`
-seconds (8 by default, never the same target twice in a row while there is a choice). The server
-also re-sends `jointeam 6`, which is the only way to close the client-side "choose a team" panel —
-while it is up the stream shows a frozen menu. `STREAM_SPEC_MODE=4` is `OBS_IN_EYE` (through the
-followed player's eyes); `spec_mode 6` is `OBS_MAP_CHASE`, the map overview, which shows no gameplay
-at all. `STREAM_SPEC_SWITCH_SEC` re-enables the old client-side `spec_next` cycling (0 = off, the
-server is the director); two directors fight each other, so leave it at 0 with the plugin.
+bot that moved the most in the last second and keeps it on screen in third person (`stcam_dwell`,
+`stcam_interval`) — no hopping between bots and no in-eye cuts. The server also re-sends `jointeam 6`,
+which is the only way to close the client-side "choose a team" panel — while it is up the stream
+shows a frozen menu. `STREAM_SPEC_MODE=1` is `OBS_CHASE_LOCKED`; `spec_mode 6` is `OBS_MAP_CHASE`,
+the map overview, which shows no gameplay at all. `STREAM_SPEC_SWITCH_SEC` re-enables the old
+client-side `spec_next` cycling (0 = off, the server is the director); two directors fight each
+other, so leave it at 0 with the plugin.
 
 The stream camera is also the reason `mp_autokick 0` is set in `infra/server.cfg`: the client never
 presses a key, and the engine used to remove it after two minutes ("has been idle for too long"),
