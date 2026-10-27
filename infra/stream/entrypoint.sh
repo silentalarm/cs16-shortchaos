@@ -34,7 +34,7 @@ STATUS_DIR="${STREAM_STATUS_DIR:-${GAME_DIR:-/game}/.stream}"
 SERVER_ADDR="${SERVER_ADDR:-127.0.0.1:27015}"
 FPS="${STREAM_FPS:-30}"
 BITRATE="${STREAM_BITRATE_KBPS:-2000}"
-RTMP_BASE="${STREAM_RTMP:-rtmp://a.rtmp.youtube.com/live2}"
+RTMP_BASE="${STREAM_RTMP:-rtmps://a.rtmps.youtube.com:443/live2}"
 PLAYER_NAME="${STREAM_CAM_NAME:-StreamCam}"
 
 # Spectator camera, kept in sync with plugins/stream_cam: 1 = chase locked (third person),
@@ -370,9 +370,22 @@ run_encoder() {
 
 # Tails the encoder log: copies every line to the container log, so `docker logs` still shows what
 # ffmpeg says while the encoder itself never writes into a pipe. Separate process on purpose.
+# ffmpeg prints the publish URL in its errors ("Error opening output rtmps://.../<key>"), so the
+# stream key is masked on the way out: the Docker log is the one place the key must never appear.
 start_metrics_tap() {
   : > /tmp/ffmpeg.log
-  ( tail -F -n 0 /tmp/ffmpeg.log 2>/dev/null ) &
+  ( tail -F -n 0 /tmp/ffmpeg.log 2>/dev/null | mask_stream_key ) &
+}
+
+# sed replacement pattern for the key: a plain substitution, no group or alternation, so it cannot
+# fail on a regex dialect. The key is [a-z0-9-] only and unique per broadcast, so a global replace
+# of that literal string is enough. Falls back to cat when there is no key (local pushes).
+mask_stream_key() {
+  if [ -n "${YOUTUBE_STREAM_KEY:-}" ]; then
+    sed -u "s/${YOUTUBE_STREAM_KEY}/***/g"
+  else
+    cat
+  fi
 }
 
 # What the encoder is doing right now, readable by the control API through the shared volume.

@@ -118,6 +118,11 @@ services:
       # Empty by default: the encoder then pushes to YouTube with YOUTUBE_STREAM_KEY.
       # For local viewing: rtmp://mediamtx:1935/live/test (see docs/runbook.md).
       STREAM_OUTPUT: ${STREAM_OUTPUT:-}
+      # YouTube ingest. RTMPS on 443, not plain RTMP on 1935: some ISPs drop the 1935 flow right
+      # after the handshake packet and ffmpeg then reports "Cannot read RTMP handshake response".
+      # This key overrides STREAM_RTMP from the env file on purpose, so a stale plain-RTMP value
+      # there cannot break the push; RTMP_INGEST_URL in .env is the way to point it elsewhere.
+      STREAM_RTMP: ${RTMP_INGEST_URL:-rtmps://a.rtmps.youtube.com:443/live2}
     cap_drop:
       - ALL
     security_opt:

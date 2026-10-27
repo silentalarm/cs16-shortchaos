@@ -31,7 +31,9 @@ export interface StreamConfig {
 }
 
 const SOURCES: readonly StreamSource[] = ["desktop", "x11", "test"];
-const DEFAULT_RTMP = "rtmp://a.rtmp.youtube.com/live2";
+// RTMPS on 443, not plain RTMP on 1935: some ISPs drop the 1935 flow right after the handshake
+// packet ("Cannot read RTMP handshake response"), and YouTube itself recommends TLS.
+const DEFAULT_RTMP = "rtmps://a.rtmps.youtube.com:443/live2";
 
 function fail(message: string): never {
   throw new Error(`stream config: ${message}`);

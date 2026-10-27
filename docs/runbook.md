@@ -129,6 +129,24 @@ Open question for the live stream: the game server is headless, so something has
 game. Either a CS 1.6 client on the streaming machine (desktop capture of its window) or a
 headless client on Xvfb. Until that is decided the pipeline is verified with the `test` source.
 
+### Ingest: RTMPS on 443, because plain RTMP is often dropped
+
+`rtmp://a.rtmp.youtube.com/live2` (port 1935) failed on a normal home connection: TCP connect
+succeeds, then ffmpeg reports `Cannot read RTMP handshake response` after ~1 s, while TLS to
+`a.rtmps.youtube.com:443` works from the same machine. The 1537-byte RTMP handshake packet never
+gets an answer, so the flow is cut after the handshake — an ISP-level block of the RTMP protocol,
+not a wrong key (a wrong key is answered with a handshake and then a publish error).
+
+- `compose` therefore sets `STREAM_RTMP=rtmps://a.rtmps.youtube.com:443/live2` explicitly
+  (override with `RTMP_INGEST_URL`), shadowing the older `STREAM_RTMP` line in an existing `.env`;
+- `src/stream.ts` uses the same default for the desktop CLI;
+- to check the path without touching the channel, push to a dummy key:
+  `ffmpeg -f lavfi -i testsrc -t 2 -c:v libx264 -f flv rtmps://a.rtmps.youtube.com/live2/xxx`.
+  A working path prints the publish command in `-loglevel trace`; only then does YouTube close it.
+- the stream key itself is masked in the container log by `mask_stream_key` in
+  `infra/stream/entrypoint.sh`: ffmpeg copies its stderr into `docker logs`, and its errors carry
+  the full publish URL.
+
 ## Autonomous capture (infra/stream)
 
 Proven in the container (Debian trixie, i386 runtime, Xvfb + Mesa llvmpipe + ffmpeg):
@@ -275,7 +293,7 @@ menu (~60) from a bright map (de_dust2 at 640x480 is ~120). `freezedetect` compa
 of absolute brightness, so it works in both.
 
 Camera director check: `amx_stcam status` prints
-`stream_cam status: enabled=1 interval=25.0 mode=1 spectator=<name> target=<name> candidates=<n> dwell=12.0 hp=<n> active=<mode>`,
+`stream_cam status: enabled=1 interval=25.0 mode=1 spectator=<name> target=<name> candidates=<n> dwell=6.0 hp=<n> active=<mode>`,
 and the server log gets one `camera target <bot> (<reason>, score ...)` line per switch. `mode=1` is
 chase locked (third person), `active` is the mode the server wrote to the client last second, and
 `candidates` must be 20 on a 10 vs 10 server.
@@ -283,14 +301,21 @@ chase locked (third person), `active` is the mode the server wrote to the client
 Why third person and nothing else: a director that re-picked the busiest bot every 8 s looked like
 the camera teleporting around the map, and an in-eye window on every kill was worse — a spectator
 has no view model of its own, so the weapon had to be faked with `WeaponList` + `CurWeapon`, and
-every cut to and from first person read on screen as the camera glitching. Plugin 0.3.0 is chase
-locked only: it holds one bot until it dies, stops moving or the hold time is up. `Health` +
+every cut to and from first person read on screen as the camera glitching. Plugin 0.3.4 is chase
+locked only: it holds one bot until it dies, stops moving or the hold time is up; `stcam_dwell` 6 s
+and `stcam_idle` 5 s drop a static target before the camera sits on a frozen, hidden bot. `Health` +
 `ArmorValue` + one HUD line give viewers real numbers instead of an empty health bar.
 
 One engine detail the director depends on, found the hard way: the PVS is built from the spectator's
 own `origin`, so a camera entity parked at the map origin stops receiving updates for a bot that
-walks away — the picture freezes with the bot gone. `ApplyCamera()` copies the target's origin onto
-the invisible spectator entity every second for exactly that reason.
+walks away — the picture freezes with the bot gone. A once-a-second copy of the target's origin fixed
+the freeze but left a shorter blink: the bot crossed a portal between ticks and its model vanished
+until the next one. `TaskFollow()` now re-applies the whole observer state (mode, target, origin)
+ten times a second, and `ApplyCamera()` does it once more so a freshly picked target is anchored in
+the same tick. `SyncCameraOrigin()` lifts the PVS anchor from the player's feet (which sits exactly
+on the floor brush and can be a solid leaf) to eye level, then body centre. The heartbeat prints
+`resets=<mode>/<target> feet=<0|1>`: non-zero resets mean the engine dropped those fields between
+ticks, `feet=1` means the direct origin was in solid and the lift was needed.
 
 ### Gate
 

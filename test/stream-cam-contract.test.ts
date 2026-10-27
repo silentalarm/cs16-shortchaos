@@ -66,6 +66,26 @@ test("the HUD still gets real health and armour from the server", () => {
   assert.match(plugin, /get_pcvar_num\(cvar_hud\)/, "stcam_hud no longer gates the line");
 });
 
+test("the spectator's PVS anchor follows the target faster than the director tick", () => {
+  // The engine builds the client's PVS from the invisible spectator's own origin. A once-a-second
+  // copy was too coarse: the bot crossed a portal between ticks and its model stopped arriving,
+  // which reads on stream as the character disappearing for a moment.
+  const fast = /set_task\(\s*0\.1\s*,\s*"TaskFollow"/.exec(plugin);
+  assert.ok(fast, "TaskFollow is missing: the PVS anchor is synced only on the director tick");
+
+  const follow = /public TaskFollow\(\)\s*\{[\s\S]*?\n\}/.exec(plugin)?.[0] ?? "";
+  assert.match(follow, /ApplyCamera\(\)/, "TaskFollow does not re-apply the whole observer state");
+  assert.match(follow, /g_modeResets\+\+/, "TaskFollow no longer counts observer-mode resets");
+  assert.match(follow, /g_targetResets\+\+/, "TaskFollow no longer counts observer-target resets");
+
+  const sync = /stock SyncCameraOrigin\(\)\s*\{[\s\S]*?\n\}/.exec(plugin)?.[0] ?? "";
+  assert.match(sync, /set_pev\(g_camId, pev_origin/, "SyncCameraOrigin does not copy the target origin");
+
+  const camera = /stock ApplyCamera\(\)\s*\{[\s\S]*?\n\}/.exec(plugin)?.[0] ?? "";
+  assert.match(camera, /SyncCameraOrigin\(\)/, "a freshly picked target is not anchored in the same tick");
+  assert.doesNotMatch(camera, /set_pev\(g_camId, pev_origin/, "ApplyCamera still owns the PVS anchor");
+});
+
 test("the HUD line sits below the spectator band the encoder cuts off", () => {
   // hudmessage y is a fraction of the render height, and the stream entrypoint cuts the client's two
   // 20% bands before scaling. A line anchored at 0.20 lands exactly on the cut and loses the tops of

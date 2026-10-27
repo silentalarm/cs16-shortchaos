@@ -20,14 +20,18 @@
  *     and from first person read on screen as the camera glitching;
  *   - feeds the client the observed bot's health and armour, because a spectator has no player state
  *     of its own: without this the HUD shows an empty health bar. The same values are repeated as
- *     one HUD line together with the nickname, so the stream carries readable numbers at 720p.
+ *     one HUD line together with the nickname, so the stream carries readable numbers at 720p;
+ *   - drags the invisible spectator entity along with the target and re-writes the observer
+ *     mode/target ten times a second: the engine builds the client's PVS from that origin, and a
+ *     once-a-second copy let the model disappear while the bot crossed a doorway or a reset of the
+ *     observer fields between director ticks;
  *
  * RCON contract (docs/runbook.md):
  *   amx_stcam status -> "stream_cam status: enabled=1 interval=25.0 mode=1 spectator=<name>
  *                        target=<name> candidates=<n> dwell=12.0 hp=<n> active=<mode>"
  *
- * cvars: stcam_enable 1, stcam_mode 1 (1 = chase locked, 2 = chase free), stcam_dwell 12.0,
- *        stcam_idle 10.0, stcam_interval 25.0 (max hold on one target), stcam_avoid_repeat 1,
+ * cvars: stcam_enable 1, stcam_mode 1 (1 = chase locked, 2 = chase free), stcam_dwell 6.0,
+ *        stcam_idle 5.0, stcam_interval 25.0 (max hold on one target), stcam_avoid_repeat 1,
  *        stcam_spectator "StreamCam", stcam_hud 1, stcam_heartbeat 60.0.
  */
 #include <amxmodx>
@@ -36,9 +40,10 @@
 #include <fun>
 
 #define PLUGIN_NAME "Stream Camera"
-#define PLUGIN_VERSION "0.3.0"
+#define PLUGIN_VERSION "0.3.4"
 
 #define TASK_TICK 42001
+#define TASK_FOLLOW 42002
 #define MAX_PLAYERS 32
 #define NAME_LEN 32
 #define TEAM_SPECTATOR 3
@@ -56,6 +61,10 @@ new g_camId;
 new g_target;
 new g_prevTarget;
 new g_modeSent = -1;
+new g_modeResets;
+new g_targetResets;
+new g_lastAppliedMode = -1;
+new g_lastAppliedTarget;
 
 new Float:g_dwellUntil;
 new Float:g_holdUntil;
@@ -81,8 +90,8 @@ public plugin_init()
 
 	cvar_enabled     = register_cvar("stcam_enable", "1");
 	cvar_mode        = register_cvar("stcam_mode", "1");
-	cvar_dwell       = register_cvar("stcam_dwell", "12.0");
-	cvar_idle        = register_cvar("stcam_idle", "10.0");
+	cvar_dwell       = register_cvar("stcam_dwell", "6.0");
+	cvar_idle        = register_cvar("stcam_idle", "5.0");
 	cvar_interval    = register_cvar("stcam_interval", "25.0");
 	cvar_avoidRepeat = register_cvar("stcam_avoid_repeat", "1");
 	cvar_specName    = register_cvar("stcam_spectator", "StreamCam");
@@ -99,6 +108,8 @@ public plugin_init()
 	g_msgArmor  = get_user_msgid("ArmorValue");
 
 	set_task(1.0, "TaskTick", TASK_TICK, "", 0, "b");
+	// The PVS anchor follows the bot much faster than the director logic; see TaskFollow().
+	set_task(0.1, "TaskFollow", TASK_FOLLOW, "", 0, "b");
 
 	log_amx("loaded %s: mode %d, hold %.0fs, dwell %.0fs", PLUGIN_VERSION,
 		get_pcvar_num(cvar_mode), get_pcvar_float(cvar_interval), get_pcvar_float(cvar_dwell));
@@ -122,6 +133,10 @@ public client_putinserver(id)
 	g_idleSince = 0.0;
 	g_nextHeartbeat = 0.0;
 	g_modeSent = -1;
+	g_modeResets = 0;
+	g_targetResets = 0;
+	g_lastAppliedMode = -1;
+	g_lastAppliedTarget = 0;
 
 	new name[NAME_LEN];
 	get_user_name(id, name, charsmax(name));
@@ -223,9 +238,61 @@ public TaskTick()
 }
 
 /**
- * Chase locked (third person), one target, no mode switching. The mode is rewritten every second:
- * cheaper than tracking every state change, and it heals a mode the engine or the client reset
- * behind our back.
+ * The engine builds the PVS from the spectator's own origin, and a camera entity parked at the map
+ * origin stops receiving updates for a bot that walks away. A once-a-second copy was still too
+ * coarse: the bot crossed a portal between ticks and the client stopped getting its model, which
+ * reads on stream as the character blinking out. The observer fields are re-applied here ten times
+ * a second as well, because a mode/target reset between director ticks also hides the model while
+ * the HUD (sent straight to the client) still names the same bot. ApplyCamera() does the work so a
+ * fresh target is anchored in the tick it is picked.
+ */
+public TaskFollow()
+{
+	if (!get_pcvar_num(cvar_enabled) || g_camId <= 0 || !IsPlayable(g_target))
+		return;
+
+	// Count resets for the heartbeat: a non-zero value proves the engine dropped the observer state
+	// between ticks, a zero value points at the renderer/PVS instead. Compare with the last value we
+	// applied, not with g_target, so our own director switch is not mistaken for an engine reset.
+	if (pev(g_camId, pev_iuser1) != g_lastAppliedMode)
+		g_modeResets++;
+	if (pev(g_camId, pev_iuser2) != g_lastAppliedTarget)
+		g_targetResets++;
+
+	ApplyCamera();
+}
+
+stock SyncCameraOrigin()
+{
+	// The player origin sits exactly on the floor brush. A PVS built from a point in a solid leaf is
+	// empty, and the client freezes with the bot gone, so the anchor is lifted to eye level first;
+	// the lower offsets are fallbacks for a low ceiling or a crouched bot. The client camera itself
+	// still targets the bot, so this only changes which leaf the server uses for entity updates.
+	new Float:origin[3];
+	new Float:probe[3];
+	new Float:offsets[3] = {28.0, 16.0, 0.0};
+
+	pev(g_target, pev_origin, origin);
+	for (new i = 0; i < 3; i++)
+	{
+		probe[0] = origin[0];
+		probe[1] = origin[1];
+		probe[2] = origin[2] + offsets[i];
+		// CONTENTS_SOLID is -2 in the GoldSrc SDK; kept numeric to keep the include set minimal.
+		if (engfunc(EngFunc_PointContents, probe) != -2)
+		{
+			set_pev(g_camId, pev_origin, probe);
+			return;
+		}
+	}
+
+	set_pev(g_camId, pev_origin, origin);
+}
+
+/**
+ * Chase locked (third person), one target, no mode switching. The whole observer state is rewritten
+ * ten times a second from TaskFollow(): cheaper than tracking every state change, and it heals a
+ * mode or target the engine or the client reset behind our back.
  */
 stock ApplyCamera()
 {
@@ -234,15 +301,12 @@ stock ApplyCamera()
 	set_pev(g_camId, pev_iuser1, mode);
 	set_pev(g_camId, pev_iuser2, g_target);
 
-	// The engine builds the PVS from the client's own origin, and a spectator parked at the map
-	// origin stops receiving updates for a bot that walks away: the picture freezes on the last
-	// frame it had and the bot is simply not there any more. Dragging the invisible spectator
-	// entity along with the target keeps the updates coming.
-	new Float:origin[3];
-	pev(g_target, pev_origin, origin);
-	set_pev(g_camId, pev_origin, origin);
+	// Anchor the new target at once; TaskFollow() keeps it in the PVS between director ticks.
+	SyncCameraOrigin();
 
 	g_modeSent = mode;
+	g_lastAppliedMode = mode;
+	g_lastAppliedTarget = g_target;
 }
 
 /**
@@ -300,13 +364,17 @@ stock Heartbeat(Float:now)
 
 	new name[NAME_LEN] = "none";
 	new hp;
+	new Float:origin[3];
+	new feet = 0;
 	if (g_target > 0 && is_user_connected(g_target))
 	{
 		get_user_name(g_target, name, charsmax(name));
 		hp = get_user_health(g_target);
+		pev(g_target, pev_origin, origin);
+		feet = (engfunc(EngFunc_PointContents, origin) == -2) ? 1 : 0;
 	}
 
-	client_print(g_camId, print_console, "[stcam] target=%s hp=%d", name, hp);
+	client_print(g_camId, print_console, "[stcam] target=%s hp=%d resets=%d/%d feet=%d", name, hp, g_modeResets, g_targetResets, feet);
 }
 
 /**
