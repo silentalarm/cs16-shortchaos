@@ -21,7 +21,6 @@ ARG METAMOD_URL METAMOD_SHA256
 ARG AMXX_BASE_URL AMXX_BASE_SHA256
 ARG AMXX_CSTRIKE_URL AMXX_CSTRIKE_SHA256
 ARG YAPB_URL YAPB_SHA256
-ARG CSDM_URL CSDM_SHA256
 # 1 = replace the Valve engine with ReHLDS. Requires the legacy engine libraries below:
 # the current public depot's steamclient.so no longer exports SteamGameServer_Init.
 ARG WITH_REHLDS=1
@@ -37,8 +36,7 @@ ENV WITH_REHLDS=${WITH_REHLDS} WITH_REGAMEDLL=${WITH_REGAMEDLL} \
     METAMOD_URL=${METAMOD_URL} METAMOD_SHA256=${METAMOD_SHA256} \
     AMXX_BASE_URL=${AMXX_BASE_URL} AMXX_BASE_SHA256=${AMXX_BASE_SHA256} \
     AMXX_CSTRIKE_URL=${AMXX_CSTRIKE_URL} AMXX_CSTRIKE_SHA256=${AMXX_CSTRIKE_SHA256} \
-    YAPB_URL=${YAPB_URL} YAPB_SHA256=${YAPB_SHA256} \
-    CSDM_URL=${CSDM_URL} CSDM_SHA256=${CSDM_SHA256}
+    YAPB_URL=${YAPB_URL} YAPB_SHA256=${YAPB_SHA256}
 
 COPY infra/build-hlds.sh /usr/local/bin/build-hlds.sh
 COPY infra/entrypoint.sh /usr/local/bin/entrypoint.sh
@@ -55,22 +53,16 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 COPY infra/build-plugin.sh /usr/local/bin/build-plugin.sh
-COPY infra/build-csdm.sh /usr/local/bin/build-csdm.sh
 COPY infra/server.cfg /src/server.cfg
 COPY infra/plugins.ini /src/plugins.ini
-COPY infra/csdm.cfg /src/csdm.cfg
 COPY plugins /src/plugins
 
 # stream_cam needs the cstrike module to assign the camera a team, and the base AMXX package ships
 # the whole module list commented out.
-# CSDM first: it needs amxxpc, and build-plugin.sh deletes the compiler at the end so it cannot
-# ship inside the runtime image.
-RUN chmod +x /usr/local/bin/build-plugin.sh /usr/local/bin/build-csdm.sh \
- && bash /usr/local/bin/build-csdm.sh \
+RUN chmod +x /usr/local/bin/build-plugin.sh \
  && bash /usr/local/bin/build-plugin.sh \
  && cp /src/plugins.ini /hlds/cstrike/addons/amxmodx/configs/plugins.ini \
  && cp /src/server.cfg /hlds/cstrike/server.cfg \
- && cp /src/csdm.cfg /hlds/cstrike/addons/amxmodx/configs/csdm.cfg \
  && sed -i 's/^;cstrike\(\r\?\)$/cstrike\1/' /hlds/cstrike/addons/amxmodx/configs/modules.ini \
  && grep -qx 'cstrike' /hlds/cstrike/addons/amxmodx/configs/modules.ini \
  && sed -i 's/^;hamsandwich\(\r\?\)$/hamsandwich\1/' /hlds/cstrike/addons/amxmodx/configs/modules.ini \
@@ -94,8 +86,6 @@ COPY --from=build --chown=10001:10001 /hlds /hlds
 COPY --from=build --chown=10001:10001 /hlds/cstrike/server.cfg /opt/defaults/server.cfg
 COPY --from=build --chown=10001:10001 /hlds/cstrike/addons/amxmodx/configs/plugins.ini /opt/defaults/plugins.ini
 COPY --from=build --chown=10001:10001 /hlds/cstrike/addons/amxmodx/configs/modules.ini /opt/defaults/modules.ini
-COPY --from=build --chown=10001:10001 /hlds/cstrike/addons/amxmodx/configs/csdm.cfg /opt/defaults/csdm.cfg
-COPY --from=build --chown=10001:10001 /hlds/cstrike/addons/amxmodx/configs/csdm /opt/defaults/csdm
 COPY --from=build --chown=10001:10001 /hlds/cstrike/addons/amxmodx/plugins /opt/defaults/plugins
 
 # The entrypoint must live outside /hlds: that directory is a named volume in compose, and a

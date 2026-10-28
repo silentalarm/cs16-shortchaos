@@ -20,12 +20,6 @@ if [ -d "$DEFAULTS" ]; then
   if [ -d "$DEFAULTS/plugins" ]; then
     cp -f "$DEFAULTS/plugins"/*.amxx "$AMXX/plugins/" 2>/dev/null || true
   fi
-  # CSDM reads its spawn points from configs/csdm and the mode switches from configs/csdm.cfg.
-  if [ -f "$DEFAULTS/csdm.cfg" ]; then cp -f "$DEFAULTS/csdm.cfg" "$AMXX/configs/csdm.cfg"; fi
-  if [ -d "$DEFAULTS/csdm" ]; then
-    mkdir -p "$AMXX/configs/csdm"
-    cp -f "$DEFAULTS/csdm"/*.spawns.cfg "$AMXX/configs/csdm/" 2>/dev/null || true
-  fi
   echo "configs and plugins synced from the image"
 fi
 

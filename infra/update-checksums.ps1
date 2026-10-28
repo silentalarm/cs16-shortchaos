@@ -72,12 +72,25 @@ foreach ($name in $components.PSObject.Properties.Name) {
     }
 
     $file = Join-Path $cacheDir $asset.name
-    if (-not (Test-Path $file)) {
+    # GitHub publishes the SHA256 of every asset. A cached file from an older build hashes to
+    # something else, and pinning that hash produces a build that can never download again - which is
+    # exactly how the streaming image broke on the rolling Xash3D "continuous" tag. The digest from
+    # the API decides whether the cached copy is still the asset the URL points at.
+    $expected = if ($asset.digest) { $asset.digest -replace '^sha256:', '' } else { '' }
+    $stale = $true
+    if (Test-Path $file) {
+        $cachedSha = (Get-FileHash -Path $file -Algorithm SHA256).Hash.ToLower()
+        $stale = ($expected -ne '') -and ($cachedSha -ne $expected)
+    }
+    if ($stale) {
         Write-Host "downloading $($asset.name) ..."
         Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $file -Headers $headers -TimeoutSec 600
     }
 
     $sha = (Get-FileHash -Path $file -Algorithm SHA256).Hash.ToLower()
+    if ($expected -ne '' -and $sha -ne $expected) {
+        throw "$name : $($asset.name) hashed to $sha but GitHub reports $expected - the CDN served another build, retry later"
+    }
     Write-Host ("{0,-14} {1,-14} {2}" -f $name, $release.tag_name, $asset.name)
 
     if (-not $component.tag) {
