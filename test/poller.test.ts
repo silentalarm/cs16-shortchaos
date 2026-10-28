@@ -48,6 +48,27 @@ function setup(options: { donations?: DonationRow[]; failApply?: boolean } = {})
   };
 }
 
+test("a 65 RUB donation reaches the plugin as the viewer's own phrase", async () => {
+  const ctx = setup({ donations: [donation({ amount: 65, message: "Привет, как дела?" })] });
+  try {
+    await pollOnce(ctx.deps);
+    // Underscores instead of spaces: the phrase has to stay a single RCON token.
+    assert.deepEqual(ctx.commands, ["amx_de bot_phrase text=privet_kak_dela"]);
+  } finally {
+    ctx.store.close();
+  }
+});
+
+test("a 55 RUB donation blesses a bot with the buyer's nickname", async () => {
+  const ctx = setup({ donations: [donation({ amount: 55, username: "Вася" })] });
+  try {
+    await pollOnce(ctx.deps);
+    assert.deepEqual(ctx.commands, ["amx_de bless_bot health=250 weapon=weapon_deagle nick=vasya"]);
+  } finally {
+    ctx.store.close();
+  }
+});
+
 test("50 RUB renames a bot and the donation is stored as applied", async () => {
   const ctx = setup({ donations: [donation({ username: "Вася" })] });
   try {

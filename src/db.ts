@@ -9,7 +9,12 @@ import { dirname } from "node:path";
  * donation twice (restart, overlapping polls), so the donation id is the primary key
  * and `record()` reports whether the row is new.
  */
-export type DonationStatus = "applied" | "rejected" | "cooldown" | "failed";
+/**
+ * `queued` is a paid donation waiting for its cooldown window, `expired` is one that waited longer
+ * than the queue allows, `cooldown` is the older behaviour (rejected on the spot) and still appears
+ * in rows written before the queue existed.
+ */
+export type DonationStatus = "applied" | "rejected" | "cooldown" | "queued" | "expired" | "failed";
 
 /**
  * Where a row came from. `da` is a real DonationAlerts donation; `sim` is a donation injected
@@ -141,6 +146,18 @@ export class Store {
 
   setLastSeenId(id: number): void {
     this.setState("donations.last_seen_id", String(id));
+  }
+
+  /**
+   * Rewrites the verdict of one stored donation. Used by the pending queue: a row is written as
+   * `queued` when the donation arrives and becomes `applied`, `expired` or `failed` later, so the
+   * panel always shows what a viewer's money actually bought.
+   */
+  updateStatus(id: number, status: DonationStatus, reason: string | null): boolean {
+    const result = this.#db
+      .prepare("UPDATE donations SET status = ?, reason = ? WHERE id = ?")
+      .run(status, reason, id);
+    return Number(result.changes) > 0;
   }
 
   /** ISO timestamp of the last applied activity for this donor, null when never applied. */

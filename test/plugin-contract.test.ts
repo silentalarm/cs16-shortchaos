@@ -14,6 +14,8 @@ const catalog = loadActivities(new URL("../config/activities.json", import.meta.
 
 function registered(): Map<string, string> {
   const map = new Map<string, string>();
+  // Every activity is dispatched in the same RCON call; there is no separate "immediate" registry
+  // and no per-round queue any more.
   const pattern = /RegisterDonationEffect\("([a-z0-9_]+)",\s*"([A-Za-z0-9_]+)"\)/g;
   for (const match of source.matchAll(pattern)) {
     const [, code, handler] = match;
@@ -51,7 +53,16 @@ test("the plugin answers the contract probes used by the control API", () => {
   assert.match(source, /register_srvcmd\("amx_de"/);
   assert.match(source, /equal\(code, "codes"\)/);
   assert.match(source, /equal\(code, "version"\)/);
-  assert.match(source, /ReadParams|QueueCommand/);
+  assert.match(source, /LoadParamsFromArgs/);
+});
+
+test("every activity is applied in the same RCON call", () => {
+  // The per-round queue and the separate "immediate" registry were removed on purpose: a viewer
+  // must see the effect of their payment at once.
+  for (const dead of [/QueueCommand/, /StartNextActivity/, /g_queueSize/, /RegisterImmediateEffect/]) {
+    assert.doesNotMatch(source, dead, `${dead} is back: activities must not wait for a round`);
+  }
+  assert.match(source, /ran '%s' with %d params/, "the dispatch log line changed");
 });
 
 test("every command the catalogue can produce stays a single line", () => {

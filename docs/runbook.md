@@ -9,6 +9,350 @@
 5. stream: ffmpeg -> private YouTube RTMP;
 6. VPS, backups, health checks.
 
+## The team race (`plugins/team_war`)
+
+The stream is a race between T and CT: which side puts more bots down before the map changes. The
+score is counted by the plugin from `DeathMsg`, not read from the engine scoreboard, because the
+engine subtracts a frag for a team kill and this server is free for all with friendly fire on
+(`mp_friendlyfire 1`, `yb_csdm_mode 2`). **A team kill counts for the killer's team.**
+
+The HUD block is drawn by **stream_cam**, not by team_war:
+
+```
+T 12 : 9 CT
+TOP T Smith 7  |  TOP CT Neo 5
+Smith 100 HP 0 AR
+```
+
+Why: this client renders a single hudmessage per tick. A second message from team_war, on its own
+channel, was overwritten by the name/HP line every second - verified on frames, the block never
+appeared. So team_war publishes the numbers as cvars (`team_war_t`, `team_war_ct`, `team_war_top_t`,
+`team_war_top_ct`) once a second, and stream_cam puts them into the one message it already sends to
+the camera, at y=0.24.
+
+- the score survives rounds; a map change re-initialises the plugin, which is the only reset;
+- 0.24 is the anchor the single line used and it stays whole: the encoder cuts the top 20% band and
+  0.20 lost the glyph tops. The block grows downwards from that anchor;
+- `team_war_name_len` (14) trims a long nickname so the CT half stays inside the frame;
+- team_war writes `score: T n : m CT` to the log once a minute: the only trace of the race in the
+  server log, and what tells an empty score apart from a plugin that stopped counting;
+- without `team_war.amxx` stream_cam keeps its plain `name HP AR` line.
+
+```
+amx_team_war status   t=12 ct=9 top_t=Smith:7 top_ct=Neo:5   (spaces in names become underscores)
+amx_team_war reset    drop every counter
+```
+
+Cvars: `team_war_name_len` (14) and the four published values above.
+
+Deploying a plugin change: rebuild the image (`infra/build-image.ps1`), then **recreate** the
+container - `docker restart` keeps the old image:
+
+```powershell
+./infra/build-image.ps1
+./infra/compose.ps1 up -d --force-recreate hlds
+```
+
+The server entrypoint syncs `configs/` and `plugins/` from the image on every start ("configs and
+plugins synced from the image"), so a stale volume is not a problem; a stale *container* is.
+
+## Every activity applies at once
+
+`amx_de <code>` runs its handler in the same RCON call: there is no round queue and no separate
+"instant" list any more. A viewer has to see the effect while they are still watching.
+
+- round effects still end with the round: `Round_End` restores `sv_gravity` and the bot quota and
+  drops the bounty / hot-potato / boss state;
+- `bot_nick` lives until a map change, `map_change` changes the map immediately;
+- several effects can run at the same time; `amx_de status` reports the last applied code as
+  `active`, and `queued=0` stays in the line only because the admin panel parses it;
+- health, weapons and armour are reset by the next spawn, so only cvars and glows need cleanup.
+
+The 110, 130, 170 and 230 RUB steps are free again: the zone activities that used them were removed.
+
+## CSDM: the respawn "meat grinder"
+
+CSDM is built from source inside the image, not downloaded as a binary: the project publishes no
+releases, so `infra/checksums.env` pins a commit tarball (`CSDM_URL`/`CSDM_SHA256`) and
+`infra/build-csdm.sh` compiles five modules with the `amxxpc` that is already in the build stage.
+Only `csdm_main`, `csdm_equip`, `csdm_spawn_preset`, `csdm_misc`, `csdm_protection` are built; `ffa`,
+`itemmode`, `tickets` and `spawn_editor` stay out, because every extra plugin is another hook on
+`DeathMsg`.
+
+What the mode does (`infra/csdm.cfg`):
+
+- `spawn_wait_time 0.5` - a bot is back half a second after dying, so there is never dead air;
+- `strip_weapons 1` + `[botprimary]`/`[botsecondary]` - the plugin arms every respawning bot from a
+  short list (ak47, m4a1, awp, xm1014, p90, mp5navy), which makes the picture change by itself;
+- `remove_objectives = abcd`, `block_buy 1`, `remove_bomb 1` - no bomb, no hostages, no buy zones;
+- `[ffa] enabled = 0` on purpose: YaPB keeps its team logic, and the FFA flag makes bots shoot
+  team-mates, which reads as broken AI;
+- `[protection] time 1` - one second of green glow on respawn, enough not to die with the spawn
+  message still on screen.
+
+`infra/server.cfg` changed with it: `mp_roundtime 3`, `mp_freezetime 1`, `mp_timelimit 20` (the old
+`0` meant dust2 never rotated) and `yb_chat 1` with `yb_chat_percent 3` - a silent bot-only server
+reads as dead.
+
+`csdm.cfg` and `configs/csdm/*.spawns.cfg` are synced over the volume on every start
+(`/opt/defaults`), so an edited config reaches an existing container without a volume wipe. After
+editing any of it: `infra/build-image.ps1` then `infra/compose.ps1 up -d --force-recreate hlds`.
+A plain `docker restart` keeps the old image and the old config.
+
+## chaos_core: the chaos mod
+
+`plugins/chaos_core/chaos_core.sma` runs a weighted random effect every `chaos_interval` seconds.
+Every effect is a **start/stop pair**, so nothing can leak into the next round or the next map.
+
+| Effect | Weight | Duration | Start | Stop |
+|---|---|---|---|---|
+| `speed` | 30 | 20 s | `sv_maxspeed 900` | restore the saved value |
+| `gravity` | 30 | 20 s | `sv_gravity 200` | restore the saved value |
+| `knives` | 25 | 15 s | every bot: knife only | nothing, the next spawn resets it |
+| `awp` | 20 | 15 s | every bot: AWP | nothing |
+| `juggernaut` | 20 | 20 s | every bot: 300 HP | nothing |
+| `vampire` | 15 | 30 s | flag on, killer heals 25 HP per kill | flag off |
+
+Commands (RCON or `server_cmd`): `amx_chaos status`, `amx_chaos force [code]`, `amx_chaos stop`,
+`amx_chaos level <1-2>`, `amx_chaos interval <sec>`.
+
+Safety: `sv_maxspeed` is clamped to 100..1500 and `sv_gravity` to 50..2000 before they are written;
+`plugin_end` stops every effect, because a map change unloads the plugin while the engine cvars stay
+set; at most `MAX_ACTIVE` (2) effects run at once and the previous effect is never picked again
+immediately.
+
+**One file, not two.** The plan had `chaos_core` + `chaos_effects`; a second plugin would need
+cross-plugin natives, and a single registry with one run loop is easier to prove. Split it only if
+the effect list outgrows this file.
+
+The donation bridge is `chaos_burst` (140 RUB, instant): `donation_events` runs `amx_chaos force`,
+which stops whatever is running and starts one effect immediately - a buyer paid for something
+visible now, not in 45 seconds.
+
+Verified live: `amx_chaos force speed` logged `'speed' started for 20s`, then `'speed' stopped`
+exactly 20 s later and the timer continued on its own (`'knives' started`, `20 bots rearmed with
+weapon_knife`, `'gravity' started`).
+
+The scheduler is a **one-shot task that re-arms itself**, not `set_task(..., "b")`: with the repeat
+flag the observed cadence did not follow `chaos_interval` (45 s gave starts 15 s apart), and a
+self-scheduling task makes the period explicit. `ChaosTick` re-arms before doing anything else, so a
+misbehaving effect can never stop the loop, and it restarts itself when someone changes
+`chaos_interval` over RCON. Verified with `amx_chaos interval 10`: effects then started every ten
+seconds, one at a time (level 1), each for its own duration.
+
+## The respawn "meat grinder": csdm_lite
+
+`plugins/csdm_lite/csdm_lite.sma` is the mode: on `DeathMsg` it waits `csdm_lite_delay` (0.5 s),
+respawns the bot with `ExecuteHamB(Ham_CS_RoundRespawn)`, strips its weapons and gives one random
+primary from `csdm_lite_weapons` (`ak47,m4a1,awp,xm1014,p90,mp5navy`), plus one second of
+`set_user_godmode`. Only bots are respawned: the spectator camera is a client too, and moving it on
+every bot death would take the picture off its target.
+
+Verified on the live server: `csdm_lite_debug 1` over RCON then two minutes of log gave
+`respawns=12`, `kills=31`; with the plugin off the same window had 2 kills in four minutes. The
+respawn count is lower than the kill count on purpose - if the round ends first, the engine respawns
+the bot and the task returns early without logging.
+
+Cvars: `csdm_lite_enabled` (1), `csdm_lite_delay` (0.5), `csdm_lite_weapons`, `csdm_lite_health`
+(100), `csdm_lite_protect` (1), `csdm_lite_random_spawn` (1), `csdm_lite_debug` (0). The weapon list
+is re-read only at plugin load, so changing it means `amx_reload` or a container restart.
+
+### Random spawns across the map: implemented, off by default
+
+`csdm_lite_random_spawn` (0). When on, `plugin_cfg` reads
+`<amxmodx>/configs/csdm/<map>.spawns.cfg` (the presets ship with CSDM and the image copies them into
+the volume, 40 points for de_dust2, `x y z` plus yaw at position 5) and creates an
+`info_player_start` + `info_player_deathmatch` entity for every point, so the engine itself picks a
+random spawn. Creating the entities with `info_player_counterterrorist` / `info_player_terrorist` does
+not work on this map: `CreateNamedEntity` answers 0 and the log says `created 0 extra spawn points`.
+
+**It is off because the bots freeze.** Two attempts, both measured on the live server:
+
+| Attempt | What happened | Kills |
+|---|---|---|
+| `set_user_origin` on respawn + round start | YaPB keeps the navigation node from the old place, cannot build a path, the bot stands still: 18 of 20 bots never fired a shot | 3 in 90 s |
+| extra spawn entities (the engine spawns them) | same freeze: the CSDM points are not on YaPB's waypoint graph | 8 in 45 s |
+| control: normal team spawns, FFA on | bots run and fight | 149 in 60 s |
+
+So the next step is on the graph side, not on the spawn side: either rebuild/extend the YaPB graph
+over the CSDM points (`yb_graph_analyze_*`) or pre-pick only points that sit on graph nodes.
+
+Two compiler traps found on the way, both `std::bad_alloc` with no diagnostics: a **char literal such
+as `'\r'`** (compare with `line[i] <= ' '`) and **`engfunc(EngFunc_SetAngle, ...)`** (use
+`set_pev(entity, pev_angles, ...)`). At runtime, `engfunc(EngFunc_CreateEntity, classname)` ends in
+`Run time error 10`; the working call is
+`engfunc(EngFunc_CreateNamedEntity, engfunc(EngFunc_AllocString, classname))`.
+
+### Free for all: friendly fire + YaPB FFA mode, teams kept
+
+The stream is a deathmatch: every bot shoots every bot. Two pieces are needed, and one thing must
+not be done:
+
+| Piece | Where | Why |
+|---|---|---|
+| `mp_friendlyfire 1` + `mp_tkpunish 0` | `infra/server.cfg` | damage between teammates is the point, and the default `mp_tkpunish 1` slays the killer for a team kill |
+| `yb_csdm_mode 2` | `infra/server.cfg` | 2 = CSDM and FFA: bots ignore teams when picking a target. Without it a bot never fires at a teammate |
+| **not** `yb_join_team "ct"` | `infra/server.cfg` | pinning everybody to one team empties the other side; the engine then keeps most bots dead and idle. Measured: 0-1 kills per 40 s with one team against 90 per 40 s with two |
+
+Shipped and verified on the live server: bots join both teams, and the kill feed shows
+`<CT> killed <CT>` and `<TERRORIST> killed <TERRORIST>` next to the normal cross-team kills - 149
+kills in one minute. The teams stay because the engine needs them, but nobody on the server is safe.
+
+Consequence worth knowing: on a team kill CS subtracts a frag, so the scoreboard runs negative and
+`FindLeaderBot()` (used by `bounty` and `curse_leader`) means "the least punished", not "the best".
+`curse_leader` stopped printing the frag count for this reason.
+
+### Why full CSDM is not used
+
+CSDM is built from source (`infra/checksums.env` pins the commit `3df2741b` tarball,
+`infra/build-csdm.sh` compiles five modules with `amxxpc`) but **not loaded**: CSDM 2.x is a Pawn layer
+*plus* a C++ AMXX module (`csdm_amxx`), and its plugins refuse to start without it -
+
+```
+[AMXX] Plugin "csdm_main.amxx" failed to load: Module/Library "csdm" required for plugin.
+```
+
+Building that module needs HLSDK headers and a 32-bit toolchain. The five `.amxx` files therefore sit
+unused in the image and are commented out in `infra/plugins.ini`; delete `infra/build-csdm.sh` and the
+`CSDM_*` lines if the extra build step ever gets in the way.
+
+### Reading the logs correctly (two traps)
+
+1. `[META] ERROR: dll: Not loading plugin 'CStrike'; already loaded (status=running)` followed by
+   `Failed to load plugin 'cstrike_amxx_i386.so'` is **benign**: AMXX asks Metamod to load a module
+   that Metamod already loaded, and Metamod answers with an error code. `cstrike` and `hamsandwich`
+   do run.
+2. `Auto-restarting the server on crash` is `hlds_run`'s startup banner, printed on every start, not
+   evidence of a crash. Real crashes show `restarts` in `docker inspect` or a missing killfeed.
+
+### amxxpc aborts with SIGABRT and no diagnostics
+
+`ExecuteHamB` lives in **hamsandwich**, not fakemeta. Without `#include <hamsandwich>` amxxpc aborts
+(`Aborted (core dumped)`, exit 134) instead of reporting an undefined symbol. The `hamsandwich` module
+must also be enabled in `configs/modules.ini` (done with a `sed` in `infra/Dockerfile`).
+
+The same abort with `terminate called after throwing an instance of 'std::bad_alloc'` comes from a
+string literal glued to a string `#define`: `log_amx("loaded " PLUGIN_VERSION ": ok")` kills the
+compiler. Use a format string and pass the macro as an argument instead. `plugins/team_war` hit this
+on its first build; the fix is one line and the compiler says nothing useful, so it is listed here.
+
+To iterate on a plugin without rebuilding the image, take `amxxpc` + `amxxpc32.so` out of
+`infra/.cache/amxmodx-*-base-linux.tar.gz`, run them inside the `cs16-hlds:local` container (it has
+the 32-bit libs and the headers) and compile one `.sma`. A full image build takes half a minute, this
+takes three seconds.
+
+## Phase 0: what the bot plugin actually exposes
+
+Verified against YaPB 4.4.957 on the live server (`meta list`, `yb` help output):
+
+- `yb_debug_goal <node>`, `yb_freeze_bots`, `yb_csdm_mode`, `yb_ignore_objectives`, `yb_ignore_enemies`,
+  `yb_object_pickup_radius`, `yb_quota`, `yb_difficulty` exist as server commands/cvars.
+- The AMXX module with per-bot natives (`yb_set_bot_goal_origin` and friends) is **not** in the pinned
+  release: `ext/amxx` is absent from 4.4.957 and the `extras` archives contain bots only. The natives
+  would need a 4.8 build from source.
+- Therefore no `config/nodes.json`: nothing needs graph node ids. `csdm_lite` spawns bots from the
+  map's CSDM preset, and `team_war` only reads kills.
+
+Still unverified: whether `yb_debug_goal <node>` makes the whole flock converge (would be used to
+pull the crowd into the ring), and whether `yb fun <mode>` restores gravity on map change.
+
+## The donation overlay
+
+`src/overlay.ts` writes three lines that the encoder draws over the picture with ffmpeg `drawtext`:
+
+```
+DONATE IN CHAT -> CHANGE THE GAME
+LAST: Vasya 130 RUB - BOT RAIN
+NEXT: 50 BOT NICKNAME | 60 MEAT ROUND
+```
+
+- the control API rewrites `overlay.txt` + `overlay.json` on every poll tick (`OVERLAY_DIR`, inside
+  compose the `overlay-data` volume at `/app/overlay`);
+- the capture container reads `/overlay/overlay.txt` (`STREAM_OVERLAY_TXT`) with `reload=1`, so a
+  donation shows up within one poll without restarting ffmpeg;
+- always three lines: a changing line count would make the block jump, and `textfile` keeps viewer
+  nicknames out of the filter graph entirely. `%` and `\` are stripped because drawtext expands them
+  even in file content;
+- the layer switches itself off when the text file is missing or the image has no font (both are
+  logged at start); `fonts-dejavu-core` is baked into `infra/stream/Dockerfile`;
+- the control API runs as root and writes `overlay.txt` as 0644, so the capture container (uid
+  10002) can read it but not create it: if the control API never ran, there is no overlay. That is
+  deliberate - one writer, no lost updates;
+- knobs: `STREAM_OVERLAY_FONTSIZE` (26), `STREAM_OVERLAY_MARGIN` (150 px from the bottom in the
+  vertical layout, 24 in 16:9), `STREAM_OVERLAY_FONT`.
+
+Checking the picture without going live:
+
+```powershell
+$env:STREAM_OUTPUT='/game/.stream/overlay-test.mkv'; $env:STREAM_RECORD_SEC='25'
+./infra/compose.ps1 run --rm -e STREAM_OUTPUT -e STREAM_RECORD_SEC stream
+docker run --rm -v cs16-youtube_client-data:/data -v "${PWD}/out:/out" --entrypoint ffmpeg `
+  cs16-stream:local -y -ss 20 -i /data/.stream/overlay-test.mkv -frames:v 1 /out/frame.png
+```
+
+## The cheap personal activities
+
+Three cheap activities exist for the "first payment" tier: they change one bot at once, like every
+other activity - there is no round queue to skip any more.
+
+| Code | Price | Command | What happens |
+|---|---|---|---|
+| `bless_bot` | 55 | `amx_de bless_bot health=250 weapon=weapon_deagle nick=vasya` | a random bot gets 250 HP, the weapon, a blue glow and the buyer's name in chat for 20 s |
+| `bot_phrase` | 65 | `amx_de bot_phrase text=privet_kak_dela` | a random bot says the buyer's message; underscores arrive as spaces |
+| `curse_leader` | 80 | `amx_de curse_leader health=25 nick=kolya` | the bot with the most frags drops to 25 HP, knife only, red glow |
+
+The glow is removed by a 20 s timer (`ClearGlow`); health and weapons reset on the next spawn, so
+there is nothing else to clean up and none of them can leak into the next round.
+
+`bot_phrase` is the only activity that carries viewer text. RCON cannot hold spaces, so
+`src/command.ts` (`sanitizePhrase`) transliterates it and joins the words with `_`, which stays a
+single `[A-Za-z0-9_.-]` token; the plugin turns `_` back into spaces before printing. A message with
+nothing printable left is dropped entirely and the plugin prints nothing instead of the buyer's
+junk. An activity opts into this by declaring `maxPhraseLength` in its params.
+
+## The round fights: bounty, hot potato, boss raid
+
+Three activities follow the kill feed for the rest of the round. They apply at once and are dropped
+with the round, together with the cvars they touched.
+
+| Code | Price | Command | What happens |
+|---|---|---|---|
+| `bounty` | 105 | `amx_de bounty health=150 reward=weapon_deagle nick=vasya` | the bot with the most frags gets 150 HP and a gold glow; the bot that kills it gets the reward weapon and chat names the killer |
+| `hot_potato` | 125 | `amx_de hot_potato health=25 nick=kolya` | a random bot becomes the potato: knife only, 25 HP, orange glow; the bot that kills the holder inherits it |
+| `boss_raid` | 185 | `amx_de boss_raid bosses=2 bossHealth=1500 bossWeapon=weapon_m249 gruntWeapon=weapon_deagle nick=petya` | N bots become bosses (1500 HP, M249, 100 armour, red glow), everyone else gets a deagle and 50 armour; each boss kill is announced |
+
+One `DeathMsg` handler serves all three, and `ClearFightState()` drops their state on round end,
+`amx_de clear` and plugin end. Only the glow has to be removed by hand: health, weapons and armour
+are reset by the next spawn.
+
+Traps worth remembering:
+
+- a boss is re-armed on every spawn (`ResetHUD` -> a 0.3 s task -> `BossArm`), because `csdm_lite`
+  gives every respawned bot a random primary. Without it the raid is over after the first boss
+  death and reads as an ordinary round. The delay is what puts the re-arm after `csdm_lite`'s own
+  arming;
+- the potato cannot be passed to a dead player: a suicide or a fall ends it with a message instead
+  of leaving the glow on a corpse;
+- the bounty goes on the leader on purpose. With a 0.5 s respawn a random target dies within
+  seconds, before a viewer has read the price;
+- `g_bosses[]` is emptied with the round, so a reused player id cannot inherit somebody else's
+  boss state.
+
+## A paid activity that hits a cooldown is queued, not dropped
+
+`src/queue.ts` + `drainQueue()` in `src/poller.ts`:
+
+- a donation blocked by a cooldown is stored as `queued` and the activity waits for its window;
+- `drainQueue()` runs at the start of every poll tick, before fresh donations;
+- the cooldown is re-checked at apply time, so a waiting `map_change` cannot restart the map twice;
+- the wait is bounded (`maxWaitMs`, 15 min) and the queue is capped (32 entries, oldest evicted);
+- statuses: `queued` -> `applied`, `expired` (`queue_expired` / `queue_evicted`) or `failed`
+  (`activity_disabled`, RCON error); the old `cooldown` value still appears in rows written before
+  the queue existed, and is what the admin panel (no queue injected) keeps producing on purpose.
+
+Log events: `donation.queued`, `donation.dequeued`, `donation.queue_expired`, `donation.queue_failed`,
+`queue.evicted`, `queue.drained`.
+
 ## Local smoke run (no server, no money)
 
 ```powershell
@@ -34,7 +378,7 @@ A second pass with the same DB must report `cursor` equal to the last id and pro
 ## Changing a price
 
 1. edit `price` in `config/activities.json` (keep prices unique and >= `minAmount`);
-2. `npm test` — the catalogue test asserts 10 activities, unique prices and sorted order;
+2. `npm test` — the catalogue test asserts 14 activities, unique prices and sorted order;
 3. restart the control API. The Pawn plugin does not care about prices.
 
 ## Adding an activity
@@ -65,7 +409,7 @@ node -e "import('./src/rcon.ts').then(async m => console.log(await m.execOnce({h
 ```
 
 Acceptance for stage 3: `amx_de codes` lists the 10 codes, `amx_de knives_only` makes the bots
-drop their weapons at the next round start, `amx_de map_change maps=de_dust2` changes the map.
+drop their weapons immediately, `amx_de map_change maps=de_dust2` changes the map.
 
 Known unknowns to settle on the first real build (each one fails loudly, none fails silently):
 archive layout inside the ReHLDS/ReGameDLL/Metamod-R/YaPB zips, exact YaPB cvar names
@@ -109,8 +453,8 @@ archive layout inside the ReHLDS/ReGameDLL/Metamod-R/YaPB zips, exact YaPB cvar 
   the legacy `libsteam_api.so` there — without it the first boot fails and `hlds_run`
   silently restarts once.
 - Verified on the rebuilt image: `plugin.contract_ok` (10 activities), a 100 RUB mock
-  donation queued `awp_only`, and the plugin reported `awp_only: 8 bots rearmed with AWP`
-  at the next round start.
+  donation ran `awp_only`, and the plugin reported `awp_only: 8 bots rearmed with AWP`
+  in the same call (that build still had the round queue, since removed).
 - `verify-image.ps1` scans with `--ignore-unfixed`: 59 HIGH/CRITICAL findings in the Debian
   base layer have no fix for bookworm (util-linux, zlib), so they cannot be patched here.
   A finding *with* a fix still fails the gate, because that would mean a skipped update.
@@ -332,7 +676,8 @@ is judged by the server, not by the picture, because brightness is not a reliabl
 
 - amount < 50 RUB or currency != RUB -> rejected, logged, nothing happens;
 - amount buys the most expensive activity it can afford; leftover is not banked;
-- one activity per round, donations during an active activity wait in FIFO queue;
+- one activity per round used to be the rule; now every activity applies at once, and only a
+  cooldown-blocked donation waits (in the control API queue, not in the plugin);
 - per-donor cooldown 60 s, map change at most once per 10 minutes.
 
 ## Security rules
@@ -385,7 +730,7 @@ file target still needs `STREAM_RECORD_SEC` to stop by itself.
 ```
 
 The page holds everything: the picture (HLS through hls.js, with sound) on top, then the activity
-cards with a **Run** button, the live `active`/`queued` state from the plugin, the debug donation
+cards with a **Run** button, the live `active` state from the plugin, the debug donation
 form, the history of what the panel sent, the donations, and the encoder layout. No second URL.
 
 Two things that made the player hang forever, both fixed and worth knowing:
@@ -405,8 +750,8 @@ Two things that made the player hang forever, both fixed and worth knowing:
   the followed bot's view.
 
 - **Run** sends `amx_de <code>` with the parameters shown in the row (edit them under `params`), so a
-  run needs no donation and ignores cooldowns. The plugin queues it and the round that starts next
-  plays it; the card shows `queued` until then.
+  run needs no donation and ignores cooldowns. The plugin applies it in the same RCON call and the
+  card shows the code as `active`.
 - **Debug donation** injects a fake donation through the same pipeline as a real one and prints the
   verdict with the exact command.
 - **Stop everything** sends `amx_de clear`.
@@ -439,7 +784,7 @@ Endpoints (all require `X-Admin-Token`, mutations require `application/json`, bo
 | POST | `/api/activity/<code>` | `{price?, cooldownSec?, globalCooldownSec?, enabled?, params?}` |
 | POST | `/api/activity/<code>/reset` | drop the override for one activity |
 | POST | `/api/settings` | `{minAmount?, defaultCooldownSec?}` |
-| POST | `/api/clear` | `amx_de clear` — round effect, renamed bot, queue |
+| POST | `/api/clear` | `amx_de clear` — round effect and the renamed bot |
 | POST | `/api/sim-reset` | delete rows with `source = 'sim'` |
 
 Milestone check without the browser:
@@ -452,7 +797,7 @@ curl -s -H "x-admin-token: $env:ADMIN_TOKEN" -H "content-type: application/json"
 ```
 
 Expected: `"status":"applied","activityCode":"meat_round"`, and in the server console
-`donation_events queued meat_round`, then `started meat_round` at the next round start.
+`donation_events ran meat_round` right away.
 
 ### 3. What the panel can and cannot change
 

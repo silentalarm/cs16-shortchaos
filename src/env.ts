@@ -7,6 +7,8 @@ import { existsSync } from "node:fs";
 export interface Env {
   activitiesPath: string;
   dbPath: string;
+  /** Where the overlay text for the encoder is written; the capture container mounts it read-only. */
+  overlayDir: string;
   mock: boolean;
   mockFile: string;
   pollSec: number;
@@ -75,6 +77,7 @@ export function loadEnv(envFile = ".env"): Env {
   return {
     activitiesPath: text("ACTIVITIES_PATH", "config/activities.json"),
     dbPath: text("DB_PATH", "data/control.db"),
+    overlayDir: text("OVERLAY_DIR", "data/overlay"),
     mock: flag("DA_MOCK", false),
     mockFile: text("DA_MOCK_FILE", "data/mock-donations.json"),
     pollSec: integer("DA_POLL_SEC", 10, 3),

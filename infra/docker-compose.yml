@@ -42,6 +42,9 @@ services:
       RCON_HOST: hlds
       RCON_PORT: "27015"
       DB_PATH: /app/data/control.db
+      # The overlay text the capture container draws; a shared volume, because two containers of
+      # different images have no other way to exchange a file.
+      OVERLAY_DIR: /app/overlay
       ADMIN_BIND: 0.0.0.0
       ADMIN_PORT: ${ADMIN_PORT:-8080}
       # Runtime tweaks live in the data volume, not in the git-tracked catalogue.
@@ -60,6 +63,7 @@ services:
     volumes:
       - ..:/app
       - control-data:/app/data
+      - overlay-data:/app/overlay
       - client-data:/game:ro
 
   # Local debugging hub: receives exactly the RTMP push the stream container sends to YouTube,
@@ -115,6 +119,9 @@ services:
       # Inside the container the encoder writes next to the game dir, which is the volume the
       # control API mounts read-only. Overrides the host path from the env file.
       STREAM_STATUS_DIR: /game/.stream
+      # Donation text written by the control API through the shared volume. Empty disables the
+      # overlay layer, which is also what happens when the image has no font.
+      STREAM_OVERLAY_TXT: /overlay/overlay.txt
       # Empty by default: the encoder then pushes to YouTube with YOUTUBE_STREAM_KEY.
       # For local viewing: rtmp://mediamtx:1935/live/test (see docs/runbook.md).
       STREAM_OUTPUT: ${STREAM_OUTPUT:-}
@@ -134,10 +141,12 @@ services:
     volumes:
       - server-data:/server:ro
       - client-data:/game
+      - overlay-data:/overlay
 
 volumes:
   hlds-logs:
   control-data:
   server-data:
   client-data:
+  overlay-data:
 

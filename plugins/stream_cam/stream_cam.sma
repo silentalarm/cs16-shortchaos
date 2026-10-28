@@ -341,12 +341,34 @@ stock FeedHud()
 	new name[NAME_LEN];
 	get_user_name(g_target, name, charsmax(name));
 
-	// One line near the top of the frame: the nickname plus the two numbers the client's own spectator
-	// HUD reports as 0. The anchor is a fraction of the *render* height, and the encoder cuts the
-	// client's two 20% spectator bands off before scaling, so anything at or above 0.20 is clipped:
-	// 0.20 lost the tops of the glyphs, 0.12 disappeared into the band, 0.24 leaves the line whole.
+	// One block near the top of the frame: the team race is two lines above the nickname/HP line.
+	// The anchor is a fraction of the *render* height, and the encoder cuts the client's two 20%
+	// spectator bands off before scaling, so anything at or above 0.20 is clipped: 0.20 lost the tops
+	// of the glyphs, 0.12 disappeared into the band. 0.24 is the anchor the single line used and it
+	// stayed whole; the block only grows downwards from it.
+	//
+	// One message, not one per plugin: this client renders a single hudmessage, so the score block
+	// plugins/team_war used to send on its own channel was overwritten by this line every second.
+	// team_war now publishes the numbers as cvars and this is the only place that draws them.
+	new scoreT[8];
+	new scoreCt[8];
+	new topT[NAME_LEN];
+	new topCt[NAME_LEN];
+	new text[192];
+
+	get_cvar_string("team_war_t", scoreT, charsmax(scoreT));
+	get_cvar_string("team_war_ct", scoreCt, charsmax(scoreCt));
+	get_cvar_string("team_war_top_t", topT, charsmax(topT));
+	get_cvar_string("team_war_top_ct", topCt, charsmax(topCt));
+
+	if (get_cvar_pointer("team_war_t") && scoreT[0] && topT[0])
+		format(text, charsmax(text), "T %s : %s CT^nTOP T %s  |  TOP CT %s^n%s   %d HP   %d AR",
+			scoreT, scoreCt, topT, topCt, name, hp, armor);
+	else
+		format(text, charsmax(text), "%s   %d HP   %d AR", name, hp, armor);
+
 	set_hudmessage(255, 255, 255, -1.0, 0.24, 0, 0.0, 1.6, 0.1, 0.2, 3);
-	show_hudmessage(g_camId, "%s   %d HP   %d AR", name, hp, armor);
+	show_hudmessage(g_camId, "%s", text);
 }
 
 /**

@@ -122,6 +122,49 @@ if [ "$GAME_H" -ne "$OUT_H" ] || [ "$GAME_W" -ne "$OUT_W" ]; then
 fi
 VF="${VF},format=yuv420p"
 
+# --- overlay -----------------------------------------------------------------------------------
+# Donation text under the picture. drawtext re-reads a text file every frame (`reload=1`), so a new
+# donation appears without restarting the encoder, and nothing from a viewer nickname has to be
+# escaped into the filter graph. The control API writes the file through a shared volume; the
+# placeholder below only covers the seconds before its first poll.
+OVERLAY_TXT="${STREAM_OVERLAY_TXT:-}"
+OVERLAY_FONT="${STREAM_OVERLAY_FONT:-}"
+if [ -z "$OVERLAY_FONT" ]; then
+  for candidate in /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf \
+                   /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf; do
+    if [ -f "$candidate" ]; then OVERLAY_FONT="$candidate"; break; fi
+  done
+fi
+
+if [ -n "$OVERLAY_TXT" ] && [ -n "$OVERLAY_FONT" ]; then
+  mkdir -p "$(dirname "$OVERLAY_TXT")" 2>/dev/null || true
+  if [ ! -f "$OVERLAY_TXT" ]; then
+    printf 'DONATE IN CHAT -> CHANGE THE GAME\n' > "$OVERLAY_TXT" 2>/dev/null || true
+  fi
+
+  if [ -f "$OVERLAY_TXT" ]; then
+    OVERLAY_FONTSIZE="${STREAM_OVERLAY_FONTSIZE:-26}"
+    # Vertical layout: the Shorts UI covers the bottom strip (title and buttons), so the text sits
+    # higher than it would in 16:9.
+    OVERLAY_MARGIN="${STREAM_OVERLAY_MARGIN:-150}"
+    if [ "$ORIENTATION" != vertical ]; then OVERLAY_MARGIN="${STREAM_OVERLAY_MARGIN:-24}"; fi
+
+    # A path inside a filter graph is escaped ('\', ':'), the file content is never parsed.
+    overlay_path() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/:/\\:/g'; }
+
+    VF="${VF},drawtext=fontfile=$(overlay_path "$OVERLAY_FONT"):textfile=$(overlay_path "$OVERLAY_TXT")"\
+":reload=1:fontsize=${OVERLAY_FONTSIZE}:fontcolor=white:borderw=2:bordercolor=black@0.9"\
+":line_spacing=8:box=1:boxcolor=black@0.35:boxborderw=10:x=(w-text_w)/2:y=h-text_h-${OVERLAY_MARGIN}"
+    log "overlay: $OVERLAY_TXT, ${OVERLAY_FONTSIZE}px, ${OVERLAY_MARGIN}px from the bottom"
+  else
+    log "overlay: off, $OVERLAY_TXT is not writable"
+  fi
+elif [ -n "$OVERLAY_TXT" ]; then
+  log "overlay: off, no font found (install fonts-dejavu-core)"
+else
+  log "overlay: off (STREAM_OVERLAY_TXT is empty)"
+fi
+
 # --- output -----------------------------------------------------------------------------------
 # The container format follows the scheme of the target, never a separate setting: an RTMP server
 # rejects anything that is not FLV, while a file must not get the FLV wrapper.

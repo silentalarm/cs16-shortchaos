@@ -51,6 +51,7 @@ fetch "Metamod-R" "$METAMOD_URL" "$METAMOD_SHA256" "$WORK/metamod.zip"
 fetch "AMX Mod X base" "$AMXX_BASE_URL" "$AMXX_BASE_SHA256" "$WORK/amxx-base.tar.gz"
 fetch "AMX Mod X cstrike" "$AMXX_CSTRIKE_URL" "$AMXX_CSTRIKE_SHA256" "$WORK/amxx-cstrike.tar.gz"
 fetch "YaPB" "$YAPB_URL" "$YAPB_SHA256" "$WORK/yapb.tar.xz"
+fetch "CSDM" "$CSDM_URL" "$CSDM_SHA256" "$WORK/csdm.tar.gz"
 
 mkdir -p "$WORK/rehlds" "$WORK/regamedll" "$WORK/metamod"
 unzip -q -o "$WORK/rehlds.zip" -d "$WORK/rehlds"
@@ -123,6 +124,17 @@ test -f "$HLDS/cstrike/addons/amxmodx/dlls/amxmodx_mm_i386.so" || { echo "FATAL:
 # YaPB's linux archive already mirrors cstrike/addons/yapb, so it unpacks over cstrike.
 tar -xJf "$WORK/yapb.tar.xz" -C "$HLDS/cstrike"
 test -f "$HLDS/cstrike/addons/yapb/bin/yapb.so" || { echo "FATAL: YaPB binary missing" >&2; exit 1; }
+
+# CSDM: only the source tree is unpacked here. The plugins are compiled later, in the stage that
+# has amxxpc (infra/build-csdm.sh), and the sources are deleted from the final image.
+mkdir -p "$WORK/csdm" /opt/csdm-src
+tar -xzf "$WORK/csdm.tar.gz" -C "$WORK/csdm" --strip-components=1
+cp -a "$WORK/csdm/amxmodx/scripting/." /opt/csdm-src/
+test -f /opt/csdm-src/csdm_main.sma || { echo "FATAL: CSDM sources not found" >&2; exit 1; }
+# Spawn points ship with CSDM and are validated against the map by csdm_spawn_preset.
+mkdir -p "$HLDS/cstrike/addons/amxmodx/configs/csdm"
+cp -f "$WORK/csdm/amxmodx/configs/csdm/"*.spawns.cfg "$HLDS/cstrike/addons/amxmodx/configs/csdm/"
+cp -f "$WORK/csdm/amxmodx/configs/csdm.cfg" "$HLDS/cstrike/addons/amxmodx/configs/csdm.cfg"
 
 # Metamod loads the bot plugin, then AMX Mod X, then our plugin (see infra/plugins.ini).
 cat > "$HLDS/cstrike/addons/metamod/plugins.ini" <<'EOF'

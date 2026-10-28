@@ -24,19 +24,40 @@ test("the minimum donation buys the cheapest activity", () => {
 
 test("amount buys the most expensive activity it can afford", () => {
   const cases: Case[] = [
-    [59, "bot_nick"],
+    [55, "bless_bot"],
+    [59, "bless_bot"],
     [60, "meat_round"],
-    [74, "meat_round"],
+    [64, "meat_round"],
+    [65, "bot_phrase"],
+    [74, "bot_phrase"],
     [75, "knives_only"],
+    [79, "knives_only"],
+    [80, "curse_leader"],
+    [89, "curse_leader"],
     [90, "moon_gravity"],
     [100, "awp_only"],
-    [119, "awp_only"],
+    [104, "awp_only"],
+    [105, "bounty"],
+    [109, "bounty"],
+    [110, "bounty"],
+    [119, "bounty"],
     [120, "bot_rain"],
+    [124, "bot_rain"],
+    [125, "hot_potato"],
+    [129, "hot_potato"],
+    [130, "hot_potato"],
+    [139, "hot_potato"],
+    [140, "chaos_burst"],
+    [149, "chaos_burst"],
     [150, "terminators"],
+    [170, "terminators"],
     [175, "zombie_round"],
-    [199, "zombie_round"],
+    [184, "zombie_round"],
+    [185, "boss_raid"],
+    [199, "boss_raid"],
     [200, "terminator_one"],
-    [249, "terminator_one"],
+    [229, "terminator_one"],
+    [230, "terminator_one"],
     [250, "map_change"],
     [1000, "map_change"],
   ];
@@ -71,7 +92,7 @@ test("broken amounts are rejected", () => {
 });
 
 test("comma decimal separator is accepted", () => {
-  assert.equal(code({ amount: "199,50" }), "zombie_round");
+  assert.equal(code({ amount: "199,50" }), "boss_raid");
 });
 
 test("disabled activities are skipped", () => {

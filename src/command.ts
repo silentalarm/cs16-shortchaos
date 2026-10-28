@@ -15,6 +15,7 @@ const TOKEN_RE = /^[A-Za-z0-9_.-]{1,32}$/;
 const MAX_COMMAND_LENGTH = 200;
 const DEFAULT_NICK = "DONATOR";
 const DEFAULT_NICK_LENGTH = 16;
+const DEFAULT_PHRASE_LENGTH = 40;
 
 const TRANSLIT: Record<string, string> = {
   а: "a", б: "b", в: "v", г: "g", д: "d", е: "e", ё: "e", ж: "zh", з: "z", и: "i",
@@ -34,7 +35,7 @@ export class CommandError extends Error {
  * GoldSrc shows only a narrow ASCII range in player names and we send it over RCON,
  * so cyrillic is transliterated and everything else outside `[A-Za-z0-9_.-]` is dropped.
  */
-export function sanitizeNick(raw: string, maxLength = DEFAULT_NICK_LENGTH): string {
+function cleanToken(raw: string, maxLength: number, fallback: string): string {
   const limit = Math.max(1, Math.min(31, Math.trunc(maxLength)));
   const transliterated = [...raw.toLowerCase()]
     .map((char) => TRANSLIT[char] ?? char)
@@ -47,7 +48,20 @@ export function sanitizeNick(raw: string, maxLength = DEFAULT_NICK_LENGTH): stri
     .slice(0, limit)
     .replace(/[_.-]+$/, "");
 
-  return cleaned === "" ? DEFAULT_NICK : cleaned;
+  return cleaned === "" ? fallback : cleaned;
+}
+
+export function sanitizeNick(raw: string, maxLength = DEFAULT_NICK_LENGTH): string {
+  return cleanToken(raw, maxLength, DEFAULT_NICK);
+}
+
+/**
+ * A viewer's message as a single RCON token: underscores stand for spaces and the plugin turns
+ * them back into spaces before printing. Returns an empty string when nothing survives, which the
+ * callers treat as "send no phrase at all".
+ */
+export function sanitizePhrase(raw: string, maxLength = DEFAULT_PHRASE_LENGTH): string {
+  return cleanToken(raw, maxLength, "");
 }
 
 function formatNumber(value: number): string {
@@ -75,6 +89,8 @@ function formatValue(key: string, value: ParamValue): string {
 export interface CommandOptions {
   /** Raw donor nickname, only used by activities that accept a nickname. */
   nick?: string;
+  /** Raw donor message, only used by activities that accept a phrase. */
+  message?: string;
 }
 
 /**
@@ -88,6 +104,8 @@ export function buildActivityCommand(activity: Activity, options: CommandOptions
   for (const [key, value] of entries) {
     assertToken(key, "params key");
     if (key === "maxNameLength" && options.nick !== undefined) continue;
+    // not a game parameter: it only tells this module that a viewer phrase is welcome
+    if (key === "maxPhraseLength") continue;
     parts.push(`${key}=${formatValue(key, value)}`);
   }
 
@@ -95,6 +113,16 @@ export function buildActivityCommand(activity: Activity, options: CommandOptions
     const rawLimit = activity.params["maxNameLength"];
     const limit = typeof rawLimit === "number" ? rawLimit : DEFAULT_NICK_LENGTH;
     parts.push(`nick=${sanitizeNick(options.nick, limit)}`);
+  }
+
+  // A message with nothing printable left is dropped instead of sent as an empty token: the plugin
+  // then keeps its own default phrase.
+  if (options.message !== undefined) {
+    const rawLimit = activity.params["maxPhraseLength"];
+    if (typeof rawLimit === "number") {
+      const phrase = sanitizePhrase(options.message, rawLimit);
+      if (phrase !== "") parts.push(`text=${phrase}`);
+    }
   }
 
   const command = parts.join(" ");

@@ -25,10 +25,14 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
 
   assert.equal(config.currency, "RUB");
   assert.equal(config.minAmount, 50);
-  assert.equal(config.activities.length, 10, "exactly 10 activities, the agreed maximum");
+  // 21 codes, one price step each: the ladder is the only "menu" the viewer sees, so every step
+  // has to show a different picture. bless_bot/curse_leader/bot_phrase are cheap instant ones,
+  // chaos_burst only triggers plugins/chaos_core, bounty/hot_potato/boss_raid follow the round.
+  assert.equal(config.activities.length, 17, "17 activities after the zone activities were dropped");
 
   const codes = config.activities.map((activity) => activity.code);
   assert.equal(new Set(codes).size, codes.length, "codes are unique");
+  assert.equal(codes.includes("zone_start"), false, "the zone activities are gone for good");
 
   const prices = config.activities.map((activity) => activity.price);
   assert.equal(new Set(prices).size, prices.length, "prices are unique so mapping needs no viewer input");
@@ -44,10 +48,42 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
   const byDuration = new Map(config.activities.map((activity) => [activity.code, activity.duration]));
   assert.equal(byDuration.get("bot_nick"), "until_map_change");
   assert.equal(byDuration.get("map_change"), "instant");
+  assert.equal(byDuration.get("chaos_burst"), "instant");
 
   const mapChange = config.activities.find((activity) => activity.code === "map_change");
   assert.ok(mapChange);
   assert.ok(mapChange.globalCooldownSec >= 600, "map change is rate limited to once per 10 minutes");
+});
+
+test("the round fights carry the parameters the plugin reads", () => {
+  const config = loadActivities(shippedConfig);
+  const byCode = new Map(config.activities.map((activity) => [activity.code, activity]));
+
+  const bounty = byCode.get("bounty");
+  assert.ok(bounty);
+  assert.equal(bounty.price, 105);
+  assert.equal(bounty.duration, "rounds");
+  assert.equal(bounty.params.health, 150);
+  assert.equal(bounty.params.reward, "weapon_deagle");
+
+  const potato = byCode.get("hot_potato");
+  assert.ok(potato);
+  assert.equal(potato.price, 125);
+  assert.equal(potato.params.health, 25);
+
+  const raid = byCode.get("boss_raid");
+  assert.ok(raid);
+  assert.equal(raid.price, 185);
+  assert.equal(raid.params.bosses, 2);
+  assert.equal(raid.params.bossHealth, 1500);
+  assert.equal(raid.params.bossWeapon, "weapon_m249");
+  assert.equal(raid.params.gruntWeapon, "weapon_deagle");
+
+  for (const activity of [bounty, potato, raid]) {
+    // Without maxNameLength the poller sends no `nick=` and the buyer never appears in the chat
+    // line the plugin prints, which is the only trace of who paid.
+    assert.equal(typeof activity.params.maxNameLength, "number", `${activity.code} must accept a nickname`);
+  }
 });
 
 test("price below the minimum donation is rejected", () => {

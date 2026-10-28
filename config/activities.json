@@ -18,6 +18,19 @@
       "params": { "maxNameLength": 16 }
     },
     {
+      "code": "bless_bot",
+      "title": "Bless a bot",
+      "announce": "A BOT IS BLESSED!",
+      "price": 55,
+      "priority": 0,
+      "duration": "instant",
+      "rounds": null,
+      "cooldownSec": 20,
+      "globalCooldownSec": 0,
+      "enabled": true,
+      "params": { "health": 250, "weapon": "weapon_deagle", "maxNameLength": 16 }
+    },
+    {
       "code": "meat_round",
       "title": "Meat round",
       "announce": "MEAT ROUND! 1 HP, KNIVES ONLY",
@@ -31,6 +44,19 @@
       "params": { "health": 1 }
     },
     {
+      "code": "bot_phrase",
+      "title": "Bot says it",
+      "announce": "A BOT SPEAKS!",
+      "price": 65,
+      "priority": 0,
+      "duration": "instant",
+      "rounds": null,
+      "cooldownSec": 20,
+      "globalCooldownSec": 0,
+      "enabled": true,
+      "params": { "maxPhraseLength": 40 }
+    },
+    {
       "code": "knives_only",
       "title": "Knives only",
       "announce": "KNIVES ONLY!",
@@ -42,6 +68,19 @@
       "globalCooldownSec": 0,
       "enabled": true,
       "params": {}
+    },
+    {
+      "code": "curse_leader",
+      "title": "Curse the leader",
+      "announce": "THE LEADER IS CURSED!",
+      "price": 80,
+      "priority": 0,
+      "duration": "instant",
+      "rounds": null,
+      "cooldownSec": 20,
+      "globalCooldownSec": 0,
+      "enabled": true,
+      "params": { "health": 25, "maxNameLength": 16 }
     },
     {
       "code": "moon_gravity",
@@ -70,6 +109,19 @@
       "params": {}
     },
     {
+      "code": "bounty",
+      "title": "Bounty on the leader",
+      "announce": "BOUNTY ON THE LEADER!",
+      "price": 105,
+      "priority": 0,
+      "duration": "rounds",
+      "rounds": 1,
+      "cooldownSec": 60,
+      "globalCooldownSec": 0,
+      "enabled": true,
+      "params": { "health": 150, "reward": "weapon_deagle", "maxNameLength": 16 }
+    },
+    {
       "code": "bot_rain",
       "title": "Bot rain",
       "announce": "BOT RAIN!",
@@ -81,6 +133,32 @@
       "globalCooldownSec": 0,
       "enabled": true,
       "params": { "extraBots": 2, "maxBots": 22 }
+    },
+    {
+      "code": "hot_potato",
+      "title": "Hot potato",
+      "announce": "HOT POTATO!",
+      "price": 125,
+      "priority": 0,
+      "duration": "rounds",
+      "rounds": 1,
+      "cooldownSec": 60,
+      "globalCooldownSec": 0,
+      "enabled": true,
+      "params": { "health": 25, "maxNameLength": 16 }
+    },
+    {
+      "code": "chaos_burst",
+      "title": "Chaos now",
+      "announce": "CHAOS INCOMING!",
+      "price": 140,
+      "priority": 0,
+      "duration": "instant",
+      "rounds": null,
+      "cooldownSec": 30,
+      "globalCooldownSec": 0,
+      "enabled": true,
+      "params": {}
     },
     {
       "code": "terminators",
@@ -107,6 +185,25 @@
       "globalCooldownSec": 0,
       "enabled": true,
       "params": { "zombies": 3, "zombieHealth": 1000, "zombieSpeed": 1.2 }
+    },
+    {
+      "code": "boss_raid",
+      "title": "Boss raid",
+      "announce": "BOSS RAID!",
+      "price": 185,
+      "priority": 0,
+      "duration": "rounds",
+      "rounds": 1,
+      "cooldownSec": 60,
+      "globalCooldownSec": 0,
+      "enabled": true,
+      "params": {
+        "bosses": 2,
+        "bossHealth": 1500,
+        "bossWeapon": "weapon_m249",
+        "gruntWeapon": "weapon_deagle",
+        "maxNameLength": 16
+      }
     },
     {
       "code": "terminator_one",

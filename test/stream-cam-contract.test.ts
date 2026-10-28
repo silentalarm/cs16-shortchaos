@@ -62,7 +62,9 @@ test("the HUD still gets real health and armour from the server", () => {
     assert.match(plugin, new RegExp(`get_user_msgid\\("${message}"\\)`), `${message} is never looked up`);
   }
 
-  assert.match(plugin, /show_hudmessage\(g_camId, "%s   %d HP   %d AR"/, "the readable HUD line is gone");
+  assert.match(plugin, /show_hudmessage\(g_camId, "%s", text\)/, "the readable HUD line is gone");
+  // The team race rides in the same message: a second hudmessage is overwritten by this one.
+  assert.match(plugin, /TOP T %s {2}\| {2}TOP CT %s/, "the team score is not part of the HUD block");
   assert.match(plugin, /get_pcvar_num\(cvar_hud\)/, "stcam_hud no longer gates the line");
 });
 

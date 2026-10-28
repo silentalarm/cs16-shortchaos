@@ -1,8 +1,10 @@
 import type { ActivitiesConfig } from "./activities.ts";
 import { buildActivityCommand } from "./command.ts";
+import type { CommandOptions } from "./command.ts";
 import { checkCooldown, msFromIso } from "./cooldowns.ts";
 import type { DonationRow, DonationSource, DonationStatus, Store } from "./db.ts";
 import { resolveDonation } from "./mapping.ts";
+import type { PendingQueue } from "./queue.ts";
 
 /**
  * One polling pass: fetch, dedup, map to an activity, respect cooldowns, apply through RCON,
@@ -20,6 +22,11 @@ export interface DonationDeps {
   catalog: ActivitiesConfig;
   /** Sends the command to the game server (RCON or a dry run logger). */
   apply: (command: string) => Promise<string>;
+  /**
+   * Holds paid activities that hit a cooldown. Without a queue (the admin panel, most tests) a
+   * cooldown keeps the old verdict: the donation is recorded as `cooldown` and nothing runs.
+   */
+  queue?: PendingQueue;
   now?: () => number;
   log?: (event: string, details?: Record<string, unknown>) => void;
 }
@@ -29,6 +36,8 @@ export interface PollSummary {
   applied: number;
   rejected: number;
   cooled: number;
+  /** Paid activities parked until their cooldown window opens (see `src/queue.ts`). */
+  queued: number;
   failed: number;
   duplicates: number;
 }
@@ -81,6 +90,22 @@ export async function processDonation(
   }
 
   const activity = resolution.activity;
+  const commandOptions: CommandOptions = {};
+  if (Object.hasOwn(activity.params, "maxNameLength")) commandOptions.nick = donation.username;
+  if (Object.hasOwn(activity.params, "maxPhraseLength")) commandOptions.message = donation.message ?? "";
+  let command: string;
+  try {
+    command = buildActivityCommand(activity, commandOptions);
+  } catch (error) {
+    // A catalogue entry with a broken param must not escape as an unhandled exception: the money
+    // is already paid, so it gets a row that says why nothing happened.
+    const reason = `invalid_params:${(error as Error).message}`.slice(0, 200);
+    deps.store.record({ ...donation, status: "rejected", activityCode: activity.code, reason, receivedAt, source });
+    if (advanceCursor) deps.store.setLastSeenId(donation.id);
+    log("donation.rejected", { id: donation.id, activity: activity.code, reason, source });
+    return { status: "rejected", activityCode: activity.code, reason, command: null, reply: null };
+  }
+
   if (!options.bypassCooldown) {
     const verdict = checkCooldown({
       activity,
@@ -91,15 +116,45 @@ export async function processDonation(
 
     if (!verdict.allowed) {
       const reason = `${verdict.reason}:${verdict.retryAfterSec}s`;
+
+      // The viewer paid: with a queue the activity waits for its window instead of being thrown
+      // away, which is the whole point — a rejected donation is a viewer who will not come back.
+      if (deps.queue !== undefined) {
+        const evicted = deps.queue.add({
+          donationId: donation.id,
+          username: donation.username,
+          amount: donation.amount,
+          source,
+          activityCode: activity.code,
+          command,
+          reason: verdict.reason,
+          enqueuedAt: timestamp,
+          dueAt: timestamp + verdict.retryAfterSec * 1000,
+        });
+
+        if (evicted !== null) {
+          deps.store.updateStatus(evicted.donationId, "expired", "queue_evicted");
+          log("queue.evicted", { id: evicted.donationId, activity: evicted.activityCode, source: evicted.source });
+        }
+
+        deps.store.record({ ...donation, status: "queued", activityCode: activity.code, reason, receivedAt, source });
+        if (advanceCursor) deps.store.setLastSeenId(donation.id);
+        log("donation.queued", {
+          id: donation.id,
+          activity: activity.code,
+          reason: verdict.reason,
+          dueInSec: verdict.retryAfterSec,
+          source,
+        });
+        return { status: "queued", activityCode: activity.code, reason, command, reply: null };
+      }
+
       deps.store.record({ ...donation, status: "cooldown", activityCode: activity.code, reason, receivedAt, source });
       if (advanceCursor) deps.store.setLastSeenId(donation.id);
       log("donation.cooldown", { id: donation.id, activity: activity.code, reason: verdict.reason, source });
       return { status: "cooldown", activityCode: activity.code, reason, command: null, reply: null };
     }
   }
-
-  const acceptsNickname = Object.hasOwn(activity.params, "maxNameLength");
-  const command = buildActivityCommand(activity, acceptsNickname ? { nick: donation.username } : {});
 
   try {
     const reply = await deps.apply(command);
@@ -117,7 +172,7 @@ export async function processDonation(
 }
 
 export async function pollOnce(deps: PollDeps): Promise<PollSummary> {
-  const summary: PollSummary = { seen: 0, applied: 0, rejected: 0, cooled: 0, failed: 0, duplicates: 0 };
+  const summary: PollSummary = { seen: 0, applied: 0, rejected: 0, cooled: 0, queued: 0, failed: 0, duplicates: 0 };
 
   const cursor = deps.store.getLastSeenId();
   const incoming = (await deps.fetchDonations(cursor))
@@ -131,8 +186,92 @@ export async function pollOnce(deps: PollDeps): Promise<PollSummary> {
       case "applied": summary.applied += 1; break;
       case "rejected": summary.rejected += 1; break;
       case "cooldown": summary.cooled += 1; break;
+      case "queued": summary.queued += 1; break;
       case "failed": summary.failed += 1; break;
       case "duplicate": summary.duplicates += 1; break;
+    }
+  }
+
+  return summary;
+}
+
+export interface DrainSummary {
+  applied: number;
+  requeued: number;
+  failed: number;
+  expired: number;
+}
+
+/**
+ * Applies the paid activities whose cooldown window has opened.
+ *
+ * Runs before the poll, so a waiting donation is not stuck behind fresh ones, and it re-checks the
+ * cooldown at apply time: while the entry waited, other donations may have put the same activity
+ * back on cooldown, and two `map_change` commands minutes apart would restart the map twice.
+ */
+export async function drainQueue(deps: DonationDeps, now?: number): Promise<DrainSummary> {
+  const summary: DrainSummary = { applied: 0, requeued: 0, failed: 0, expired: 0 };
+  const queue = deps.queue;
+  if (queue === undefined) return summary;
+
+  const log = deps.log ?? (() => {});
+  const timestamp = now ?? (deps.now ?? (() => Date.now()))();
+  const { ready, expired } = queue.due(timestamp);
+
+  for (const entry of expired) {
+    deps.store.updateStatus(entry.donationId, "expired", "queue_expired");
+    log("donation.queue_expired", {
+      id: entry.donationId,
+      activity: entry.activityCode,
+      waitedSec: Math.round((timestamp - entry.enqueuedAt) / 1000),
+    });
+    summary.expired += 1;
+  }
+
+  for (const candidate of ready) {
+    const activity = deps.catalog.activities.find((item) => item.code === candidate.activityCode);
+
+    if (activity === undefined) {
+      if (queue.take(candidate.donationId) === null) continue;
+      deps.store.updateStatus(candidate.donationId, "failed", "activity_disabled");
+      log("donation.queue_failed", { id: candidate.donationId, activity: candidate.activityCode, reason: "activity_disabled" });
+      summary.failed += 1;
+      continue;
+    }
+
+    const verdict = checkCooldown({
+      activity,
+      now: timestamp,
+      lastAppliedByDonor: msFromIso(deps.store.lastAppliedByDonor(candidate.username)),
+      lastAppliedByActivity: msFromIso(deps.store.lastAppliedByActivity(activity.code)),
+    });
+
+    if (!verdict.allowed) {
+      queue.postpone(candidate.donationId, timestamp + verdict.retryAfterSec * 1000, verdict.reason);
+      summary.requeued += 1;
+      continue;
+    }
+
+    const entry = queue.take(candidate.donationId);
+    if (entry === null) continue;
+
+    try {
+      const reply = await deps.apply(entry.command);
+      deps.store.updateStatus(entry.donationId, "applied", null);
+      log("donation.dequeued", {
+        id: entry.donationId,
+        activity: entry.activityCode,
+        amount: entry.amount,
+        waitedSec: Math.round((timestamp - entry.enqueuedAt) / 1000),
+        command: entry.command,
+        reply,
+      });
+      summary.applied += 1;
+    } catch (error) {
+      const reason = (error as Error).message.slice(0, 200);
+      deps.store.updateStatus(entry.donationId, "failed", reason);
+      log("donation.queue_failed", { id: entry.donationId, activity: entry.activityCode, error: reason });
+      summary.failed += 1;
     }
   }
 

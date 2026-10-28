@@ -7,7 +7,9 @@ import type { DonationRow } from "./db.ts";
 import { openStore } from "./db.ts";
 import { fetchDonations } from "./donationalerts.ts";
 import { loadEnv } from "./env.ts";
-import { pollOnce } from "./poller.ts";
+import { buildOverlay, writeOverlay } from "./overlay.ts";
+import { drainQueue, pollOnce } from "./poller.ts";
+import { PendingQueue } from "./queue.ts";
 import { RconClient } from "./rcon.ts";
 import { TokenStore } from "./token-store.ts";
 
@@ -18,6 +20,11 @@ const baseCatalog = loadActivities(env.activitiesPath);
 const overrideStore = new OverrideStore(env.admin.overridePath);
 let catalog = applyOverrides(baseCatalog, overrideStore.read());
 const store = openStore(env.dbPath);
+/**
+ * Paid activities that hit a cooldown wait here instead of being rejected. In memory on purpose:
+ * a restart loses the waiting list, and the rows stay `queued` in SQLite, which the panel shows.
+ */
+const queue = new PendingQueue();
 
 function log(event: string, details: Record<string, unknown> = {}): void {
   console.log(JSON.stringify({ at: new Date().toISOString(), event, ...details }));
@@ -93,6 +100,22 @@ async function apply(command: string): Promise<string> {
   }
 }
 
+/**
+ * Rewrites the text the encoder draws under the picture: last donation and what it bought, the
+ * cheapest things a viewer can buy, how many paid activities are waiting. Best effort on purpose -
+ * a read-only directory must never stop the donation loop.
+ */
+function refreshOverlay(): void {
+  try {
+    writeOverlay(
+      env.overlayDir,
+      buildOverlay({ recent: store.recent(5), catalog, pending: queue.snapshot(), now: Date.now() }),
+    );
+  } catch (error) {
+    log("overlay.error", { error: (error as Error).message });
+  }
+}
+
 async function checkPluginContract(): Promise<void> {
   if (env.rcon.dryRun) return;
   try {
@@ -161,11 +184,19 @@ async function main(): Promise<void> {
     if (running) return;
     running = true;
     try {
-      const summary = await pollOnce({ store, catalog, fetchDonations: source, apply, log });
+      // The queue goes first: a viewer who paid a minute ago must not wait behind a fresh poll.
+      const drained = await drainQueue({ store, catalog, apply, log, queue });
+      if (drained.applied + drained.requeued + drained.failed + drained.expired > 0) {
+        log("queue.drained", { ...drained, pending: queue.size });
+      }
+
+      const summary = await pollOnce({ store, catalog, fetchDonations: source, apply, log, queue });
       if (summary.seen > 0) log("poll.done", { ...summary });
     } catch (error) {
       log("poll.error", { error: (error as Error).message });
     } finally {
+      // In `finally`: a failed poll must not freeze the overlay on an old donation.
+      refreshOverlay();
       running = false;
     }
   };

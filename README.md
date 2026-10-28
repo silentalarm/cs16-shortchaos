@@ -7,7 +7,7 @@ map change, and so on. Everything is driven by donations, nobody plays by hand.
 Status: stage 3 works end to end on a live server — the control API polls donations (mock or
 DonationAlerts), maps them to activities, enforces cooldowns, sends RCON commands and stores
 the verdict. Verified on ReHLDS + Metamod-R + AMX Mod X: a 50 RUB donation reached the plugin
-in game (`queued 'bot_nick' for the next round`).
+in game (`donation_events ran bot_nick`).
 
 ## Layout
 
@@ -25,6 +25,7 @@ src/main.ts              daemon: env, wiring, graceful shutdown, POLL_ONCE mode
 scripts/fake-donation.ts appends a fake donation for the mock source
 scripts/oauth-login.ts   one-off OAuth helper, writes data/da-token.json
 plugins/donation_events/ Pawn plugin: effect registry, one public handler per activity
+plugins/team_war/        Pawn plugin: T vs CT frag race on the stream HUD
 infra/Dockerfile         game image: HLDS + ReHLDS + ReGameDLL + Metamod-R + AMXX + YaPB
 infra/build-hlds.sh      assembles the server, verifies every SHA256, compiles the plugin
 infra/update-checksums.ps1 resolves official release assets and writes infra/checksums.env
@@ -38,8 +39,17 @@ Planned: ffmpeg streaming to YouTube.
 
 - minimum donation is 50 RUB, non-RUB donations are rejected, never converted;
 - an amount buys the most expensive activity it can afford, leftovers are not banked;
-- round-based activities last at most one round; `bot_nick` lives until map change;
-- `map_change` runs at the next round start and is rate limited to once per 10 minutes;
+- round-based activities apply at once and last at most until the round ends; `bot_nick` lives until
+  map change;
+- the server is free for all: friendly fire on, YaPB targets teammates too (`yb_csdm_mode 2`); random
+  spawns from the CSDM presets exist (`csdm_lite_random_spawn`) but stay off - bots freeze on points
+  that are not on the YaPB waypoint graph, numbers in `docs/runbook.md`;
+- the stream is a race between T and CT (`plugins/team_war`): every frag counts for the killer's
+  team, a team kill included, and the HUD keeps `T n : m CT` with both team tops until the map
+  changes;
+- `bounty`, `hot_potato` and `boss_raid` follow `DeathMsg` and end with the round; a boss is
+  re-armed on every spawn so `csdm_lite` cannot undo the raid;
+- `map_change` changes the map at once and is rate limited to once per 10 minutes;
 - `announce` must be printable ASCII: GoldSrc chat cannot render cyrillic;
 - codes are stable: the Pawn plugin registers effect handlers by code.
 
@@ -197,11 +207,11 @@ are published, and the profile is never part of a normal `up`.
 
 `src/admin` serves a single page on `127.0.0.1:${ADMIN_PORT}` (8080 by default, 8085 in the sample
 env because 8080 is often taken). Everything lives there: the live picture through HLS/hls.js (with
-sound), the activity list with a **Run** button, the `active`/`queued` state reported by the plugin,
+sound), the activity list with a **Run** button, the `active` state reported by the plugin,
 the debug donation form, the log of commands the panel sent, and the donations table.
 
 - **Run** sends `amx_de <code>` with the parameters shown in the row (editable under `params`): no
-  donation needed, cooldowns ignored. The plugin takes it at the next round start.
+  donation needed, cooldowns ignored. The plugin applies it in the same RCON call.
 - **Debug donation** runs the exact donation pipeline: minimum amount, amount→activity mapping,
   cooldowns, nickname sanitising, RCON, and it prints the verdict with the command that was sent.
   Simulated rows have negative ids (they can never collide with a DonationAlerts id or move the poll

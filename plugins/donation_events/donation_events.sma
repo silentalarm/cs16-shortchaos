@@ -4,12 +4,16 @@
  * Contract with the control API (src/command.ts):
  *   amx_de codes                     -> prints "donation_events codes: a,b,c"
  *   amx_de version                   -> prints API and plugin version
- *   amx_de status                    -> prints "donation_events status: api=1 active=<code|none> queued=<n> nick=<nick|none>"
- *   amx_de clear                     -> cancels the running activity, the nickname and the queue
- *   amx_de <code> key=value ...      -> queues the activity for the next round
+ *   amx_de status                    -> prints "donation_events status: api=1 active=<code|none> queued=0 nick=<nick|none>"
+ *   amx_de clear                     -> cancels the round effects and restores the nickname
+ *   amx_de <code> key=value ...      -> applies the activity now, in the same RCON call
  *
- * Rules: one activity per round, round effects are cleaned up on round end,
- * bot_nick persists until the map changes, map_change runs at the next round start.
+ * Rules: every activity applies at once - a donation that shows up on screen two minutes later
+ * reads as a refund request. Round effects (meat_round, knives_only, bounty and the rest) are
+ * cleaned up on round end; bot_nick persists until the map changes; map_change changes the map at
+ * once.
+ * Round fights (bounty, hot_potato, boss_raid) watch DeathMsg for the rest of the round: the
+ * effect changes hands when a bot dies, which is the part the viewer is paying for.
  * Adding an activity = write a handler and add one RegisterDonationEffect line.
  */
 #include <amxmodx>
@@ -17,12 +21,14 @@
 #include <fun>
 
 #define PLUGIN_NAME "Donation Events"
-#define PLUGIN_VERSION "0.3.0"
+#define PLUGIN_VERSION "0.6.0"
 #define API_VERSION 1
+
+// How long a blessed or cursed bot keeps its glow. Health and weapons reset on the next spawn.
+#define GLOW_SECONDS 20.0
 
 #define MAX_EFFECTS 32
 #define MAX_PARAMS 16
-#define MAX_QUEUE 8
 #define CODE_LEN 32
 #define KEY_LEN 24
 #define VALUE_LEN 64
@@ -32,12 +38,8 @@ new g_codes[MAX_EFFECTS][CODE_LEN];
 new g_handlers[MAX_EFFECTS][CODE_LEN];
 new g_effectCount;
 
-new g_queueCodes[MAX_QUEUE][CODE_LEN];
-new g_queueParamCount[MAX_QUEUE];
-new g_queueKeys[MAX_QUEUE][MAX_PARAMS][KEY_LEN];
-new g_queueValues[MAX_QUEUE][MAX_PARAMS][VALUE_LEN];
-new g_queueSize;
-
+/* The last activity that ran, reported by `amx_de status`. There is no per-round bookkeeping any
+   more: every code runs immediately, Round_End only restores what the running effects touched. */
 new g_activeCode[CODE_LEN];
 new g_paramCount;
 new g_paramKeys[MAX_PARAMS][KEY_LEN];
@@ -52,6 +54,25 @@ new g_savedBotQuota;
 new bool:g_gravitySaved;
 new bool:g_quotaSaved;
 
+/* Round fights. All three are one-round effects that follow the kill feed, so their state lives
+   next to the round state and is dropped in CleanupActive() together with the cvars we touched. */
+#define MAX_BOSSES 4
+#define MAX_TRACKED_BOTS 32
+
+new g_bountyTarget;
+new bool:g_bountyActive;
+new g_bountyReward[VALUE_LEN];
+
+new g_potatoHolder;
+new bool:g_potatoActive;
+new g_potatoHealth;
+
+new g_bosses[MAX_BOSSES];
+new g_bossCount;
+new g_bossHealth;
+new g_bossWeapon[VALUE_LEN];
+new bool:g_bossRaidActive;
+
 public plugin_init()
 {
 	register_plugin(PLUGIN_NAME, PLUGIN_VERSION, "cs16-youtube");
@@ -60,16 +81,28 @@ public plugin_init()
 	register_logevent("OnRoundStart", 2, "1=Round_Start");
 	register_logevent("OnRoundEnd", 2, "1=Round_End");
 
+	// DeathMsg: 1 = killer, 2 = victim. Bounty, hot potato and the boss raid change hands on a kill.
+	register_event("DeathMsg", "OnDeathMsg", "a");
+	// ResetHUD is delivered to the player who just spawned: a boss has to come back as a boss.
+	register_event("ResetHUD", "OnPlayerSpawn", "be");
+
 	RegisterDonationEffect("bot_nick", "EffectBotNick");
 	RegisterDonationEffect("meat_round", "EffectMeatRound");
 	RegisterDonationEffect("knives_only", "EffectKnivesOnly");
 	RegisterDonationEffect("moon_gravity", "EffectMoonGravity");
 	RegisterDonationEffect("awp_only", "EffectAwpOnly");
+	RegisterDonationEffect("bounty", "EffectBounty");
 	RegisterDonationEffect("bot_rain", "EffectBotRain");
+	RegisterDonationEffect("hot_potato", "EffectHotPotato");
 	RegisterDonationEffect("terminators", "EffectTerminators");
 	RegisterDonationEffect("zombie_round", "EffectZombieRound");
+	RegisterDonationEffect("boss_raid", "EffectBossRaid");
 	RegisterDonationEffect("terminator_one", "EffectTerminatorOne");
 	RegisterDonationEffect("map_change", "EffectMapChange");
+	RegisterDonationEffect("bless_bot", "EffectBlessBot");
+	RegisterDonationEffect("curse_leader", "EffectCurseLeader");
+	RegisterDonationEffect("bot_phrase", "EffectBotPhrase");
+	RegisterDonationEffect("chaos_burst", "EffectChaosBurst");
 
 	log_amx("loaded, API %d, %d activities", API_VERSION, g_effectCount);
 }
@@ -140,7 +173,9 @@ public CmdDonationEvent(id, level, cid)
 				copy(nick, NICK_LEN - 1, "none");
 		}
 
-		server_print("donation_events status: api=%d active=%s queued=%d nick=%s", API_VERSION, active, g_queueSize, nick);
+		// `queued` is always 0 now that every activity runs at once; the key stays because the admin
+		// panel parses this exact line.
+		server_print("donation_events status: api=%d active=%s queued=0 nick=%s", API_VERSION, active, nick);
 		return PLUGIN_HANDLED;
 	}
 
@@ -159,47 +194,19 @@ public CmdDonationEvent(id, level, cid)
 		return PLUGIN_HANDLED;
 	}
 
-	if (!QueueCommand(code))
-	{
-		log_amx("queue is full, '%s' dropped", code);
-		server_print("donation_events rejected queue_full");
-		return PLUGIN_HANDLED;
-	}
+	// Every activity runs in this call: the viewer pays for what happens now, not for the next
+	// round. The code was validated above, so FindEffect always answers an index here.
+	new handler[CODE_LEN];
+	copy(handler, CODE_LEN - 1, g_handlers[FindEffect(code)]);
 
-	log_amx("queued '%s' for the next round (queue %d)", code, g_queueSize);
-	server_print("donation_events queued %s", code);
+	g_paramCount = 0;
+	LoadParamsFromArgs();
+	copy(g_activeCode, CODE_LEN - 1, code);
+	RunHandler(handler);
+	log_amx("ran '%s' with %d params", code, g_paramCount);
+	server_print("donation_events ran %s", code);
+	g_paramCount = 0;
 	return PLUGIN_HANDLED;
-}
-
-/* Command line is "amx_de <code> key=value key=value ..."; values are already sanitized
-   by the control API, here we only split and bound them. */
-stock QueueCommand(const code[])
-{
-	if (g_queueSize >= MAX_QUEUE)
-		return 0;
-
-	new slot = g_queueSize;
-	copy(g_queueCodes[slot], CODE_LEN - 1, code);
-	g_queueParamCount[slot] = 0;
-
-	new argc = read_argc();
-	for (new i = 2; i < argc && g_queueParamCount[slot] < MAX_PARAMS; i++)
-	{
-		new arg[VALUE_LEN + KEY_LEN + 2];
-		read_argv(i, arg, charsmax(arg));
-
-		new separator = contain(arg, "=");
-		if (separator <= 0)
-			continue;
-
-		arg[separator] = '^0';
-		copy(g_queueKeys[slot][g_queueParamCount[slot]], KEY_LEN - 1, arg);
-		copy(g_queueValues[slot][g_queueParamCount[slot]], VALUE_LEN - 1, arg[separator + 1]);
-		g_queueParamCount[slot]++;
-	}
-
-	g_queueSize++;
-	return 1;
 }
 
 /* ---------- parameters of the running activity ---------- */
@@ -238,90 +245,54 @@ stock ParamCopy(const key[], out[], len, const fallback[])
 	return 0;
 }
 
-/* ---------- round lifecycle: one activity per round ---------- */
+/* ---------- round lifecycle ---------- */
 
 public OnRoundStart()
 {
 	ValidateNickState();
-
-	if (g_queueSize > 0)
-		set_task(0.3, "StartNextActivity");
-}
-
-public StartNextActivity()
-{
-	if (g_queueSize <= 0)
-		return;
-
-	if (g_activeCode[0])
-	{
-		log_amx("'%s' is still running, keeping '%s' for the next round", g_activeCode, g_queueCodes[0]);
-		return;
-	}
-
-	new handler[CODE_LEN];
-	new index;
-
-	copy(g_activeCode, CODE_LEN - 1, g_queueCodes[0]);
-	index = FindEffect(g_activeCode);
-	LoadParamsFromSlot(0);
-	ShiftQueue();
-
-	if (index < 0)
-	{
-		log_amx("activity '%s' has no handler", g_activeCode);
-		g_activeCode[0] = '^0';
-		return;
-	}
-
-	copy(handler, CODE_LEN - 1, g_handlers[index]);
-	RunHandler(handler);
-	server_print("donation_events started %s", g_activeCode);
 }
 
 public OnRoundEnd()
 {
-	if (!g_activeCode[0])
-		return;
+	// Round effects never survive the round. `bot_nick` is persistent state with its own lifetime,
+	// so the round only drops its label; the renamed bot keeps its name until a map change.
+	new bool:nickRunning = false;
+	if (g_activeCode[0] && equal(g_activeCode, "bot_nick"))
+		nickRunning = true;
 
-	// The nickname is the only effect that outlives the round: it lives until a map change.
-	if (equal(g_activeCode, "bot_nick"))
-	{
-		g_activeCode[0] = '^0';
-		return;
-	}
-
+	// Unconditional: with every activity applying at once, a round can hold several effects, and
+	// the cleanup must not depend on which one happened to be applied last.
 	CleanupActive();
-	log_amx("activity '%s' finished", g_activeCode);
-	server_print("donation_events finished %s", g_activeCode);
+
+	if (g_activeCode[0] && !nickRunning)
+	{
+		log_amx("activity '%s' finished", g_activeCode);
+		server_print("donation_events finished %s", g_activeCode);
+	}
 	g_activeCode[0] = '^0';
 }
 
-stock LoadParamsFromSlot(slot)
+/* Command line is "amx_de <code> key=value key=value ..."; values are already sanitized by the
+   control API, here we only split and bound them. */
+stock LoadParamsFromArgs()
 {
-	g_paramCount = g_queueParamCount[slot];
-	for (new i = 0; i < g_paramCount; i++)
-	{
-		copy(g_paramKeys[i], KEY_LEN - 1, g_queueKeys[slot][i]);
-		copy(g_paramValues[i], VALUE_LEN - 1, g_queueValues[slot][i]);
-	}
-}
+	new argc = read_argc();
+	g_paramCount = 0;
 
-stock ShiftQueue()
-{
-	for (new slot = 1; slot < g_queueSize; slot++)
+	for (new i = 2; i < argc && g_paramCount < MAX_PARAMS; i++)
 	{
-		copy(g_queueCodes[slot - 1], CODE_LEN - 1, g_queueCodes[slot]);
-		g_queueParamCount[slot - 1] = g_queueParamCount[slot];
-		for (new i = 0; i < MAX_PARAMS; i++)
-		{
-			copy(g_queueKeys[slot - 1][i], KEY_LEN - 1, g_queueKeys[slot][i]);
-			copy(g_queueValues[slot - 1][i], VALUE_LEN - 1, g_queueValues[slot][i]);
-		}
+		new arg[VALUE_LEN + KEY_LEN + 2];
+		read_argv(i, arg, charsmax(arg));
+
+		new separator = contain(arg, "=");
+		if (separator <= 0)
+			continue;
+
+		arg[separator] = '^0';
+		copy(g_paramKeys[g_paramCount], KEY_LEN - 1, arg);
+		copy(g_paramValues[g_paramCount], VALUE_LEN - 1, arg[separator + 1]);
+		g_paramCount++;
 	}
-	g_queueSize--;
-	if (g_queueSize < 0)
-		g_queueSize = 0;
 }
 
 stock RunHandler(const handler[])
@@ -350,10 +321,34 @@ stock CleanupActive()
 		SetCvarFirst("yb_quota", "pb_quota", g_savedBotQuota);
 		g_quotaSaved = false;
 	}
+
+	ClearFightState();
 }
 
-/* Cancels everything at once: the round effect, the persistent nickname and the pending queue.
-   Used by `amx_de clear` (the panel's "stop everything") and by nothing else. */
+/* A finished round leaves nothing behind except the glow: health, weapons and armour are reset by
+   the next spawn. The state is dropped even when a bot is gone, so a reused player id can never
+   inherit somebody else's bounty. */
+stock ClearFightState()
+{
+	if (g_bountyTarget > 0)
+		ClearGlow(g_bountyTarget);
+
+	if (g_potatoHolder > 0)
+		ClearGlow(g_potatoHolder);
+
+	for (new i = 0; i < g_bossCount; i++)
+		ClearGlow(g_bosses[i]);
+
+	g_bountyTarget = 0;
+	g_bountyActive = false;
+	g_potatoHolder = 0;
+	g_potatoActive = false;
+	g_bossCount = 0;
+	g_bossRaidActive = false;
+}
+
+/* Cancels everything at once: the round effect and the persistent nickname. Used by `amx_de clear`
+   (the panel's "stop everything") and by nothing else. */
 stock ClearAll()
 {
 	CleanupActive();
@@ -363,7 +358,6 @@ stock ClearAll()
 
 	g_activeCode[0] = '^0';
 	g_paramCount = 0;
-	g_queueSize = 0;
 }
 
 public plugin_end()
@@ -629,7 +623,477 @@ public EffectMapChange()
 	server_cmd("changelevel %s", map);
 }
 
+/* ---------- round fights: bounty, hot potato, boss raid ---------- */
+
+/* One kill can end any of the three, so they are checked in one handler: DeathMsg is a global event
+   and three separate registrations would mean three reads of the same data. */
+public OnDeathMsg()
+{
+	new killer = read_data(1);
+	new victim = read_data(2);
+
+	if (g_bountyActive && victim == g_bountyTarget)
+		ClaimBounty(killer, victim);
+
+	if (g_potatoActive && victim == g_potatoHolder)
+		PassHotPotato(killer, victim);
+
+	if (g_bossRaidActive && IsBoss(victim))
+		ReportBossDown(killer, victim);
+}
+
+/* The price goes on the leader, not on a random bot: with a 0.5 s respawn somebody kills a random
+   bot within seconds, and the bounty would be claimed before the viewer finishes reading it. */
+public EffectBounty()
+{
+	new nick[VALUE_LEN];
+	ParamCopy("nick", nick, charsmax(nick), "");
+
+	new health = ParamInt("health", 150);
+	if (health < 50)
+		health = 50;
+	if (health > 2000)
+		health = 2000;
+
+	new reward[VALUE_LEN];
+	ParamCopy("reward", reward, charsmax(reward), "weapon_deagle");
+	if (!IsSafeWeapon(reward))
+		copy(reward, charsmax(reward), "weapon_deagle");
+
+	new target = FindLeaderBot();
+	if (!target)
+	{
+		log_amx("bounty: no bots are connected");
+		return;
+	}
+
+	g_bountyTarget = target;
+	g_bountyActive = true;
+	copy(g_bountyReward, charsmax(g_bountyReward), reward);
+
+	set_user_health(target, health);
+	set_user_rendering(target, kRenderFxGlowShell, 255, 200, 0, kRenderNormal, 25);
+
+	new botName[NICK_LEN];
+	get_user_name(target, botName, NICK_LEN - 1);
+	if (nick[0] == '^0')
+		Announce("BOUNTY ON %s (%d HP)", botName, health);
+	else
+		Announce("%s PUT A BOUNTY ON %s (%d HP)", nick, botName, health);
+	log_amx("bounty: '%s' on bot %d '%s', %d hp, reward %s", nick, target, botName, health, reward);
+}
+
+stock ClaimBounty(killer, victim)
+{
+	new victimName[NICK_LEN];
+	get_user_name(victim, victimName, NICK_LEN - 1);
+	// The glow would otherwise survive the respawn and mark a bot that no longer has a price.
+	ClearGlow(victim);
+
+	g_bountyActive = false;
+	g_bountyTarget = 0;
+
+	if (killer <= 0 || killer == victim || !is_user_connected(killer) || !is_user_bot(killer))
+	{
+		Announce("BOUNTY ON %s WENT UNSOLD", victimName);
+		log_amx("bounty: '%s' died without a killer, nobody is paid", victimName);
+		return;
+	}
+
+	// The reward is a weapon and health: money means nothing on a server where nobody buys.
+	give_item(killer, g_bountyReward);
+	set_user_health(killer, 100);
+
+	new killerName[NICK_LEN];
+	get_user_name(killer, killerName, NICK_LEN - 1);
+	Announce("%s CLAIMED THE BOUNTY ON %s", killerName, victimName);
+	log_amx("bounty: bot %d '%s' killed bot %d '%s' and got %s", killer, killerName, victim, victimName, g_bountyReward);
+}
+
+/* ---------- hot potato: the holder is the target, the killer inherits it ---------- */
+
+public EffectHotPotato()
+{
+	new nick[VALUE_LEN];
+	ParamCopy("nick", nick, charsmax(nick), "");
+
+	new health = ParamInt("health", 25);
+	if (health < 1)
+		health = 1;
+	if (health > 100)
+		health = 100;
+
+	new bot = PickRandomBot();
+	if (!bot)
+	{
+		log_amx("hot_potato: no bots are connected");
+		return;
+	}
+
+	g_potatoHolder = bot;
+	g_potatoHealth = health;
+	g_potatoActive = true;
+	PotatoArm(bot);
+
+	new botName[NICK_LEN];
+	get_user_name(bot, botName, NICK_LEN - 1);
+	if (nick[0] == '^0')
+		Announce("HOT POTATO: %s - KILL HIM TO PASS IT", botName);
+	else
+		Announce("%s MADE %s THE HOT POTATO", nick, botName);
+	log_amx("hot_potato: '%s' -> bot %d '%s', %d hp", nick, bot, botName, health);
+}
+
+stock PotatoArm(id)
+{
+	StripWeapons(id);
+	give_item(id, "weapon_knife");
+	set_user_health(id, g_potatoHealth);
+	set_user_rendering(id, kRenderFxGlowShell, 255, 120, 0, kRenderNormal, 25);
+}
+
+stock PassHotPotato(killer, victim)
+{
+	new victimName[NICK_LEN];
+	get_user_name(victim, victimName, NICK_LEN - 1);
+	// Cleared here, not at round end: the old holder respawns in 0.5 s and the orange shell would
+	// stay on a bot that no longer carries anything.
+	ClearGlow(victim);
+
+	g_potatoActive = false;
+	g_potatoHolder = 0;
+
+	// A suicide, a fall or a kill by the world burns the potato: passing it to a dead player would
+	// leave the glow on a corpse and the announcement would name nobody.
+	if (killer <= 0 || killer == victim || !is_user_connected(killer) || !is_user_bot(killer))
+	{
+		Announce("HOT POTATO BURNED OUT WITH %s", victimName);
+		log_amx("hot_potato: '%s' died without a killer, the potato is gone", victimName);
+		return;
+	}
+
+	g_potatoHolder = killer;
+	g_potatoActive = true;
+	PotatoArm(killer);
+
+	new killerName[NICK_LEN];
+	get_user_name(killer, killerName, NICK_LEN - 1);
+	Announce("%s IS THE HOT POTATO NOW", killerName);
+	log_amx("hot_potato: passed from bot %d '%s' to bot %d '%s'", victim, victimName, killer, killerName);
+}
+
+/* ---------- boss raid: a few tanks against everyone else ---------- */
+
+public EffectBossRaid()
+{
+	new nick[VALUE_LEN];
+	ParamCopy("nick", nick, charsmax(nick), "");
+
+	new wanted = ParamInt("bosses", 2);
+	if (wanted < 1)
+		wanted = 1;
+	if (wanted > MAX_BOSSES)
+		wanted = MAX_BOSSES;
+
+	new health = ParamInt("bossHealth", 1500);
+	if (health < 200)
+		health = 200;
+	if (health > 10000)
+		health = 10000;
+
+	new bossWeapon[VALUE_LEN];
+	ParamCopy("bossWeapon", bossWeapon, charsmax(bossWeapon), "weapon_m249");
+	if (!IsSafeWeapon(bossWeapon))
+		copy(bossWeapon, charsmax(bossWeapon), "weapon_m249");
+
+	new gruntWeapon[VALUE_LEN];
+	ParamCopy("gruntWeapon", gruntWeapon, charsmax(gruntWeapon), "weapon_deagle");
+	if (!IsSafeWeapon(gruntWeapon))
+		copy(gruntWeapon, charsmax(gruntWeapon), "weapon_deagle");
+
+	// Both sides are picked from one scratch list, so nobody can end up on both of them.
+	new bots[MAX_TRACKED_BOTS];
+	new count;
+	for (new id = 1; id <= get_maxplayers() && count < MAX_TRACKED_BOTS; id++)
+	{
+		if (IsBotAlive(id))
+			bots[count++] = id;
+	}
+
+	if (count < 2)
+	{
+		log_amx("boss_raid: at least 2 living bots are needed, found %d", count);
+		return;
+	}
+
+	// One raider at least: a raid of nothing but bosses is not a raid.
+	if (wanted >= count)
+		wanted = count - 1;
+
+	g_bossCount = 0;
+	g_bossHealth = health;
+	g_bossRaidActive = true;
+	copy(g_bossWeapon, charsmax(g_bossWeapon), bossWeapon);
+
+	// Swap-to-front pick: as random as shuffling the list, without a second array.
+	for (new i = 0; i < wanted; i++)
+	{
+		new pick = random_num(i, count - 1);
+		new swap = bots[i];
+		bots[i] = bots[pick];
+		bots[pick] = swap;
+		g_bosses[g_bossCount++] = bots[i];
+	}
+
+	for (new i = 0; i < g_bossCount; i++)
+		BossArm(g_bosses[i]);
+
+	new raiders;
+	for (new i = wanted; i < count; i++)
+	{
+		StripWeapons(bots[i]);
+		give_item(bots[i], "weapon_knife");
+		give_item(bots[i], gruntWeapon);
+		set_user_health(bots[i], 100);
+		set_user_armor(bots[i], 50);
+		raiders++;
+	}
+
+	if (nick[0] == '^0')
+		Announce("BOSS RAID: %d BOSSES VS %d RAIDERS", g_bossCount, raiders);
+	else
+		Announce("%s CALLED A BOSS RAID: %d VS %d", nick, g_bossCount, raiders);
+	log_amx("boss_raid: '%s' %d bosses (%d hp, %s) vs %d raiders (%s)", nick, g_bossCount, health, bossWeapon, raiders, gruntWeapon);
+}
+
+stock BossArm(id)
+{
+	StripWeapons(id);
+	give_item(id, "weapon_knife");
+	give_item(id, g_bossWeapon);
+	set_user_health(id, g_bossHealth);
+	set_user_armor(id, 100);
+	set_user_rendering(id, kRenderFxGlowShell, 255, 0, 0, kRenderNormal, 25);
+}
+
+stock bool:IsBoss(id)
+{
+	for (new i = 0; i < g_bossCount; i++)
+	{
+		if (g_bosses[i] == id)
+			return true;
+	}
+	return false;
+}
+
+stock ReportBossDown(killer, victim)
+{
+	new victimName[NICK_LEN];
+	get_user_name(victim, victimName, NICK_LEN - 1);
+
+	if (killer <= 0 || killer == victim || !is_user_connected(killer))
+	{
+		Announce("BOSS %s IS DOWN", victimName);
+		log_amx("boss_raid: boss %d '%s' died without a killer", victim, victimName);
+		return;
+	}
+
+	new killerName[NICK_LEN];
+	get_user_name(killer, killerName, NICK_LEN - 1);
+	Announce("BOSS %s DOWN - %s GETS THE KILL", victimName, killerName);
+	log_amx("boss_raid: bot %d '%s' killed boss %d '%s'", killer, killerName, victim, victimName);
+}
+
+/* csdm_lite re-arms every respawn with a random weapon, so without this a boss would be an ordinary
+   bot again after its first death and the raid would last one kill. The short delay is what puts
+   this after csdm_lite's own arming, which runs in the same respawn. */
+public OnPlayerSpawn(id)
+{
+	if (!g_bossRaidActive && !g_potatoActive)
+		return;
+
+	if (!is_user_connected(id) || !is_user_bot(id))
+		return;
+
+	if (IsBoss(id) || (g_potatoActive && id == g_potatoHolder))
+		set_task(0.3, "RebuffOnSpawn", id);
+}
+
+public RebuffOnSpawn(id)
+{
+	if (!is_user_connected(id) || !is_user_alive(id) || !is_user_bot(id))
+		return;
+
+	if (g_bossRaidActive && IsBoss(id))
+		BossArm(id);
+	else if (g_potatoActive && id == g_potatoHolder)
+		PotatoArm(id);
+}
+
 /* ---------- helpers ---------- */
+
+/* The cheap personal tier: one bot gets the donor's name, a big health pool and a glow, so the
+   viewer's money is visible on a single fighter for the next GLOW_SECONDS. */
+public EffectBlessBot()
+{
+	new nick[VALUE_LEN];
+	ParamCopy("nick", nick, charsmax(nick), "");
+
+	new health = ParamInt("health", 250);
+	if (health < 50)
+		health = 50;
+	if (health > 1000)
+		health = 1000;
+
+	new weapon[VALUE_LEN];
+	ParamCopy("weapon", weapon, charsmax(weapon), "weapon_deagle");
+
+	new bot = PickRandomBot();
+	if (!bot)
+	{
+		log_amx("bless_bot: no bots are connected");
+		return;
+	}
+
+	StripWeapons(bot);
+	if (IsSafeWeapon(weapon))
+		give_item(bot, weapon);
+	give_item(bot, "weapon_knife");
+	set_user_health(bot, health);
+	set_user_rendering(bot, kRenderFxGlowShell, 0, 120, 255, kRenderNormal, 20);
+
+	new botName[NICK_LEN];
+	get_user_name(bot, botName, NICK_LEN - 1);
+	Announce("%s BLESSED %s (^%d HP)", nick, botName, health);
+	log_amx("bless_bot: %s -> bot %d '%s', %d hp, %s", nick, bot, botName, health, weapon);
+	set_task(GLOW_SECONDS, "ClearGlow", bot);
+}
+
+/* The social hook: the bot with the most frags loses its weapons and most of its health.
+   Frags are not shown in the message: the server runs free-for-all with friendly fire, where a
+   kill subtracts a frag, so the number can be negative and only confuses the chat. */
+public EffectCurseLeader()
+{
+	new nick[VALUE_LEN];
+	ParamCopy("nick", nick, charsmax(nick), "");
+
+	new health = ParamInt("health", 25);
+	if (health < 1)
+		health = 1;
+
+	new bot = FindLeaderBot();
+	if (!bot)
+	{
+		log_amx("curse_leader: no bots are connected");
+		return;
+	}
+
+	new botName[NICK_LEN];
+	get_user_name(bot, botName, NICK_LEN - 1);
+
+	StripWeapons(bot);
+	give_item(bot, "weapon_knife");
+	set_user_health(bot, health);
+	set_user_rendering(bot, kRenderFxGlowShell, 255, 40, 0, kRenderNormal, 20);
+
+	Announce("%s CURSED THE LEADER %s", nick, botName);
+	log_amx("curse_leader: %s cursed bot %d '%s', %d hp, knife only", nick, bot, botName, health);
+	set_task(GLOW_SECONDS, "ClearGlow", bot);
+}
+
+/* The viewer's own words. RCON cannot carry spaces, so the control API sends underscores and the
+   phrase arrives here as a single token; it is turned back into spaces for the chat line. */
+public EffectBotPhrase()
+{
+	new text[VALUE_LEN];
+	ParamCopy("text", text, charsmax(text), "");
+
+	if (text[0] == '^0')
+	{
+		log_amx("bot_phrase: called without a phrase");
+		return;
+	}
+
+	replace_all(text, charsmax(text), "_", " ");
+
+	new bot = PickRandomBot();
+	if (!bot)
+	{
+		log_amx("bot_phrase: no bots are connected");
+		return;
+	}
+
+	new botName[NICK_LEN];
+	get_user_name(bot, botName, NICK_LEN - 1);
+	Announce("%s: %s", botName, text);
+	log_amx("bot_phrase: bot %d '%s' said '%s'", bot, botName, text);
+}
+
+/* Runs one chaos effect right now, through plugins/chaos_core. The core owns the effects, the
+   weights and the reverts; this is only the trigger, so a donation cannot leave a cvar behind. */
+public EffectChaosBurst()
+{
+	server_cmd("amx_chaos force");
+	Announce("CHAOS INCOMING");
+	log_amx("chaos_burst: forced a chaos effect");
+}
+
+/* Removes the glow a bless/curse put on a bot. Health and weapons do not need this: the next
+   spawn resets them, the glow would otherwise stay for the rest of the map. */
+public ClearGlow(id)
+{
+	if (id > 0 && id <= get_maxplayers() && is_user_connected(id))
+		set_user_rendering(id);
+}
+
+/* ---------- helpers ---------- */
+
+stock Announce(const format[], any:...)
+{
+	// The nickname arrives as an argument, never inside the format string: a stray '%' from a bot
+	// name would otherwise be read as a format specifier.
+	new text[192];
+	vformat(text, charsmax(text), format, 2);
+	client_print(0, print_chat, "[DONATE] %s", text);
+}
+
+stock PickRandomBot()
+{
+	new bots[32];
+	new count;
+
+	for (new id = 1; id <= get_maxplayers() && count < sizeof bots; id++)
+	{
+		if (IsBotAlive(id))
+			bots[count++] = id;
+	}
+
+	if (count == 0)
+		return 0;
+
+	return bots[random(count)];
+}
+
+stock FindLeaderBot()
+{
+	new best;
+	new bestFrags = -1;
+
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (!IsBotAlive(id))
+			continue;
+
+		new frags = get_user_frags(id);
+		if (frags > bestFrags)
+		{
+			bestFrags = frags;
+			best = id;
+		}
+	}
+
+	return best;
+}
 
 stock bool:IsBotAlive(id)
 {

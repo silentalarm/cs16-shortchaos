@@ -64,7 +64,7 @@ if ($suid) {
 Write-Host "ok: no suid/sgid files"
 
 Write-Host "==> config sanity"
-docker run --rm --entrypoint /bin/bash $Image -c "grep -q 'addons/metamod/metamod_i386.so' /hlds/cstrike/liblist.gam && grep -q 'amxmodx_mm_i386.so' /hlds/cstrike/addons/metamod/plugins.ini && test -f /hlds/cstrike/addons/amxmodx/plugins/donation_events.amxx && echo 'ok: metamod, amxmodx and the plugin are wired'"
+docker run --rm --entrypoint /bin/bash $Image -c "grep -q 'addons/metamod/metamod_i386.so' /hlds/cstrike/liblist.gam && grep -q 'amxmodx_mm_i386.so' /hlds/cstrike/addons/metamod/plugins.ini && test -f /hlds/cstrike/addons/amxmodx/plugins/donation_events.amxx && test -f /hlds/cstrike/addons/amxmodx/plugins/team_war.amxx && test -f /hlds/cstrike/addons/amxmodx/plugins/csdm_main.amxx && test -f /hlds/cstrike/addons/amxmodx/configs/csdm.cfg && test -f /hlds/cstrike/addons/amxmodx/configs/csdm/de_dust2.spawns.cfg && echo 'ok: metamod, amxmodx, csdm and the plugins are wired'"
 if ($LASTEXITCODE -ne 0) { throw "image config is incomplete" }
 
 if (-not $SkipScan) {
