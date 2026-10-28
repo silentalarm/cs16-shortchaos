@@ -70,7 +70,7 @@ plugins synced from the image"), so a stale volume is not a problem; a stale *co
 
 The 110, 130, 170 and 230 RUB steps are free again: the zone activities that used them were removed.
 
-## CSDM: the respawn "meat grinder"
+## CSDM: source and spawn presets only, the mode is csdm_lite
 
 CSDM is built from source inside the image, not downloaded as a binary: the project publishes no
 releases, so `infra/checksums.env` pins a commit tarball (`CSDM_URL`/`CSDM_SHA256`) and
@@ -79,18 +79,16 @@ Only `csdm_main`, `csdm_equip`, `csdm_spawn_preset`, `csdm_misc`, `csdm_protecti
 `itemmode`, `tickets` and `spawn_editor` stay out, because every extra plugin is another hook on
 `DeathMsg`.
 
-What the mode does (`infra/csdm.cfg`):
+**None of them is loaded** (`infra/plugins.ini`): they require the `csdm_amxx` C++ module, which is
+not built, so `csdm_lite` does the job instead and `infra/csdm.cfg` is inert - kept only so the file
+matches the upstream format. What the image still uses from that tarball is the data:
+`configs/csdm/<map>.spawns.cfg` (40 points for dust2) is read by `csdm_lite`.
 
-- `spawn_wait_time 0.5` - a bot is back half a second after dying, so there is never dead air;
-- `strip_weapons 1` + `[botprimary]`/`[botsecondary]` - the plugin arms every respawning bot from a
-  short list (ak47, m4a1, awp, xm1014, p90, mp5navy), which makes the picture change by itself;
-- `remove_objectives = abcd`, `block_buy 1`, `remove_bomb 1` - no bomb, no hostages, no buy zones;
-- `[ffa] enabled = 0` on purpose: YaPB keeps its team logic, and the FFA flag makes bots shoot
-  team-mates, which reads as broken AI;
-- `[protection] time 1` - one second of green glow on respawn, enough not to die with the spawn
-  message still on screen.
+Everything the old CSDM setup did through `csdm.cfg` now lives in `csdm_lite` cvars:
+`csdm_lite_delay` (0.5 s respawn), `csdm_lite_weapons` (the random primary), `csdm_lite_health`
+(100) and `csdm_lite_protect` (one second of godmode, the equivalent of `[protection] time 1`).
 
-`infra/server.cfg` changed with it: `mp_roundtime 3`, `mp_freezetime 1`, `mp_timelimit 20` (the old
+`server.cfg` changed with it: `mp_roundtime 3`, `mp_freezetime 1`, `mp_timelimit 20` (the old
 `0` meant dust2 never rotated) and `yb_chat 1` with `yb_chat_percent 3` - a silent bot-only server
 reads as dead.
 
@@ -154,7 +152,7 @@ respawn count is lower than the kill count on purpose - if the round ends first,
 the bot and the task returns early without logging.
 
 Cvars: `csdm_lite_enabled` (1), `csdm_lite_delay` (0.5), `csdm_lite_weapons`, `csdm_lite_health`
-(100), `csdm_lite_protect` (1), `csdm_lite_random_spawn` (1), `csdm_lite_debug` (0). The weapon list
+(100), `csdm_lite_protect` (1), `csdm_lite_random_spawn` (0), `csdm_lite_debug` (0). The weapon list
 is re-read only at plugin load, so changing it means `amx_reload` or a container restart.
 
 ### Random spawns across the map: implemented, off by default
@@ -174,8 +172,25 @@ not work on this map: `CreateNamedEntity` answers 0 and the log says `created 0 
 | extra spawn entities (the engine spawns them) | same freeze: the CSDM points are not on YaPB's waypoint graph | 8 in 45 s |
 | control: normal team spawns, FFA on | bots run and fight | 149 in 60 s |
 
-So the next step is on the graph side, not on the spawn side: either rebuild/extend the YaPB graph
-over the CSDM points (`yb_graph_analyze_*`) or pre-pick only points that sit on graph nodes.
+So the next step is on the graph side, not on the spawn side: pre-pick only points that sit on a
+graph node, or snap every point onto the nearest node. **The pinned bot cannot answer a single
+question in that direction:**
+
+- `YAPB_URL` pins `yapb-4.4.957-linux.tar.xz`, and 4.4.957 exports **no AMXX natives at all**: its
+  `src/module.cpp` only implements the internal `IYaPBModule` interface, there is no `ext/amxx`, and
+  the archive ships no `yapb.inc`;
+- the node API - `yb_get_nearest_node`, `yb_find_nearest_node_in_radius`, `yb_get_node_origin`,
+  `yb_get_node_link_count`, `yb_set_bot_goal` - exists only on the `master` line (the docs call it
+  4.8), which is published as the **Continuous Build** pre-release, not as a stable tag;
+- the stable `.graph` files cannot be read from Pawn either: `bstor` writes a compressed blob
+  (`magic`, `version`, `compressed_size`, `uncompressed_size`), not a flat node dump.
+
+Two ways forward, both change a pinned dependency, so neither is done yet:
+
+| Option | What it costs |
+|---|---|
+| pin the continuous build, `#include <yapb>`, snap the spawn points onto `yb_get_nearest_node` | the release asset is rebuilt on every push, so a SHA256 pin drifts; the include lives in the source tree and has to be copied into the image |
+| build YaPB from a pinned commit inside the image (the CSDM way) | a CMake + 32-bit toolchain stage, and the bot is the one component whose crash takes the stream down |
 
 Two compiler traps found on the way, both `std::bad_alloc` with no diagnostics: a **char literal such
 as `'\r'`** (compare with `line[i] <= ' '`) and **`engfunc(EngFunc_SetAngle, ...)`** (use
