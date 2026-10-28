@@ -76,3 +76,16 @@ test("the writer and the encoder agree on the file names", () => {
   const dockerfile = readFileSync(new URL("../infra/stream/Dockerfile", import.meta.url), "utf8");
   assert.match(dockerfile, /librsvg2-bin/, "rsvg-convert is not installed in the capture image");
 });
+
+test("the panel reaches ffmpeg as a frame stream, not as a frozen file input", () => {
+  const entrypoint = readFileSync(new URL("../infra/stream/entrypoint.sh", import.meta.url), "utf8");
+
+  // Measured on a live stream: with `-loop 1` on the PNG, image2 kept the first decoded frame and
+  // the panel froze while ui.png kept changing on disk.
+  assert.doesNotMatch(entrypoint, /-loop 1 -framerate/u, "the file input is back: the panel will freeze");
+  assert.match(entrypoint, /-f image2pipe -framerate "\$UI_FPS" -i "\$UI_PIPE"/, "the pipe input is gone");
+  assert.match(entrypoint, /panel_feed_loop\(\)/, "nothing feeds the panel pipe");
+  // The feeder must re-read the file on every pass, that is what makes an update visible.
+  assert.match(entrypoint, /cat "\$UI_PNG" > "\$UI_PIPE"/);
+});
+

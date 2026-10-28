@@ -180,6 +180,11 @@ fi
 UI_SVG="${STREAM_UI_SVG:-/overlay/ui/ui.svg}"
 UI_PNG="${STREAM_UI_PNG:-/overlay/ui/ui.png}"
 UI_FPS="${STREAM_UI_FPS:-5}"
+# The panel reaches ffmpeg through a FIFO, not as a file input with `-loop 1`: measured on a live
+# stream, image2 keeps the first decoded frame and the panel froze at whatever it showed when the
+# encoder started, while ui.png kept changing on disk. A pipe of PNG frames (image2pipe) is read once
+# per frame, so every change is picked up.
+UI_PIPE="/tmp/ui.pipe"
 UI_LAYER=0
 
 panel_render() {
@@ -197,6 +202,18 @@ panel_render() {
 panel_loop() {
   while true; do
     panel_render || true
+    sleep 0.2
+  done
+}
+
+# Feeds the current PNG into the FIFO ffmpeg reads. `cat` re-reads the file on every pass, so a panel
+# that changed on disk is what the next frame carries. The write blocks until the encoder opens the
+# pipe, which is fine: the loop simply waits, and a failed open during an encoder restart costs one
+# pass.
+panel_feed_loop() {
+  mkfifo "$UI_PIPE" 2>/dev/null || true
+  while true; do
+    cat "$UI_PNG" > "$UI_PIPE" 2>/dev/null || sleep 0.2
     sleep 0.2
   done
 }
@@ -469,8 +486,9 @@ run_encoder() {
   local panel=0
   if [ -f "$UI_PNG" ]; then
     panel=1
-    # Input 2 is the panel: the game is 0 and the audio 1 in both branches above.
-    args+=(-loop 1 -framerate "$UI_FPS" -i "$UI_PNG")
+    # Input 2 is the panel: the game is 0 and the audio 1 in both branches above. image2pipe, not a
+    # file with -loop 1: see panel_feed_loop() for the freeze that caused.
+    args+=(-f image2pipe -framerate "$UI_FPS" -i "$UI_PIPE")
     # format=auto keeps ffmpeg from inserting a colour conversion of the game frame twice: the PNG
     # is RGBA, the game frame is already yuv420p by now.
     args+=(-filter_complex "[0:v]${VF}[game];[game][2:v]overlay=0:0:format=auto,format=yuv420p[out]")
@@ -672,6 +690,7 @@ fi
 # The panel writer first: wait_for_panel() needs it running before the encoder starts.
 if command -v rsvg-convert > /dev/null 2>&1; then panel_loop & fi
 wait_for_panel
+if [ -f "$UI_PNG" ]; then panel_feed_loop & fi
 run_encoder_forever &
 # The watchdog needs the layout to sample the same framebuffer ffmpeg grabs, and STATUS_DIR to write
 # its heartbeat next to status.json.

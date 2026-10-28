@@ -278,9 +278,11 @@ donations + queue (SQLite, per poll) ───────────┴─▶ 
   runs `rsvg-convert` (from `librsvg2-bin`) whenever the SVG is newer than the PNG, and only then.
   Reasons: the fonts (`fonts-dejavu-core`) and the renderer are already there, and a native npm
   renderer cannot be mounted from a Windows checkout into a Linux container. About 15 ms per change;
-- the encoder adds the PNG as a third input (`-loop 1 -framerate 5`) and composites it with
-  `overlay=0:0:format=auto`. `-loop 1` re-opens the file, so an updated panel appears without
-  restarting ffmpeg (`panel=1` in the `ffmpeg <-` log line says the layer is on).
+- the encoder adds the panel as a third input through a **FIFO of PNG frames** (`-f image2pipe`,
+  `panel_feed_loop` re-reads `ui.png` five times a second) and composites it with
+  `overlay=0:0:format=auto`. A file input with `-loop 1` looked simpler and froze on the live stream:
+  image2 kept the first decoded frame, so the panel showed the score from the moment the encoder
+  started while `ui.png` kept changing on disk.
 
 Knobs: `UI_RENDER` (1), `UI_INTERVAL_MS` (200), `STREAM_UI_SVG` (`/overlay/ui/ui.svg`),
 `STREAM_UI_PNG` (`/overlay/ui/ui.png`), `STREAM_UI_FPS` (5). The panel lives in a subdirectory of the
