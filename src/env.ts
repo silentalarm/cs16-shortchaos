@@ -46,7 +46,7 @@ export interface Env {
   ui: {
     /** false disables the panel entirely: the encoder then keeps the old drawtext layer. */
     render: boolean;
-    /** How often the state is compared against the last written SVG. */
+    /** How often the state is compared against the files last written for the encoder. */
     intervalMs: number;
   };
 }

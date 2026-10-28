@@ -6,10 +6,10 @@ import type { PendingActivity } from "../queue.ts";
 /**
  * Everything the picture shows, in one plain object.
  *
- * Why a model instead of text: the frame is rendered by a separate process (`ui/render.ts`), and a
- * template must not care where the numbers came from - the game publishes the team race as cvars,
- * the control API knows the donations and the queue. Keeping the shape flat also means the template
- * can be replaced (or a second one added per activity) without touching the poller or the encoder.
+ * Why a model instead of text: the panel is written as separate drawtext lines (`ui/panel.ts`), and a
+ * builder must not care where the numbers came from - the game publishes the team race as cvars, the
+ * control API knows the donations and the queue. Keeping the shape flat also means a line can be
+ * added (or a second variant added per activity) without touching the poller or the encoder.
  */
 export interface UiScore {
   /** Frags of the terrorist side, as the server counts them (team kills included). */
@@ -41,6 +41,8 @@ export interface UiState {
   donation: string;
   /** What the next cheapest activities cost, or how many are waiting. */
   menu: string;
+  /** Winner of the end-of-map duel; empty except for the seconds between the duel and the map change. */
+  winner: string;
   queueSize: number;
   theme: UiTheme;
   activityCode: string | null;
@@ -52,6 +54,7 @@ export interface UiState {
 export interface UiStateInput {
   score: UiScore | null;
   target?: UiTarget | null;
+  winner?: string;
   recent: readonly StoredDonation[];
   catalog: ActivitiesConfig;
   pending?: readonly PendingActivity[];
@@ -98,6 +101,7 @@ export function buildUiState(input: UiStateInput): UiState {
   return {
     score: input.score,
     target: input.target ?? null,
+    winner: input.winner ?? "",
     donation: overlay.lines[1] ?? "",
     menu: overlay.lines[2] ?? "",
     queueSize: pending.length,
@@ -118,6 +122,7 @@ export function uiSignature(state: UiState): string {
   return JSON.stringify({
     score: state.score,
     target: state.target,
+    winner: state.winner,
     donation: state.donation,
     menu: state.menu,
     queueSize: state.queueSize,

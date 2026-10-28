@@ -79,9 +79,63 @@ What replaced it lives in `plugins/csdm_lite` and is configured by its own cvars
 `csdm_lite_delay` (0.5 s respawn), `csdm_lite_weapons` (the random primary), `csdm_lite_health`
 (100), `csdm_lite_protect` (one second of godmode).
 
-`server.cfg` changed with it: `mp_roundtime 3`, `mp_freezetime 1`, `mp_timelimit 20` (the old
-`0` meant dust2 never rotated) and `yb_chat 1` with `yb_chat_percent 3` - a silent bot-only server
-reads as dead.
+`server.cfg` changed with it: `mp_roundtime 9` (the engine clamps this cvar at 9 minutes, and no
+round ever ends on the clock any more), `mp_freezetime 1`, `mp_timelimit 0` and `yb_chat 1` with
+`yb_chat_percent 3` - a silent bot-only server reads as dead.
+
+## The end of a map: plugins/map_duel
+
+A map lives `map_duel_minutes` (10) and ends with a duel. The engine is out of the rotation on
+purpose: `mp_timelimit 0`, so its own timer cannot change the map in the middle of the fight.
+
+```
+T-45 s   every bot except one per team is killed, csdm_lite_enabled 0, chaos_enabled 0
+         both finalists: 100 hp, no armour, knife + the same random primary, put 96 units apart
+T+0      the first finalist to die loses; at map_duel_limit (60 s) more hp wins, then frags
+T+5 s    changelevel to the next map in map_duel_maps
+```
+
+- the finalists are the two bots the panel calls TOP T and TOP CT - one per team, counted with
+  team_war's rule (a team kill counts for the killer's team, the engine score does not);
+- one finalist per team is what keeps the round alive: a team is never wiped, so the engine cannot
+  end the round under the fight and respawn the field;
+- `csdm_lite_enabled 0` stops the half-second respawns, `chaos_enabled 0` stops a chaos effect from
+  handing a finalist a new gun mid-fight; both are switched back by the next map (`map_duel_touched`
+  remembers that the plugin was the one that muted them);
+- a Ham_Spawn hook kills anything the engine revives during the duel and re-arms a finalist it
+  respawns;
+- the winner is published as the cvar `map_duel_winner` and polled by the control API once a second:
+  the panel prints `WINNER: <name>` in its notice line. Nothing is drawn by the game.
+
+```
+amx_map_duel status   map_duel status: state=<idle|live|done> winner=<name|->
+```
+
+Cvars: `map_duel_enabled` (1), `map_duel_minutes` (10), `map_duel_prepare` (45),
+`map_duel_limit` (60), `map_duel_weapons` (`ak47,m4a1,awp,xm1014,p90,mp5navy`), `map_duel_maps`
+(`de_dust2,de_inferno,de_nuke,cs_italy,de_aztec`, wraps around).
+
+A finalist that picks a bomb site as his goal and runs off is pulled back next to his opponent every
+three seconds while the fight runs (`TaskKeepTogether`, only when the two are more than 400 units
+apart): the duel is what the last minute of the map exists for.
+
+## How the bots behave in the picture
+
+Every knob here answers a complaint from the stream, and none of them is the engine default:
+
+| Symptom on stream | Knob | Value |
+| --- | --- | --- |
+| a bot fighting with a knife | `yb_random_knife_attacks`, `yb_stab_close_enemies` | 0, 0 |
+| a bot standing still in a corner | `yb_camping_allowed` | 0 |
+| a bot creeping at shift speed | `yb_walking_allowed` | 0 |
+| a bot staring at a teammate without shooting | `yb_csdm_mode` | 2 (free for all targeting) |
+| a bot out of bullets doing nothing | `csdm_lite_ammo`, `csdm_lite_ammo_reserve` | 1, 200 |
+
+`mp_infinite_ammo` stays 0: that engine mode fills the magazine and removes the reload entirely. The
+endless part is the **reserve**: `csdm_lite` tops it up once a second for every alive bot, so a
+magazine still empties and is still reloaded, and the bot never falls back to the knife because it
+counted its bullets. Knife, grenades and the bomb are skipped - they have no reserve magazine, and
+topping them up would hand a bot 200 grenades.
 
 Deploying any of it: `infra/build-image.ps1` then `infra/compose.ps1 up -d --force-recreate hlds`.
 A plain `docker restart` keeps the old image and the old config.
@@ -250,67 +304,87 @@ pull the crowd into the ring), and whether `yb fun <mode>` restores gravity on m
 
 ## The picture panel (the UI, drawn outside the game)
 
-Everything a viewer reads on screen is a PNG the control API renders and the encoder composites over
-the game frame. Nothing is drawn by the game client: that is what made the old HUD flicker and sit
-half-invisible on a bright map.
+Everything a viewer reads on screen is drawn by the encoder itself, from small text files the control
+API writes. Nothing is drawn by the game client: that is what made the old HUD flicker (a
+`hudmessage` replaced and re-faded once a second) and sit half-invisible on a bright map.
 
 ```
 team_war status  ─┐
 amx_stcam status ─┴─▶ game-poller (RCON, 1 Hz) ─┐
-donations + queue (SQLite, per poll) ───────────┴─▶ ui-state ─▶ SVG template ─▶ ui.svg (720x1280)
-                                                                                  │
-                                       rsvg-convert (capture container) ─▶ ui.png │
-                                                                                  │
-                    ffmpeg: x11grab ─crop/scale─▶ overlay(ui.png) ─▶ x264 ─▶ RTMP ◀┘
+donations + queue (SQLite, per poll) ───────────┴─▶ ui-state ─▶ ui/panel.ts ─▶ 10 text files
+                                                                                    │
+                          ffmpeg: x11grab ─crop/scale─▶ drawtext×10 ─▶ x264 ─▶ RTMP ◀─┘
 ```
 
 - `src/game-poller.ts` - two console commands a second (`amx_team_war status`, `amx_stcam status`);
-  a failed poll keeps the last numbers and only sets `stale`, so the panel dims instead of blanking;
+  a failed poll keeps the last numbers and only sets `stale`, so the panel says `NO SIGNAL` instead of
+  showing stale numbers as fresh;
 - `src/ui/state.ts` - the model (`score`, `target`, donation line, menu line, queue size, theme);
   the donation lines come from `buildOverlay()`, so the panel and the text fallback cannot disagree;
-- `src/ui/template.ts` - the visual: 720x1280, transparent, the panel in the top third (score, both
-  tops, the bot on camera) and the donation strip just above the Shorts UI. `THEMES` in
-  `src/ui/state.ts` maps activity codes to accent colours - a new visual variant is one line there
-  plus one branch in the template;
-- `src/ui/loop.ts` - compares a signature of the state, writes `ui.svg` + `ui.json` through a
-  temporary file, and only when the state changes (5 Hz ceiling). An idle server costs nothing;
-- **rasterising happens in the capture container**, not in the control API: `infra/stream/entrypoint.sh`
-  runs `rsvg-convert` (from `librsvg2-bin`) whenever the SVG is newer than the PNG, and only then.
-  Reasons: the fonts (`fonts-dejavu-core`) and the renderer are already there, and a native npm
-  renderer cannot be mounted from a Windows checkout into a Linux container. About 15 ms per change;
-- the encoder adds the panel as a third input through a **FIFO of PNG frames** (`-f image2pipe`,
-  `panel_feed_loop` re-reads `ui.png` five times a second) and composites it with
-  `overlay=0:0:format=auto`. A file input with `-loop 1` looked simpler and froze on the live stream:
-  image2 kept the first decoded frame, so the panel showed the score from the moment the encoder
-  started while `ui.png` kept changing on disk.
+- `src/ui/panel.ts` - the panel itself: which file holds which line, the limits, and the score bar.
+  `THEMES` in `src/ui/state.ts` maps activity codes to accent colours - a new visual variant is one
+  line there plus a branch here;
+- `src/ui/loop.ts` - compares a signature of the state and rewrites the files through a temporary
+  name, only when the state changes (5 Hz ceiling). An idle server costs nothing;
+- **the encoder draws every line itself**: `infra/stream/entrypoint.sh` builds one `drawtext` filter
+  per file with `reload=1`, which ffmpeg honours per frame. No rasteriser, no extra input, nothing to
+  synchronise.
 
-Knobs: `UI_RENDER` (1), `UI_INTERVAL_MS` (200), `STREAM_UI_SVG` (`/overlay/ui/ui.svg`),
-`STREAM_UI_PNG` (`/overlay/ui/ui.png`), `STREAM_UI_FPS` (5). The panel lives in a subdirectory of the
-overlay volume because the capture container is unprivileged: `writeUiFrame` creates `overlay/ui` and
-opens it up (`0777`), so the rasteriser can replace `ui.png` next to a root-owned `ui.svg`. Without
-the control API there is no `ui.svg` and the encoder falls back to the game frame plus the old
-`drawtext` donation line.
+### The score is a bar with the counts on it
+
+`drawbox` cannot take its length from a file, so the race is two runs of `U+2588 FULL BLOCK`: the
+terrorist run anchored at the left margin, the counter-terrorist run at the right one. Both together
+always add up to the same 20 blocks, so **the outer edges never move - only the point where the runs
+meet does**, which is what keeps the bar from crawling. Measured in the capture image at fontsize 40:
+a block is 0.77 em (30.7 px), so 20 of them span 614 px, which fits 720 px with 52 px margins.
+`U+2591 LIGHT SHADE` came out 5 px narrower over twenty characters, hence one glyph only.
+
+The two frag counts are their own `drawtext` layers (`score-t.txt`, `score-ct.txt`) drawn on top of
+the blocks at the fixed outer ends, the way a health bar carries its number - **never inside the bar
+files**: a digit advances 0.64 em against a block's 0.77 em, so a number in `bar-t.txt` would shorten
+the run and move the meeting point. Each number grows inward (left margin + 12 px, right margin -
+12 px), so a third digit moves the text, not the bar. The row is measured, not guessed: at
+`UI_TOP=36` the blocks cover y 36..83 (centre 59.5) and a 28 px digit line starting at y=42 covers
+42..61 (centre 51.5), so the digits sit at `UI_TOP + 14` and share the centre of the bar. At 0 frags
+a side has no blocks at all and the number stands on the picture; the black outline keeps it
+readable.
+
+Colours are the game's own: red `0xDD3333` for the terrorists (the health cross), blue `0x3366DD`
+for the counter-terrorists (the armour shield). The counts are white with a black border, so they
+read on both colours.
+
+Verified on a rendered frame (same filter graph as the encoder, two states):
+
+```
+t=11 ct=9  -> red 52..387   blue 391..667
+t=4  ct=16 -> red 52..171   blue 175..666
+```
+
+Left edge and right edge are identical; the meeting point moved by 216 px.
+
+Knobs: `UI_RENDER` (1), `UI_INTERVAL_MS` (200), `STREAM_UI_TEXT` (1), `STREAM_UI_DIR`
+(`/overlay/ui`), `STREAM_UI_SIZE_BAR` (40), `STREAM_UI_SIZE_SCORE` (28),
+`STREAM_UI_SIZE_TOP`/`_TARGET`/`_LAST`/`_MENU` (30/36/30/24), `STREAM_UI_MARGIN` (52),
+`STREAM_UI_TOP` (36), `STREAM_UI_BOTTOM` (186),
+`STREAM_UI_COLOR_T`/`_CT`/`_TEXT`/`_MUTED` (`0xDD3333`, `0x3366DD`, `white`, `0xB9C2CF`). The whole
+look is `.env`: no template to edit, no image to rebuild.
+
+The panel lives in a subdirectory of the overlay volume because the capture container is
+unprivileged: `writeUiFrame` creates `overlay/ui` and opens it up (`0777`). Without the control API
+the files never appear, the lines stay empty, and the encoder falls back to the old single-block
+`drawtext` donation line (the panel and the fallback are never both on - a donation would print
+twice).
 
 Editing the look without Docker:
 
 ```powershell
-npm run ui-preview      # http://127.0.0.1:4399 - the exact SVG the encoder receives
+npm run ui-preview      # http://127.0.0.1:4399 - the ten lines laid out at the encoder's geometry
 $env:UI_PREVIEW_ACTIVITY='bounty'; npm run ui-preview   # another theme
+$env:UI_PREVIEW_T='4'; npm run ui-preview               # the bar leans to CT
 ```
 
-Limits on purpose: 5 fps (a panel is not an animation), one write per state change (no per-frame
-rendering), and no CSS - the panel is SVG, and `rsvg-convert` costs milliseconds next to llvmpipe and
-x264.
-
-Editing the look without Docker:
-
-```powershell
-npm run ui-preview      # http://127.0.0.1:4399 - the SVG, /ui.png - the raster the encoder gets
-$env:UI_PREVIEW_ACTIVITY='bounty'; npm run ui-preview   # another theme
-```
-
-Limits on purpose: 5 fps (a panel is not an animation), one PNG per state change (no per-frame
-rendering), and no CSS - the renderer is SVG so it costs milliseconds next to llvmpipe and x264.
+Limits on purpose: text only (no icons, no rounded panels), one write per state change, and a fixed
+20-block bar - a wider vocabulary needs a renderer, and the renderer froze on a live stream.
 
 ## The donation overlay (fallback, no panel)
 
@@ -365,6 +439,25 @@ there is nothing else to clean up and none of them can leak into the next round.
 single `[A-Za-z0-9_.-]` token; the plugin turns `_` back into spaces before printing. A message with
 nothing printable left is dropped entirely and the plugin prints nothing instead of the buyer's
 junk. An activity opts into this by declaring `maxPhraseLength` in its params.
+
+## The HE party: the only activity on a clock
+
+`he_party` (70 RUB) takes every weapon away and leaves 20 bots with a knife and endless HE grenades
+for 60 seconds (`amx_de he_party seconds=60`). It is the one activity whose length is neither a round
+nor the map: `duration: "seconds"` in the catalogue, and the plugin counts the clock down itself.
+
+```
+every 0.5 s, for the declared length:
+  bot has anything but a knife or a grenade -> strip, give knife
+  bot has no HE in hand                     -> give one back
+```
+
+- the re-arm repeats on purpose: it hands a thrown grenade straight back, and it undoes the rifle
+  `csdm_lite` gives a bot that died during the party (that respawn is what a one-shot arm would miss);
+- the whole weapon list is checked, not the weapon in hand - a rifle left in the backpack comes out
+  the moment the bot sees somebody;
+- nothing is restored at the end: bots keep the knife until they die, and the next spawn arms them
+  again. A map change also ends it, because the plugin is re-initialised and the task is dropped.
 
 ## The round fights: bounty, hot potato, boss raid
 
@@ -434,13 +527,13 @@ A second pass with the same DB must report `cursor` equal to the last id and pro
 ## Changing a price
 
 1. edit `price` in `config/activities.json` (keep prices unique and >= `minAmount`);
-2. `npm test` — the catalogue test asserts 14 activities, unique prices and sorted order;
+2. `npm test` — the catalogue test asserts 18 activities, unique prices and sorted order;
 3. restart the control API. The Pawn plugin does not care about prices.
 
 ## Adding an activity
 
-1. `config/activities.json`: unique `code`, `price`, `duration`, `rounds: 1` or `null`,
-   `params` for the effect arguments;
+1. `config/activities.json`: unique `code`, `price`, `duration`, `rounds: 1` (round effects) or
+   `seconds: 60` (clock effects) or both `null`, `params` for the effect arguments;
 2. plugin: write the handler and call `RegisterDonationEffect("<code>", handler)`;
 3. `npm test`, rebuild the image, check `amx_de codes` lists the new code;
 4. if the plugin does not know the code, the API disables it on startup instead of

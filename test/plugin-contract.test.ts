@@ -32,6 +32,34 @@ test("every activity in the catalogue has a handler in the plugin", () => {
   assert.deepEqual(missing, [], `catalogue codes without a plugin handler: ${missing.join(", ")}`);
 });
 
+test("the HE party keeps the field on knives and grenades until its clock runs out", () => {
+  assert.match(source, /RegisterDonationEffect\("he_party", "EffectHeParty"\)/);
+
+  const effect = /public EffectHeParty\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(effect, /ParamInt\("seconds", 60\)/, "the length is not read from the command");
+  // Twice a second, repeating: the re-arm is what hands a thrown grenade back and what undoes the
+  // rifle csdm_lite gives a bot that died during the party.
+  assert.match(
+    effect,
+    /set_task\(step, "TaskHeParty", TASK_HE_PARTY, "", 0, "b"\)/,
+    "the field is disarmed once instead of continuously",
+  );
+
+  const tick = /public TaskHeParty\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(tick, /DisarmField\(\)/, "a respawned bot keeps its rifle for the length of the party");
+  assert.match(tick, /remove_task\(TASK_HE_PARTY\)/, "the task outlives the clock");
+
+  const disarm = /stock DisarmField\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(disarm, /StripWeapons\(id\)/, "nothing is taken away");
+  assert.match(disarm, /give_item\(id, "weapon_hegrenade"\)/, "no grenades are handed out");
+
+  // A rifle in the backpack is pulled out the moment the bot sees somebody, so the whole weapon list
+  // is checked, not the weapon in hand.
+  const hasGun = /stock bool:HasGun\(id\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(hasGun, /get_user_weapons\(id, weapons, count\)/, "only the weapon in hand is checked");
+  assert.match(hasGun, /CSW_KNIFE/, "the knife counts as a weapon");
+});
+
 test("every plugin handler is reachable from the catalogue", () => {
   const handlers = registered();
   const known = new Set(catalog.activities.map((activity) => activity.code));

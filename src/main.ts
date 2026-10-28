@@ -143,6 +143,7 @@ function currentUiState(): UiState {
   return buildUiState({
     score: snapshot.score,
     target: snapshot.target,
+    winner: snapshot.winner,
     recent: uiRecent,
     catalog,
     pending: uiPending,
@@ -168,9 +169,9 @@ function refreshOverlay(): void {
 }
 
 /**
- * The picture panel: a PNG the encoder overlays on the game frame, redrawn only when the state it
- * shows changes. Optional on purpose - without it the stream still runs, with the old drawtext
- * donation line and the plugin's own HUD.
+ * The picture panel: a handful of text files the encoder draws over the game frame with drawtext,
+ * rewritten only when the state they show changes. Optional on purpose - without it the stream
+ * still runs, with the old drawtext donation line and the plugin's own HUD.
  */
 function startUi(): void {
   if (!env.ui.render) {

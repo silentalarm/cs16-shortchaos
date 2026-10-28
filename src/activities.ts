@@ -6,13 +6,16 @@ import { readFileSync } from "node:fs";
  * Rules enforced here (see docs/runbook.md):
  * - price >= config.minAmount (50 RUB minimum donation);
  * - "rounds" duration lasts at most MAX_ROUNDS (1) round;
- * - "until_map_change" and "instant" carry no round budget: they end on map change only;
+ * - "seconds" duration carries its own length (`seconds`), 1..MAX_SECONDS: a clock, not a round;
+ * - "until_map_change" and "instant" carry no round budget and no clock: they end on map change only;
  * - `announce` must be printable ASCII, GoldSrc game chat renders nothing else;
  * - codes are unique and stable, the Pawn plugin registers handlers by code.
  */
 export const MAX_ROUNDS = 1;
+/** Longest clock an activity may declare; anything longer belongs to `until_map_change`. */
+export const MAX_SECONDS = 600;
 
-export type ActivityDuration = "rounds" | "until_map_change" | "instant";
+export type ActivityDuration = "rounds" | "seconds" | "until_map_change" | "instant";
 
 export type ParamValue = string | number | boolean | string[];
 export type Params = Record<string, ParamValue>;
@@ -25,6 +28,8 @@ export interface Activity {
   priority: number;
   duration: ActivityDuration;
   rounds: number | null;
+  /** Declared length of a "seconds" activity, null for every other duration. */
+  seconds: number | null;
   cooldownSec: number;
   globalCooldownSec: number;
   enabled: boolean;
@@ -49,7 +54,7 @@ export class ConfigError extends Error {
 const CODE_RE = /^[a-z][a-z0-9_]{2,31}$/;
 const CURRENCY_RE = /^[A-Z]{3}$/;
 const ASCII_RE = /^[\x20-\x7E]+$/;
-const DURATIONS: readonly ActivityDuration[] = ["rounds", "until_map_change", "instant"];
+const DURATIONS: readonly ActivityDuration[] = ["rounds", "seconds", "until_map_change", "instant"];
 const ANNOUNCE_MAX = 64;
 
 function fail(where: string, message: string): never {
@@ -122,6 +127,18 @@ function parseActivity(raw: unknown, index: number, config: ActivitiesConfig): A
     fail(where, `"rounds" must be null when duration is "${duration}"`);
   }
 
+  // A clock instead of a round: the two are exclusive, because a viewer pays for one or the other and
+  // the admin table prints exactly one of them.
+  let seconds: number | null = null;
+  if (duration === "seconds") {
+    seconds = intField(raw, "seconds", where);
+    if (seconds < 1 || seconds > MAX_SECONDS) {
+      fail(where, `"seconds" must be between 1 and ${MAX_SECONDS}`);
+    }
+  } else if (raw.seconds !== undefined && raw.seconds !== null) {
+    fail(where, `"seconds" must be null when duration is "${duration}"`);
+  }
+
   const cooldownSec = intField(raw, "cooldownSec", where, config.defaultCooldownSec);
   if (cooldownSec < 0) fail(where, `"cooldownSec" must be >= 0`);
 
@@ -139,6 +156,7 @@ function parseActivity(raw: unknown, index: number, config: ActivitiesConfig): A
     priority,
     duration: duration as ActivityDuration,
     rounds,
+    seconds,
     cooldownSec,
     globalCooldownSec,
     enabled,

@@ -20,6 +20,8 @@
 // ExecuteHamB lives in hamsandwich, not in fakemeta: without this include the compiler has no
 // prototype for it and aborts (SIGABRT, no diagnostics) instead of reporting an undefined symbol.
 #include <hamsandwich>
+// Weapon ids and cs_set_user_bpammo: the reserve ammo refill below needs both.
+#include <cstrike>
 
 #define PLUGIN_NAME "CSDM Lite"
 #define PLUGIN_VERSION "1.2.0"
@@ -36,6 +38,8 @@ new g_cvarWeapons;
 new g_cvarProtect;
 new g_cvarHealth;
 new g_cvarDebug;
+new g_cvarAmmo;
+new g_cvarAmmoReserve;
 
 public plugin_init()
 {
@@ -48,6 +52,10 @@ public plugin_init()
 	g_cvarWeapons = register_cvar("csdm_lite_weapons", "ak47,m4a1,awp,xm1014,p90,mp5navy");
 	g_cvarProtect = register_cvar("csdm_lite_protect", "1");
 	g_cvarHealth = register_cvar("csdm_lite_health", "100");
+	// Endless reserve ammo, a magazine that still empties and is still reloaded: the engine's own
+	// mp_infinite_ammo mode fills the magazine instead, which removes the reload from the picture.
+	g_cvarAmmo = register_cvar("csdm_lite_ammo", "1");
+	g_cvarAmmoReserve = register_cvar("csdm_lite_ammo_reserve", "200");
 	// Off by default: one log line per death on a 24/7 server is a lot of noise. Turn it on over
 	// RCON to prove the respawns are really happening.
 	g_cvarDebug = register_cvar("csdm_lite_debug", "0");
@@ -55,6 +63,55 @@ public plugin_init()
 	// DeathMsg: 1 = killer, 2 = victim.
 	register_event("DeathMsg", "OnDeathMsg", "a");
 	LoadWeaponList();
+
+	// A bot that runs dry switches to the knife and stops being part of the picture, so the reserve
+	// is topped up once a second. A task, not a per-shot hook: one pass over 20 bots is cheaper than
+	// hooking every weapon event.
+	new Float:interval = 1.0;
+	set_task(interval, "TaskTopUpAmmo", 0, "", 0, "b");
+}
+
+/* Reserve ammo only: the magazine empties at its own pace, the reload animation stays, and the bot
+   never has to fall back to the knife because it counted its bullets. */
+public TaskTopUpAmmo()
+{
+	if (!get_pcvar_num(g_cvarAmmo))
+		return;
+
+	new reserve = get_pcvar_num(g_cvarAmmoReserve);
+	if (reserve < 1)
+		return;
+
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (!is_user_alive(id) || !is_user_bot(id))
+			continue;
+
+		new clip;
+		new bpammo;
+		new weapon = get_user_weapon(id, clip, bpammo);
+
+		if (!IsGun(weapon))
+			continue;
+		if (bpammo >= reserve)
+			continue;
+
+		cs_set_user_bpammo(id, weapon, reserve);
+	}
+}
+
+/* Knife, grenades and the bomb have no reserve magazine: topping them up would hand a bot 200
+   grenades. */
+stock bool:IsGun(weapon)
+{
+	if (weapon <= 0)
+		return false;
+	if (weapon == CSW_KNIFE || weapon == CSW_C4)
+		return false;
+	if (weapon == CSW_HEGRENADE || weapon == CSW_FLASHBANG || weapon == CSW_SMOKEGRENADE)
+		return false;
+
+	return true;
 }
 
 public OnDeathMsg()

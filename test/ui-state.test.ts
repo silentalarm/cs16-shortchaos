@@ -90,6 +90,22 @@ test("the theme follows the paid activity and nothing else", () => {
   assert.equal(withActivity.activityCode, "bounty");
 });
 
+test("the winner of the duel reaches the picture and leaves with the map", () => {
+  const base = buildUiState({ score: { t: 1, ct: 2, topT: "", topCt: "" }, recent: [], catalog, now: NOW });
+  assert.equal(base.winner, "", "a map without a duel shows no winner");
+
+  const won = buildUiState({
+    score: { t: 1, ct: 2, topT: "", topCt: "" },
+    winner: "Mr Smith",
+    recent: [],
+    catalog,
+    now: NOW,
+  });
+  assert.equal(won.winner, "Mr Smith");
+  // The panel only re-renders on a changed signature: the winner has to be part of it.
+  assert.notEqual(uiSignature(base), uiSignature(won), "the winner never reaches the picture");
+});
+
 test("the change signature ignores the clock and follows the numbers", () => {
   const first = buildUiState({ score: { t: 1, ct: 2, topT: "", topCt: "" }, recent: [], catalog, now: NOW });
   const later = buildUiState({

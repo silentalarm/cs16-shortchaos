@@ -23,8 +23,8 @@ src/db.ts                SQLite: donation history, dedup by id, polling cursor
 src/poller.ts            one polling pass: dedup, map, cooldown, apply, store
 src/game-poller.ts       RCON poller for the panel: team race + the bot on camera (1 Hz)
 src/ui/state.ts          the panel model: score, tops, target, donations, queue, theme
-src/ui/template.ts       the panel itself: SVG 720x1280, transparent, themes per activity
-src/ui/loop.ts           writes ui.svg only when the state changes (the capture container rasterises it)
+src/ui/panel.ts          the panel as text lines: the score bar, tops, target, donation, menu
+src/ui/loop.ts           rewrites those files only when the state changes (the encoder draws them)
 src/main.ts              daemon: env, wiring, graceful shutdown, POLL_ONCE mode
 scripts/fake-donation.ts appends a fake donation for the mock source
 scripts/oauth-login.ts   one-off OAuth helper, writes data/da-token.json

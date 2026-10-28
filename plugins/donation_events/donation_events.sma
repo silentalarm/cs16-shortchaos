@@ -19,6 +19,8 @@
 #include <amxmodx>
 #include <fakemeta>
 #include <fun>
+// Weapon ids and user_has_weapon: the HE party below has to tell a knife from a rifle.
+#include <cstrike>
 
 #define PLUGIN_NAME "Donation Events"
 #define PLUGIN_VERSION "0.6.0"
@@ -73,6 +75,12 @@ new g_bossHealth;
 new g_bossWeapon[VALUE_LEN];
 new bool:g_bossRaidActive;
 
+/* The HE party is the only effect with a clock of its own: it does not end with the round, it ends
+   when `seconds` runs out. The task runs twice a second, so the counter counts halves. */
+#define TASK_HE_PARTY 4013
+new g_hePartyTicks;
+new bool:g_hePartyActive;
+
 public plugin_init()
 {
 	register_plugin(PLUGIN_NAME, PLUGIN_VERSION, "cs16-youtube");
@@ -89,6 +97,7 @@ public plugin_init()
 	RegisterDonationEffect("bot_nick", "EffectBotNick");
 	RegisterDonationEffect("meat_round", "EffectMeatRound");
 	RegisterDonationEffect("knives_only", "EffectKnivesOnly");
+	RegisterDonationEffect("he_party", "EffectHeParty");
 	RegisterDonationEffect("moon_gravity", "EffectMoonGravity");
 	RegisterDonationEffect("awp_only", "EffectAwpOnly");
 	RegisterDonationEffect("bounty", "EffectBounty");
@@ -451,6 +460,95 @@ public EffectAwpOnly()
 	}
 
 	log_amx("awp_only: %d bots rearmed with AWP", bots);
+}
+
+/* HE party: every weapon gone, endless HE grenades, for a fixed number of seconds. The effect is a
+   timer, not a round: a round is nine minutes now, and this is a 60 second gag.
+ *
+ * A thrown grenade is handed straight back, and a bot that dies while the party runs is disarmed
+ * again right after csdm_lite respawned it with a rifle - which is why this re-arms the field twice
+ * a second instead of once at the start. */
+public EffectHeParty()
+{
+	new seconds = ParamInt("seconds", 60);
+	if (seconds < 5)
+		seconds = 5;
+	if (seconds > 300)
+		seconds = 300;
+
+	g_hePartyActive = true;
+	g_hePartyTicks = seconds * 2;
+
+	DisarmField();
+
+	new Float:step = 0.5;
+	set_task(step, "TaskHeParty", TASK_HE_PARTY, "", 0, "b");
+	log_amx("he_party: knives and endless HE for %d s", seconds);
+}
+
+public TaskHeParty()
+{
+	if (!g_hePartyActive)
+		return;
+
+	DisarmField();
+
+	g_hePartyTicks = g_hePartyTicks - 1;
+	if (g_hePartyTicks > 0)
+		return;
+
+	g_hePartyActive = false;
+	remove_task(TASK_HE_PARTY);
+	Announce("HE GRENADES ARE OVER");
+	// Nothing to restore: the bots keep the knife until they die, and the next spawn gives them a
+	// real weapon again through csdm_lite.
+	log_amx("he_party: over, the next spawn arms the bots again");
+}
+
+/* Every alive bot: a knife and a grenade, nothing else. The check walks the whole weapon list, not
+   the weapon in hand: a bot that keeps a rifle in the backpack pulls it out the moment it sees
+   somebody, and the party is over without the timer ever firing. */
+stock DisarmField()
+{
+	new disarmed;
+
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (!IsBotAlive(id))
+			continue;
+
+		if (HasGun(id))
+		{
+			StripWeapons(id);
+			give_item(id, "weapon_knife");
+			disarmed++;
+		}
+
+		// The grenade is re-given after it is thrown, which is the "endless" part of the activity.
+		if (!user_has_weapon(id, CSW_HEGRENADE))
+			give_item(id, "weapon_hegrenade");
+	}
+
+	if (disarmed > 0)
+		log_amx("he_party: %d bots disarmed", disarmed);
+}
+
+stock bool:HasGun(id)
+{
+	new weapons[32];
+	new count;
+	get_user_weapons(id, weapons, count);
+
+	for (new i = 0; i < count; i++)
+	{
+		if (weapons[i] == CSW_KNIFE)
+			continue;
+		if (weapons[i] == CSW_HEGRENADE)
+			continue;
+		return true;
+	}
+
+	return false;
 }
 
 public EffectMoonGravity()

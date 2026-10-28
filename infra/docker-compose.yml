@@ -122,12 +122,31 @@ services:
       # Donation text written by the control API through the shared volume. Empty disables the
       # overlay layer, which is also what happens when the image has no font.
       STREAM_OVERLAY_TXT: /overlay/overlay.txt
-      # The picture panel: the control API writes a transparent SVG (score, tops, the bot on camera,
-      # the last donation), this container rasterises it with rsvg-convert and the encoder composites
-      # the PNG over the game. Same volume, two files.
-      STREAM_UI_SVG: ${STREAM_UI_SVG:-/overlay/ui/ui.svg}
-      STREAM_UI_PNG: ${STREAM_UI_PNG:-/overlay/ui/ui.png}
-      STREAM_UI_FPS: ${STREAM_UI_FPS:-5}
+      # The picture panel: the control API writes one small text file per line (the score bar with
+      # its two frag counts, both team tops, the bot on camera, the last donation, how to buy the
+      # next one) into the shared volume and the encoder draws them with drawtext. Same volume,
+      # ten files.
+      STREAM_UI_DIR: ${STREAM_UI_DIR:-/overlay/ui}
+      STREAM_UI_TEXT: ${STREAM_UI_TEXT:-1}
+      STREAM_UI_SIZE_BAR: ${STREAM_UI_SIZE_BAR:-40}
+      STREAM_UI_SIZE_SCORE: ${STREAM_UI_SIZE_SCORE:-28}
+      STREAM_UI_SIZE_TOP: ${STREAM_UI_SIZE_TOP:-30}
+      STREAM_UI_SIZE_TARGET: ${STREAM_UI_SIZE_TARGET:-36}
+      STREAM_UI_SIZE_LAST: ${STREAM_UI_SIZE_LAST:-30}
+      STREAM_UI_SIZE_MENU: ${STREAM_UI_SIZE_MENU:-24}
+      STREAM_UI_MARGIN: ${STREAM_UI_MARGIN:-52}
+      STREAM_UI_TOP: ${STREAM_UI_TOP:-36}
+      STREAM_UI_BOTTOM: ${STREAM_UI_BOTTOM:-186}
+      # The colours the game uses for the health cross and the armour shield: red side, blue side.
+      STREAM_UI_COLOR_T: ${STREAM_UI_COLOR_T:-0xDD3333}
+      STREAM_UI_COLOR_CT: ${STREAM_UI_COLOR_CT:-0x3366DD}
+      STREAM_UI_COLOR_TEXT: ${STREAM_UI_COLOR_TEXT:-white}
+      STREAM_UI_COLOR_MUTED: ${STREAM_UI_COLOR_MUTED:-0xB9C2CF}
+      # 0 hides the two bottom lines (last donation, how to buy the next one) and keeps the rest.
+      STREAM_UI_DONATE: ${STREAM_UI_DONATE:-1}
+      # `info` prints the encoder progress (frame, fps, bitrate) into the container log, which is how
+      # a "Preparing stream" on YouTube is told apart from an encoder that sends nothing.
+      STREAM_FFMPEG_LOGLEVEL: ${STREAM_FFMPEG_LOGLEVEL:-warning}
       # Empty by default: the encoder then pushes to YouTube with YOUTUBE_STREAM_KEY.
       # For local viewing: rtmp://mediamtx:1935/live/test (see docs/runbook.md).
       STREAM_OUTPUT: ${STREAM_OUTPUT:-}

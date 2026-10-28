@@ -123,10 +123,12 @@ fi
 VF="${VF},format=yuv420p"
 
 # --- overlay -----------------------------------------------------------------------------------
-# Donation text under the picture. drawtext re-reads a text file every frame (`reload=1`), so a new
-# donation appears without restarting the encoder, and nothing from a viewer nickname has to be
-# escaped into the filter graph. The control API writes the file through a shared volume; the
-# placeholder below only covers the seconds before its first poll.
+# Donation text under the picture. This is the fallback: when the panel below is on it carries the
+# same lines, and this layer is left out so a donation is not printed twice.
+# drawtext re-reads a text file every frame (`reload=1`), so a new donation appears without
+# restarting the encoder, and nothing from a viewer nickname has to be escaped into the filter
+# graph. The control API writes the file through a shared volume; the placeholder below only covers
+# the seconds before its first poll.
 OVERLAY_TXT="${STREAM_OVERLAY_TXT:-}"
 OVERLAY_FONT="${STREAM_OVERLAY_FONT:-}"
 if [ -z "$OVERLAY_FONT" ]; then
@@ -135,6 +137,10 @@ if [ -z "$OVERLAY_FONT" ]; then
     if [ -f "$candidate" ]; then OVERLAY_FONT="$candidate"; break; fi
   done
 fi
+
+# A path inside a filter graph is escaped ('\', ':'), the file content is never parsed. Defined
+# before any layer is built: the panel needs it even when the donation overlay is off.
+overlay_path() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/:/\\:/g'; }
 
 if [ -n "$OVERLAY_TXT" ] && [ -n "$OVERLAY_FONT" ]; then
   mkdir -p "$(dirname "$OVERLAY_TXT")" 2>/dev/null || true
@@ -149,10 +155,7 @@ if [ -n "$OVERLAY_TXT" ] && [ -n "$OVERLAY_FONT" ]; then
     OVERLAY_MARGIN="${STREAM_OVERLAY_MARGIN:-150}"
     if [ "$ORIENTATION" != vertical ]; then OVERLAY_MARGIN="${STREAM_OVERLAY_MARGIN:-24}"; fi
 
-    # A path inside a filter graph is escaped ('\', ':'), the file content is never parsed.
-    overlay_path() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/:/\\:/g'; }
-
-    VF="${VF},drawtext=fontfile=$(overlay_path "$OVERLAY_FONT"):textfile=$(overlay_path "$OVERLAY_TXT")"\
+    OVERLAY_VF=",drawtext=fontfile=$(overlay_path "$OVERLAY_FONT"):textfile=$(overlay_path "$OVERLAY_TXT")"\
 ":reload=1:fontsize=${OVERLAY_FONTSIZE}:fontcolor=white:borderw=2:bordercolor=black@0.9"\
 ":line_spacing=8:box=1:boxcolor=black@0.35:boxborderw=10:x=(w-text_w)/2:y=h-text_h-${OVERLAY_MARGIN}"
     log "overlay: $OVERLAY_TXT, ${OVERLAY_FONTSIZE}px, ${OVERLAY_MARGIN}px from the bottom"
@@ -166,92 +169,123 @@ else
 fi
 
 # --- picture panel ----------------------------------------------------------------------------
-# The control API writes the whole on-screen interface - team race, team tops, the bot on camera,
-# the last donation - as an SVG with a transparent background. This script turns it into a PNG and
-# the encoder composites that over the game.
+# The whole on-screen interface - the score bar, both team tops, the bot on camera, the last
+# donation, how to buy the next activity - is drawn by the encoder itself with drawtext, from small
+# text files the control API writes into a shared volume: one file per line.
 #
-# Why the raster happens here and not in the control API: it needs a renderer plus fonts, and both
-# are already in this image (librsvg2-bin, fonts-dejavu-core). A native npm renderer would tie the
-# container to one platform, and node_modules is mounted from the developer's checkout.
+# Why text and not a rendered picture: a PNG had to enter ffmpeg as an extra input, and both ways of
+# feeding it froze on a live stream. `-loop 1` on the image keeps the first decoded frame forever;
+# a FIFO of PNG frames (image2pipe) showed the same picture for minutes while ui.png kept changing
+# on disk. drawtext re-reads its text file every frame (`reload=1`) - the mechanism the donation
+# line has always used - so there is no extra input and nothing to synchronise.
 #
-# Only a newer SVG is converted: rsvg-convert takes ~15 ms at 720x1280, and the panel changes a few
-# times a minute, not thirty times a second. The PNG is renamed into place, so a reader never sees
-# half a file, and `-loop 1` makes ffmpeg re-open it, so the picture updates without a restart.
-UI_SVG="${STREAM_UI_SVG:-/overlay/ui/ui.svg}"
-UI_PNG="${STREAM_UI_PNG:-/overlay/ui/ui.png}"
-UI_FPS="${STREAM_UI_FPS:-5}"
-# The panel reaches ffmpeg through a FIFO, not as a file input with `-loop 1`: measured on a live
-# stream, image2 keeps the first decoded frame and the panel froze at whatever it showed when the
-# encoder started, while ui.png kept changing on disk. A pipe of PNG frames (image2pipe) is read once
-# per frame, so every change is picked up.
-UI_PIPE="/tmp/ui.pipe"
-UI_LAYER=0
+# Why the score is a bar: drawbox cannot take its length from a file, so the advantage between the
+# teams is two runs of U+2588 FULL BLOCK. Each run is anchored at its own outer edge and the two
+# together always add up to the same number of blocks, so the edges never move and the bar cannot
+# flicker: only the point where the runs meet moves. U+2588 is the only glyph whose advance width is
+# identical in every run - U+2591 LIGHT SHADE measured 5 px narrower over twenty characters, which
+# is enough to make the bar crawl.
+UI_DIR="${STREAM_UI_DIR:-/overlay/ui}"
+UI_TEXT="${STREAM_UI_TEXT:-1}"
+UI_SIZE_BAR="${STREAM_UI_SIZE_BAR:-40}"
+UI_SIZE_SCORE="${STREAM_UI_SIZE_SCORE:-28}"
+UI_SIZE_TOP="${STREAM_UI_SIZE_TOP:-30}"
+UI_SIZE_TARGET="${STREAM_UI_SIZE_TARGET:-36}"
+UI_SIZE_LAST="${STREAM_UI_SIZE_LAST:-30}"
+UI_SIZE_MENU="${STREAM_UI_SIZE_MENU:-24}"
+UI_MARGIN="${STREAM_UI_MARGIN:-52}"
+UI_TOP="${STREAM_UI_TOP:-36}"
+UI_BOTTOM="${STREAM_UI_BOTTOM:-186}"
+UI_COLOR_T="${STREAM_UI_COLOR_T:-0xDD3333}"
+UI_COLOR_CT="${STREAM_UI_COLOR_CT:-0x3366DD}"
+UI_COLOR_TEXT="${STREAM_UI_COLOR_TEXT:-white}"
+UI_COLOR_MUTED="${STREAM_UI_COLOR_MUTED:-0xB9C2CF}"
+UI_READY="ui.json"
+# The two bottom lines (the last donation and how to buy the next activity) can be switched off on
+# their own: the panel then keeps the race and the bot on camera and leaves the Shorts strip clean.
+UI_DONATE="${STREAM_UI_DONATE:-1}"
+PANEL_LAYERS=0
+PANEL_VF=""
 
-panel_render() {
-  [ -f "$UI_SVG" ] || return 1
-  if [ -f "$UI_PNG" ] && [ "$UI_PNG" -nt "$UI_SVG" ]; then
-    return 0
+# One line of the panel. Sizes, colours and offsets all come from the environment, so the look is a
+# matter of .env instead of a rebuild.
+panel_add() {
+  # $1 file, $2 font size, $3 colour, $4 x expression, $5 y expression, $6 extra options
+  # An empty file draws nothing but keeps the graph valid: a drawtext whose textfile is missing fails
+  # the whole filter graph, and after an upgrade the new files do not exist until the control API
+  # writes them - while the `ui.json` left in the volume lets the wait below pass immediately.
+  [ -e "$UI_DIR/$1" ] || : 2>/dev/null > "$UI_DIR/$1" || true
+  PANEL_VF="${PANEL_VF},drawtext=fontfile=$(overlay_path "$OVERLAY_FONT")"\
+":textfile=$(overlay_path "$UI_DIR/$1"):reload=1:fontsize=$2:fontcolor=$3"\
+":borderw=2:bordercolor=black@0.85:x=$4:y=$5${6:-}"
+  PANEL_LAYERS=$((PANEL_LAYERS + 1))
+}
+
+panel_setup() {
+  [ "$UI_TEXT" = 1 ] || { log "ui: off (STREAM_UI_TEXT=$UI_TEXT)"; return 0; }
+  [ -n "$OVERLAY_FONT" ] || { log "ui: off, no font found (install fonts-dejavu-core)"; return 0; }
+  mkdir -p "$UI_DIR" 2>/dev/null || true
+
+  local box=":box=1:boxcolor=black@0.45:boxborderw=8"
+  local row_top=$((UI_TOP + 72))
+  local row_target=$((UI_TOP + 124))
+  local row_notice=$((UI_TOP + 174))
+  local row_last=$((UI_BOTTOM + 52))
+
+  # The bar first: the red run anchored to the left margin, the blue one to the right margin, so
+  # both outer edges are fixed and only the meeting point moves. The colours are the ones the game
+  # uses for the health cross and the armour shield: red side, blue side.
+  panel_add bar-t.txt "$UI_SIZE_BAR" "$UI_COLOR_T" "$UI_MARGIN" "$UI_TOP"
+  panel_add bar-ct.txt "$UI_SIZE_BAR" "$UI_COLOR_CT" "w-text_w-${UI_MARGIN}" "$UI_TOP"
+  # The frag counts sit on the blocks at the fixed outer ends, like the number on a health bar.
+  # Inset by 12 px so a two-digit number never touches the frame margin. The row is measured, not
+  # guessed: on a rendered frame the blocks cover y 36..83 (centre 59.5) and a 28 px digit line at
+  # y=42 covers 42..61 (centre 51.5), so the digits go 14 px below UI_TOP - an 8 px shift down.
+  local score_x=$((UI_MARGIN + 12))
+  local score_y=$((UI_TOP + 14))
+  panel_add score-t.txt "$UI_SIZE_SCORE" "$UI_COLOR_TEXT" "$score_x" "$score_y"
+  panel_add score-ct.txt "$UI_SIZE_SCORE" "$UI_COLOR_TEXT" "w-text_w-${score_x}" "$score_y"
+  panel_add top-t.txt "$UI_SIZE_TOP" "$UI_COLOR_MUTED" "$UI_MARGIN" "$row_top" "$box"
+  panel_add top-ct.txt "$UI_SIZE_TOP" "$UI_COLOR_MUTED" "w-text_w-${UI_MARGIN}" "$row_top" "$box"
+  panel_add target.txt "$UI_SIZE_TARGET" "$UI_COLOR_TEXT" "(w-text_w)/2" "$row_target" "$box"
+  panel_add notice.txt "$UI_SIZE_TOP" "$UI_COLOR_MUTED" "(w-text_w)/2" "$row_notice" "$box"
+  if [ "$UI_DONATE" = 1 ]; then
+    panel_add last.txt "$UI_SIZE_LAST" "$UI_COLOR_TEXT" "(w-text_w)/2" "h-$row_last" "$box"
+    panel_add menu.txt "$UI_SIZE_MENU" "$UI_COLOR_MUTED" "(w-text_w)/2" "h-${UI_BOTTOM}" "$box"
   fi
-  if rsvg-convert -w "$OUT_W" -h "$OUT_H" -o "${UI_PNG}.tmp" "$UI_SVG" 2>/dev/null &&
-     mv -f "${UI_PNG}.tmp" "$UI_PNG"; then
-    return 0
-  fi
-  return 1
+  log "ui: $UI_DIR, ${PANEL_LAYERS} drawtext layers, bar ${UI_SIZE_BAR}px at ${UI_MARGIN}px margin,"\
+" donation lines $([ "$UI_DONATE" = 1 ] && echo on || echo off)"
 }
 
-panel_loop() {
-  while true; do
-    panel_render || true
-    sleep 0.2
-  done
-}
+# The panel carries the donation lines itself, so the single-block overlay above is used only when
+# the panel is off - otherwise every donation would be printed twice.
+panel_setup
+if [ "$PANEL_LAYERS" -gt 0 ]; then
+  VF="${VF}${PANEL_VF}"
+else
+  VF="${VF}${OVERLAY_VF:-}"
+fi
 
-# Feeds the current PNG into the FIFO ffmpeg reads. `cat` re-reads the file on every pass, so a panel
-# that changed on disk is what the next frame carries. The write blocks until the encoder opens the
-# pipe, which is fine: the loop simply waits, and a failed open during an encoder restart costs one
-# pass.
-panel_feed_loop() {
-  mkfifo "$UI_PIPE" 2>/dev/null || true
-  while true; do
-    cat "$UI_PNG" > "$UI_PIPE" 2>/dev/null || sleep 0.2
-    sleep 0.2
-  done
-}
-
-# The encoder starts a second after this container, the panel arrives when the control API has polled
-# the game once. Waiting here is cheaper than restarting the encoder: the first frames of the stream
-# then already carry the panel instead of the bare game.
+# The encoder starts a second after this container, the panel appears once the control API has
+# polled the game. Waiting here is cheaper than restarting the encoder: the first frames of the
+# stream then already carry the panel instead of a bare game.
+#
+# The marker is `ui.json`, not one of the lines: the control API writes the lines first and the dump
+# last, and a drawtext filter whose text file does not exist yet fails the whole graph.
 wait_for_panel() {
-  [ -n "$UI_PNG" ] || return 0
+  [ "$PANEL_LAYERS" -gt 0 ] || return 0
   local waited=0
   while [ "$waited" -lt 20 ]; do
-    if [ -f "$UI_PNG" ]; then
+    if [ -f "$UI_DIR/$UI_READY" ]; then
       log "ui: panel ready after ${waited}s"
       return 0
     fi
     sleep 1
     waited=$((waited + 1))
   done
-  log "ui: no panel after 20s, the encoder starts without it"
+  log "ui: nothing in $UI_DIR after 20s, the lines stay empty until the control API writes them"
   return 0
 }
-
-case "$UI_PNG" in
-  ""|off|0) log "ui: off (STREAM_UI_PNG is empty)" ;;
-  *)
-    mkdir -p "$(dirname "$UI_PNG")" 2>/dev/null || true
-    if ! command -v rsvg-convert > /dev/null 2>&1; then
-      log "ui: rsvg-convert is missing, the panel cannot be rendered (install librsvg2-bin)"
-    elif panel_render; then
-      UI_LAYER=1
-      log "ui: $UI_SVG -> $UI_PNG at ${UI_FPS} fps"
-    else
-      # The control API writes the first SVG within a second of starting, and the encoder waits for
-      # the client anyway: a restart picks the panel up on the next attempt.
-      log "ui: $UI_SVG does not exist yet, starting without the panel"
-    fi
-    ;;
-esac
 
 # --- output -----------------------------------------------------------------------------------
 # The container format follows the scheme of the target, never a separate setting: an RTMP server
@@ -483,19 +517,9 @@ run_encoder() {
     # A video-only stream is flagged by YouTube; silence still gives it an audio track.
     args+=(-f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=44100")
   fi
-  local panel=0
-  if [ -f "$UI_PNG" ]; then
-    panel=1
-    # Input 2 is the panel: the game is 0 and the audio 1 in both branches above. image2pipe, not a
-    # file with -loop 1: see panel_feed_loop() for the freeze that caused.
-    args+=(-f image2pipe -framerate "$UI_FPS" -i "$UI_PIPE")
-    # format=auto keeps ffmpeg from inserting a colour conversion of the game frame twice: the PNG
-    # is RGBA, the game frame is already yuv420p by now.
-    args+=(-filter_complex "[0:v]${VF}[game];[game][2:v]overlay=0:0:format=auto,format=yuv420p[out]")
-    args+=(-map "[out]" -map "1:a")
-  else
-    args+=(-vf "$VF")
-  fi
+  # The panel is part of VF: every line is a drawtext filter fed by its own text file, so there is
+  # no second input to keep in sync with the game frame.
+  args+=(-vf "$VF")
   if [ -n "$audio_filter" ]; then args+=(-af "$audio_filter"); fi
   args+=(
     -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p
@@ -507,7 +531,7 @@ run_encoder() {
   # A TCP receiver connects to us, so ffmpeg has to listen; anything else dials the peer.
   case "$TARGET" in tcp://*) args+=(-listen 1) ;; esac
   args+=(-f "$TARGET_FORMAT" "$TARGET")
-  log "ffmpeg <- ${OUT_W}x${OUT_H}@${FPS}, capture ${CAP_W}x${CAP_H}, game ${GAME_W}x${GAME_H} at y=${PAD_Y}, panel=${panel}, ${BITRATE}k -> $TARGET_LABEL"
+  log "ffmpeg <- ${OUT_W}x${OUT_H}@${FPS}, capture ${CAP_W}x${CAP_H}, game ${GAME_W}x${GAME_H} at y=${PAD_Y}, panel=${PANEL_LAYERS} layers, ${BITRATE}k -> $TARGET_LABEL"
   # The command itself is logged without the last two arguments: for RTMP they hold the stream key.
   log "ffmpeg args: ${args[*]:0:${#args[@]}-2}"
   # ffmpeg writes its stderr to a file, never into a pipe: with a process substitution (or any pipe
@@ -687,10 +711,9 @@ if [ "$RECORD_SEC" -gt 0 ]; then
   exit 0
 fi
 
-# The panel writer first: wait_for_panel() needs it running before the encoder starts.
-if command -v rsvg-convert > /dev/null 2>&1; then panel_loop & fi
+# The control API writes the panel files; the encoder starts once the first one exists, so the first
+# frames of the stream already carry the interface instead of a bare game.
 wait_for_panel
-if [ -f "$UI_PNG" ]; then panel_feed_loop & fi
 run_encoder_forever &
 # The watchdog needs the layout to sample the same framebuffer ffmpeg grabs, and STATUS_DIR to write
 # its heartbeat next to status.json.

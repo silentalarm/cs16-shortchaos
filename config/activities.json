@@ -57,6 +57,20 @@
       "params": { "maxPhraseLength": 40 }
     },
     {
+      "code": "he_party",
+      "title": "HE party",
+      "announce": "ALL WEAPONS GONE, HE GRENADES ONLY!",
+      "price": 70,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 60,
+      "rounds": null,
+      "cooldownSec": 90,
+      "globalCooldownSec": 0,
+      "enabled": true,
+      "params": { "seconds": 60 }
+    },
+    {
       "code": "knives_only",
       "title": "Knives only",
       "announce": "KNIVES ONLY!",

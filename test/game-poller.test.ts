@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GamePoller, parseScore, parseTarget } from "../src/game-poller.ts";
+import { GamePoller, parseScore, parseTarget, parseWinner } from "../src/game-poller.ts";
 
 /**
- * The panel reads the game through two console lines. Both parsers are pinned against the exact
+ * The panel reads the game through three console lines. Every parser is pinned against the exact
  * strings the plugins print, because a silent `null` here means a panel without a score, and nobody
  * notices that until the stream is live.
  */
@@ -40,6 +40,44 @@ test("no camera target is null, not a bot called -", () => {
   assert.equal(parseTarget("Unknown command: amx_stcam"), null);
   // An armour field the plugin does not print yet must not break the line.
   assert.deepEqual(parseTarget("stream_cam status: target=Smith hp=50"), { name: "Smith", hp: 50, armor: 0 });
+});
+
+test("the duel line names the winner, and only once the duel is decided", () => {
+  assert.equal(parseWinner("map_duel status: state=done winner=Mr_Smith"), "Mr Smith");
+  // A running duel has no winner yet, and the cvar keeps the previous map's name: `state` guards it.
+  assert.equal(parseWinner("map_duel status: state=live winner=Mr_Smith"), "");
+  assert.equal(parseWinner("map_duel status: state=idle winner=-"), "");
+  assert.equal(parseWinner("map_duel status: state=done winner=-"), "");
+  assert.equal(parseWinner("Unknown command: amx_map_duel"), "");
+  assert.equal(parseWinner(""), "");
+});
+
+test("the winner of the last duel reaches the panel and goes away with the map", async () => {
+  let duel = "map_duel status: state=live winner=-";
+  const poller = new GamePoller({
+    exec: async (command) => {
+      if (command.startsWith("amx_map_duel")) return duel;
+      return command.startsWith("amx_team_war") ? SCORE_LINE : TARGET_LINE;
+    },
+    intervalMs: 100,
+    staleAfter: 1,
+    log: () => {},
+  });
+
+  poller.start();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(poller.snapshot().winner, "");
+
+  duel = "map_duel status: state=done winner=Mr_Smith";
+  await new Promise((resolve) => setTimeout(resolve, 220));
+  assert.equal(poller.snapshot().winner, "Mr Smith");
+
+  // A fresh map resets the cvar; the panel must stop showing the previous winner.
+  duel = "map_duel status: state=idle winner=-";
+  await new Promise((resolve) => setTimeout(resolve, 220));
+  assert.equal(poller.snapshot().winner, "");
+
+  poller.stop();
 });
 
 test("a dead server dims the panel instead of emptying it", async () => {

@@ -25,10 +25,11 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
 
   assert.equal(config.currency, "RUB");
   assert.equal(config.minAmount, 50);
-  // 21 codes, one price step each: the ladder is the only "menu" the viewer sees, so every step
+  // 18 codes, one price step each: the ladder is the only "menu" the viewer sees, so every step
   // has to show a different picture. bless_bot/curse_leader/bot_phrase are cheap instant ones,
-  // chaos_burst only triggers plugins/chaos_core, bounty/hot_potato/boss_raid follow the round.
-  assert.equal(config.activities.length, 17, "17 activities after the zone activities were dropped");
+  // chaos_burst only triggers plugins/chaos_core, he_party is the one effect on a clock of its own,
+  // bounty/hot_potato/boss_raid follow the round.
+  assert.equal(config.activities.length, 18, "18 activities after the zone activities were dropped");
 
   const codes = config.activities.map((activity) => activity.code);
   assert.equal(new Set(codes).size, codes.length, "codes are unique");
@@ -53,6 +54,20 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
   const mapChange = config.activities.find((activity) => activity.code === "map_change");
   assert.ok(mapChange);
   assert.ok(mapChange.globalCooldownSec >= 600, "map change is rate limited to once per 10 minutes");
+});
+
+test("the HE party carries its own clock, not a round", () => {
+  const config = loadActivities(shippedConfig);
+  const party = config.activities.find((activity) => activity.code === "he_party");
+
+  assert.ok(party, "he_party is not in the catalogue");
+  assert.equal(party.duration, "seconds");
+  assert.equal(party.seconds, 60);
+  // The plugin reads the length from the command the control API builds, so both places must agree.
+  assert.equal(party.params.seconds, party.seconds);
+  // Knives only is the cheap knife round; the party is the one with grenades, so they cannot share a
+  // price - the ladder maps a donation amount to exactly one activity.
+  assert.equal(party.price, 70);
 });
 
 test("the round fights carry the parameters the plugin reads", () => {
@@ -102,6 +117,29 @@ test("rounds must be null for non-round durations", () => {
   assert.throws(
     () => parseActivities(doc([act({ duration: "until_map_change", rounds: 3 })])),
     /"rounds" must be null when duration is "until_map_change"/,
+  );
+});
+
+test("a clock activity is bounded, and rounds and seconds cannot be mixed", () => {
+  const clock = parseActivities(doc([act({ duration: "seconds", seconds: 30, rounds: null })]));
+  assert.equal(clock.activities[0]?.seconds, 30);
+  assert.equal(clock.activities[0]?.rounds, null);
+
+  assert.throws(
+    () => parseActivities(doc([act({ duration: "seconds", seconds: 0, rounds: null })])),
+    /"seconds" must be between 1 and 600/,
+  );
+  assert.throws(
+    () => parseActivities(doc([act({ duration: "seconds", seconds: 601, rounds: null })])),
+    /"seconds" must be between 1 and 600/,
+  );
+  assert.throws(
+    () => parseActivities(doc([act({ duration: "seconds", seconds: 30, rounds: 1 })])),
+    /"rounds" must be null when duration is "seconds"/,
+  );
+  assert.throws(
+    () => parseActivities(doc([act({ rounds: 1, seconds: 30 })])),
+    /"seconds" must be null when duration is "rounds"/,
   );
 });
 

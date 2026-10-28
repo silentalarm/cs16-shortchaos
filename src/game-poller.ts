@@ -9,6 +9,8 @@ import type { UiScore, UiTarget } from "./ui/state.ts";
  */
 export const SCORE_COMMAND = "amx_team_war status";
 export const TARGET_COMMAND = "amx_stcam status";
+/** The end-of-map duel (`plugins/map_duel`): who won it, printed for the few seconds before the map changes. */
+export const DUEL_COMMAND = "amx_map_duel status";
 
 /** Matches `t=12 ct=9 top_t=Smith:7 top_ct=Neo:5` in any order, inside the surrounding sentence. */
 const SCORE_FIELD = /(?:^|\s)(t|ct|top_t|top_ct)=(\S+)/gu;
@@ -59,7 +61,6 @@ const TARGET_ARMOR = /(?:^|\s)ar=(\d+)/u;
 
 /**
  * Parses the `stream_cam status:` line into the bot on camera.
- *
  * null when the camera has no target (`target=-`), which is what an empty spawn window looks like:
  * the panel then simply omits the line instead of printing "- 0 HP 0 AR".
  */
@@ -77,6 +78,23 @@ export function parseTarget(reply: string): UiTarget | null {
   };
 }
 
+const DUEL_STATE = /(?:^|\s)state=(\w+)/u;
+const DUEL_WINNER = /(?:^|\s)winner=(\S*)/u;
+
+/**
+ * Parses the `map_duel status:` line into the winner's nickname; empty when there is none.
+ *
+ * The name is read only in `state=done`: the cvar keeps the last winner until the next map starts
+ * its own count, and a stale name on a fresh map would credit somebody with a duel he did not fight.
+ */
+export function parseWinner(reply: string): string {
+  const state = DUEL_STATE.exec(reply)?.[1] ?? "";
+  if (state !== "done") return "";
+  const winner = DUEL_WINNER.exec(reply)?.[1] ?? "-";
+  const printable = winner.replace(/_/gu, " ").trim();
+  return printable === "-" ? "" : printable;
+}
+
 export interface GamePollerOptions {
   /** Runs one RCON command; normally `RconClient.exec` of the shared client. */
   exec: (command: string) => Promise<string>;
@@ -89,6 +107,8 @@ export interface GamePollerOptions {
 export interface GameSnapshot {
   score: UiScore | null;
   target: UiTarget | null;
+  /** Winner of the end-of-map duel, empty until the duel of this map is decided. */
+  winner: string;
   stale: boolean;
 }
 
@@ -109,6 +129,7 @@ export class GamePoller {
   readonly #log: (event: string, details?: Record<string, unknown>) => void;
   #score: UiScore | null = null;
   #target: UiTarget | null = null;
+  #winner = "";
   #failures = 0;
   #timer: ReturnType<typeof setTimeout> | null = null;
   #stopped = true;
@@ -135,15 +156,21 @@ export class GamePoller {
   }
 
   snapshot(): GameSnapshot {
-    return { score: this.#score, target: this.#target, stale: this.#failures >= this.#staleAfter };
+    return {
+      score: this.#score,
+      target: this.#target,
+      winner: this.#winner,
+      stale: this.#failures >= this.#staleAfter,
+    };
   }
 
   async #tick(): Promise<void> {
     if (this.#stopped) return;
     try {
-      const [scoreReply, targetReply] = await Promise.all([
+      const [scoreReply, targetReply, duelReply] = await Promise.all([
         this.#exec(SCORE_COMMAND),
         this.#exec(TARGET_COMMAND),
+        this.#exec(DUEL_COMMAND),
       ]);
 
       const score = parseScore(scoreReply);
@@ -152,6 +179,7 @@ export class GamePoller {
       } else {
         this.#score = score;
         this.#target = parseTarget(targetReply);
+        this.#winner = parseWinner(duelReply);
         this.#recovered();
       }
     } catch (error) {

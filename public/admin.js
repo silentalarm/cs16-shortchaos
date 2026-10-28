@@ -113,7 +113,7 @@ function renderActivities(data) {
           <div class="muted">${esc(activity.announce)}</div>
         </td>
         <td><input type="number" min="0" step="1" data-field="price" value="${activity.price}"></td>
-        <td>${esc(activity.duration)}${activity.rounds === null ? "" : ` x${activity.rounds}`}</td>
+        <td>${esc(activity.duration)}${activity.duration === "seconds" ? ` ${activity.seconds}s` : activity.rounds === null ? "" : ` x${activity.rounds}`}</td>
         <td><input type="number" min="0" step="1" data-field="cooldownSec" value="${activity.cooldownSec}"></td>
         <td><input type="checkbox" data-field="enabled" ${activity.enabled ? "checked" : ""}></td>
         <td>
