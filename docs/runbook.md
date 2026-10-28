@@ -16,27 +16,24 @@ score is counted by the plugin from `DeathMsg`, not read from the engine scorebo
 engine subtracts a frag for a team kill and this server is free for all with friendly fire on
 (`mp_friendlyfire 1`, `yb_csdm_mode 2`). **A team kill counts for the killer's team.**
 
-The HUD block is drawn by **stream_cam**, not by team_war:
+The numbers are published as cvars (`team_war_t`, `team_war_ct`, `team_war_top_t`,
+`team_war_top_ct`) and printed on one console line for `amx_team_war status`:
 
 ```
-T 12 : 9 CT
-TOP T Smith 7  |  TOP CT Neo 5
-Smith 100 HP 0 AR
+team_war status: t=12 ct=9 top_t=Smith:7 top_ct=Neo:5
 ```
 
-Why: this client renders a single hudmessage per tick. A second message from team_war, on its own
-channel, was overwritten by the name/HP line every second - verified on frames, the block never
-appeared. So team_war publishes the numbers as cvars (`team_war_t`, `team_war_ct`, `team_war_top_t`,
-`team_war_top_ct`) once a second, and stream_cam puts them into the one message it already sends to
-the camera, at y=0.24.
+The block on screen is drawn **outside the game** by `src/ui` (see "The picture panel" below), which
+reads that line once a second and renders `T 12 : 9 CT`, both team tops and the bot on camera into a
+PNG. Nothing is drawn into the game any more: the old hudmessage flickered, because it was resent
+once a second with a fade-in (`hold 1.6`, `fadein 0.1`) and this client renders a single message.
 
 - the score survives rounds; a map change re-initialises the plugin, which is the only reset;
-- 0.24 is the anchor the single line used and it stays whole: the encoder cuts the top 20% band and
-  0.20 lost the glyph tops. The block grows downwards from that anchor;
 - `team_war_name_len` (14) trims a long nickname so the CT half stays inside the frame;
 - team_war writes `score: T n : m CT` to the log once a minute: the only trace of the race in the
   server log, and what tells an empty score apart from a plugin that stopped counting;
-- without `team_war.amxx` stream_cam keeps its plain `name HP AR` line.
+- `stcam_hud 1` brings the in-game block back (score + `name HP AR` in one hudmessage) as a fallback
+  for a server that runs without the control API. It is off by default.
 
 ```
 amx_team_war status   t=12 ct=9 top_t=Smith:7 top_ct=Neo:5   (spaces in names become underscores)
@@ -70,32 +67,23 @@ plugins synced from the image"), so a stale volume is not a problem; a stale *co
 
 The 110, 130, 170 and 230 RUB steps are free again: the zone activities that used them were removed.
 
-## CSDM: compiled from source, never loaded (dead weight)
+## The respawn mode: csdm_lite, no CSDM
 
-CSDM is built from source inside the image, not downloaded as a binary: the project publishes no
-releases, so `infra/checksums.env` pins a commit tarball (`CSDM_URL`/`CSDM_SHA256`) and
-`infra/build-csdm.sh` compiles five modules with the `amxxpc` that is already in the build stage.
-Only `csdm_main`, `csdm_equip`, `csdm_spawn_preset`, `csdm_misc`, `csdm_protection` are built; `ffa`,
-`itemmode`, `tickets` and `spawn_editor` stay out, because every extra plugin is another hook on
-`DeathMsg`.
+There is **no CSDM in the image any more**. Its plugins need the `csdm_amxx` C++ module (HLSDK
+headers plus a 32-bit toolchain, see "Why full CSDM is not used" below), so they were only ever
+compiled and never loaded; its spawn presets existed for the random-spawn experiment, which is gone.
+The whole stage was removed together with them: no `CSDM_*` pin, no `build-csdm.sh`, no
+`infra/csdm.cfg`, nothing synced into `configs/csdm/`.
 
-**None of them is loaded** (`infra/plugins.ini`): they require the `csdm_amxx` C++ module, which is
-not built, so `csdm_lite` does the job instead. Nothing in the image reads CSDM's data either: the
-`configs/csdm/<map>.spawns.cfg` presets were used by `csdm_lite` while random spawns existed, and that
-code is gone (see "Spawn points" below). The whole CSDM stage is dead weight and is the next thing to
-remove: `build-csdm.sh`, `infra/csdm.cfg`, the `CSDM_URL` pin and the `/opt/defaults/csdm` sync.
-
-Everything the old CSDM setup did through `csdm.cfg` now lives in `csdm_lite` cvars:
+What replaced it lives in `plugins/csdm_lite` and is configured by its own cvars:
 `csdm_lite_delay` (0.5 s respawn), `csdm_lite_weapons` (the random primary), `csdm_lite_health`
-(100) and `csdm_lite_protect` (one second of godmode, the equivalent of `[protection] time 1`).
+(100), `csdm_lite_protect` (one second of godmode).
 
 `server.cfg` changed with it: `mp_roundtime 3`, `mp_freezetime 1`, `mp_timelimit 20` (the old
 `0` meant dust2 never rotated) and `yb_chat 1` with `yb_chat_percent 3` - a silent bot-only server
 reads as dead.
 
-`csdm.cfg` and `configs/csdm/*.spawns.cfg` are synced over the volume on every start
-(`/opt/defaults`), so an edited config reaches an existing container without a volume wipe. After
-editing any of it: `infra/build-image.ps1` then `infra/compose.ps1 up -d --force-recreate hlds`.
+Deploying any of it: `infra/build-image.ps1` then `infra/compose.ps1 up -d --force-recreate hlds`.
 A plain `docker restart` keeps the old image and the old config.
 
 ## chaos_core: the chaos mod
@@ -207,17 +195,18 @@ Consequence worth knowing: on a team kill CS subtracts a frag, so the scoreboard
 
 ### Why full CSDM is not used
 
-CSDM is built from source (`infra/checksums.env` pins the commit `3df2741b` tarball,
-`infra/build-csdm.sh` compiles five modules with `amxxpc`) but **not loaded**: CSDM 2.x is a Pawn layer
-*plus* a C++ AMXX module (`csdm_amxx`), and its plugins refuse to start without it -
+CSDM 2.x is a Pawn layer *plus* a C++ AMXX module (`csdm_amxx`), and its plugins refuse to start
+without it:
 
 ```
 [AMXX] Plugin "csdm_main.amxx" failed to load: Module/Library "csdm" required for plugin.
 ```
 
-Building that module needs HLSDK headers and a 32-bit toolchain. The five `.amxx` files therefore sit
-unused in the image and are commented out in `infra/plugins.ini`; delete `infra/build-csdm.sh` and the
-`CSDM_*` lines if the extra build step ever gets in the way.
+Building that module needs HLSDK headers and a 32-bit toolchain. CSDM was compiled from source for a
+while - five modules that were never loaded, plus its spawn presets, which only existed for the
+random spawns that were dropped later. That whole stage is gone: no `CSDM_*` pin, no
+`infra/build-csdm.sh`, no `infra/csdm.cfg`, nothing synced into `configs/csdm`. `csdm_lite` does the
+respawn work and owns its own cvars.
 
 ### Reading the logs correctly (two traps)
 
@@ -259,7 +248,69 @@ Verified against YaPB 4.4.957 on the live server (`meta list`, `yb` help output)
 Still unverified: whether `yb_debug_goal <node>` makes the whole flock converge (would be used to
 pull the crowd into the ring), and whether `yb fun <mode>` restores gravity on map change.
 
-## The donation overlay
+## The picture panel (the UI, drawn outside the game)
+
+Everything a viewer reads on screen is a PNG the control API renders and the encoder composites over
+the game frame. Nothing is drawn by the game client: that is what made the old HUD flicker and sit
+half-invisible on a bright map.
+
+```
+team_war status  ─┐
+amx_stcam status ─┴─▶ game-poller (RCON, 1 Hz) ─┐
+donations + queue (SQLite, per poll) ───────────┴─▶ ui-state ─▶ SVG template ─▶ ui.svg (720x1280)
+                                                                                  │
+                                       rsvg-convert (capture container) ─▶ ui.png │
+                                                                                  │
+                    ffmpeg: x11grab ─crop/scale─▶ overlay(ui.png) ─▶ x264 ─▶ RTMP ◀┘
+```
+
+- `src/game-poller.ts` - two console commands a second (`amx_team_war status`, `amx_stcam status`);
+  a failed poll keeps the last numbers and only sets `stale`, so the panel dims instead of blanking;
+- `src/ui/state.ts` - the model (`score`, `target`, donation line, menu line, queue size, theme);
+  the donation lines come from `buildOverlay()`, so the panel and the text fallback cannot disagree;
+- `src/ui/template.ts` - the visual: 720x1280, transparent, the panel in the top third (score, both
+  tops, the bot on camera) and the donation strip just above the Shorts UI. `THEMES` in
+  `src/ui/state.ts` maps activity codes to accent colours - a new visual variant is one line there
+  plus one branch in the template;
+- `src/ui/loop.ts` - compares a signature of the state, writes `ui.svg` + `ui.json` through a
+  temporary file, and only when the state changes (5 Hz ceiling). An idle server costs nothing;
+- **rasterising happens in the capture container**, not in the control API: `infra/stream/entrypoint.sh`
+  runs `rsvg-convert` (from `librsvg2-bin`) whenever the SVG is newer than the PNG, and only then.
+  Reasons: the fonts (`fonts-dejavu-core`) and the renderer are already there, and a native npm
+  renderer cannot be mounted from a Windows checkout into a Linux container. About 15 ms per change;
+- the encoder adds the PNG as a third input (`-loop 1 -framerate 5`) and composites it with
+  `overlay=0:0:format=auto`. `-loop 1` re-opens the file, so an updated panel appears without
+  restarting ffmpeg (`panel=1` in the `ffmpeg <-` log line says the layer is on).
+
+Knobs: `UI_RENDER` (1), `UI_INTERVAL_MS` (200), `STREAM_UI_SVG` (`/overlay/ui/ui.svg`),
+`STREAM_UI_PNG` (`/overlay/ui/ui.png`), `STREAM_UI_FPS` (5). The panel lives in a subdirectory of the
+overlay volume because the capture container is unprivileged: `writeUiFrame` creates `overlay/ui` and
+opens it up (`0777`), so the rasteriser can replace `ui.png` next to a root-owned `ui.svg`. Without
+the control API there is no `ui.svg` and the encoder falls back to the game frame plus the old
+`drawtext` donation line.
+
+Editing the look without Docker:
+
+```powershell
+npm run ui-preview      # http://127.0.0.1:4399 - the exact SVG the encoder receives
+$env:UI_PREVIEW_ACTIVITY='bounty'; npm run ui-preview   # another theme
+```
+
+Limits on purpose: 5 fps (a panel is not an animation), one write per state change (no per-frame
+rendering), and no CSS - the panel is SVG, and `rsvg-convert` costs milliseconds next to llvmpipe and
+x264.
+
+Editing the look without Docker:
+
+```powershell
+npm run ui-preview      # http://127.0.0.1:4399 - the SVG, /ui.png - the raster the encoder gets
+$env:UI_PREVIEW_ACTIVITY='bounty'; npm run ui-preview   # another theme
+```
+
+Limits on purpose: 5 fps (a panel is not an animation), one PNG per state change (no per-frame
+rendering), and no CSS - the renderer is SVG so it costs milliseconds next to llvmpipe and x264.
+
+## The donation overlay (fallback, no panel)
 
 `src/overlay.ts` writes three lines that the encoder draws over the picture with ffmpeg `drawtext`:
 

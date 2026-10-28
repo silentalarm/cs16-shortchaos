@@ -7,11 +7,14 @@ import type { DonationRow } from "./db.ts";
 import { openStore } from "./db.ts";
 import { fetchDonations } from "./donationalerts.ts";
 import { loadEnv } from "./env.ts";
+import { GamePoller } from "./game-poller.ts";
 import { buildOverlay, writeOverlay } from "./overlay.ts";
 import { drainQueue, pollOnce } from "./poller.ts";
 import { PendingQueue } from "./queue.ts";
 import { RconClient } from "./rcon.ts";
 import { TokenStore } from "./token-store.ts";
+import { UiLoop } from "./ui/loop.ts";
+import { buildUiState, type UiState } from "./ui/state.ts";
 
 const env = loadEnv();
 const baseCatalog = loadActivities(env.activitiesPath);
@@ -77,12 +80,9 @@ function liveSource(clientId: string, clientSecret: string, redirectUri: string)
 
 let rcon: RconClient | null = null;
 let admin: import("node:http").Server | null = null;
+let uiLoop: UiLoop | null = null;
 
-async function apply(command: string): Promise<string> {
-  if (env.rcon.dryRun) {
-    log("rcon.dry_run", { command });
-    return "dry-run";
-  }
+async function ensureRcon(): Promise<RconClient> {
   if (rcon === null) {
     rcon = await RconClient.connect({
       host: env.rcon.host,
@@ -91,13 +91,63 @@ async function apply(command: string): Promise<string> {
       timeoutMs: env.rcon.timeoutMs,
     });
   }
+  return rcon;
+}
+
+/** One command on the shared connection; a dead socket is dropped so the next call reconnects. */
+async function execRcon(command: string): Promise<string> {
+  const client = await ensureRcon();
   try {
-    return await rcon.exec(command);
+    return await client.exec(command);
   } catch (error) {
-    rcon.close();
+    client.close();
     rcon = null;
     throw error;
   }
+}
+
+async function apply(command: string): Promise<string> {
+  if (env.rcon.dryRun) {
+    log("rcon.dry_run", { command });
+    return "dry-run";
+  }
+  return execRcon(command);
+}
+
+/**
+ * A read-only RCON call for the panel poller. Silent in a dry run: the poller fires twice a second
+ * and a log line per poll would bury everything else.
+ */
+async function readConsole(command: string): Promise<string> {
+  if (env.rcon.dryRun) return "";
+  return execRcon(command);
+}
+
+const gamePoller = new GamePoller({ exec: readConsole, log });
+
+/**
+ * The donation side of the panel, refreshed once per poll cycle instead of on every UI tick: the
+ * loop runs at 5 Hz and SQLite does not need to be asked the same question five times a second for
+ * a 24/7 stream.
+ */
+let uiRecent: ReturnType<typeof store.recent> = [];
+let uiPending: ReturnType<typeof queue.snapshot> = [];
+
+function refreshUiInputs(): void {
+  uiRecent = store.recent(5);
+  uiPending = queue.snapshot();
+}
+
+function currentUiState(): UiState {
+  const snapshot = gamePoller.snapshot();
+  return buildUiState({
+    score: snapshot.score,
+    target: snapshot.target,
+    recent: uiRecent,
+    catalog,
+    pending: uiPending,
+    stale: snapshot.stale,
+  });
 }
 
 /**
@@ -107,12 +157,39 @@ async function apply(command: string): Promise<string> {
  */
 function refreshOverlay(): void {
   try {
+    refreshUiInputs();
     writeOverlay(
       env.overlayDir,
       buildOverlay({ recent: store.recent(5), catalog, pending: queue.snapshot(), now: Date.now() }),
     );
   } catch (error) {
     log("overlay.error", { error: (error as Error).message });
+  }
+}
+
+/**
+ * The picture panel: a PNG the encoder overlays on the game frame, redrawn only when the state it
+ * shows changes. Optional on purpose - without it the stream still runs, with the old drawtext
+ * donation line and the plugin's own HUD.
+ */
+function startUi(): void {
+  if (!env.ui.render) {
+    log("ui.disabled", { hint: "set UI_RENDER=1 to draw the panel" });
+    return;
+  }
+  try {
+    uiLoop = new UiLoop({
+      dir: env.overlayDir,
+      getState: currentUiState,
+      intervalMs: env.ui.intervalMs,
+      log,
+    });
+    gamePoller.start();
+    uiLoop.start();
+    log("ui.started", { dir: env.overlayDir, intervalMs: env.ui.intervalMs });
+  } catch (error) {
+    // A missing font or a read-only directory: the stream must survive a broken panel.
+    log("ui.error", { error: (error as Error).message });
   }
 }
 
@@ -211,7 +288,9 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  // The panel starts after the first poll so it opens on real state, not on an empty screen.
+  // The panel starts after the first poll, so the first frame already carries the donations.
+  startUi();
+  // The admin panel is started only now, so it opens on real state instead of an empty screen.
   admin = startAdmin();
 
   const timer = setInterval(() => void tick(), env.pollSec * 1000);
@@ -219,6 +298,8 @@ async function main(): Promise<void> {
   const shutdown = (): void => {
     clearInterval(timer);
     admin?.close();
+    gamePoller.stop();
+    uiLoop?.stop();
     rcon?.close();
     store.close();
     log("stopped");

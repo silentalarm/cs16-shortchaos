@@ -43,6 +43,12 @@ export interface Env {
     hlsPort: number;
     hlsPath: string;
   };
+  ui: {
+    /** false disables the panel entirely: the encoder then keeps the old drawtext layer. */
+    render: boolean;
+    /** How often the state is compared against the last written SVG. */
+    intervalMs: number;
+  };
 }
 
 function text(name: string, fallback = ""): string {
@@ -104,6 +110,10 @@ export function loadEnv(envFile = ".env"): Env {
       streamStatusDir: text("STREAM_STATUS_DIR", "data/stream"),
       hlsPort: integer("STREAM_HLS_PORT", 8888, 1),
       hlsPath: text("STREAM_HLS_PATH", "live/test").replace(/^\/+|\/+$/g, ""),
+    },
+    ui: {
+      render: flag("UI_RENDER", true),
+      intervalMs: integer("UI_INTERVAL_MS", 200, 50),
     },
   };
 }

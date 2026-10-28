@@ -68,6 +68,32 @@ test("the HUD still gets real health and armour from the server", () => {
   assert.match(plugin, /get_pcvar_num\(cvar_hud\)/, "stcam_hud no longer gates the line");
 });
 
+test("the panel outside the game gets its data from the plugin, not from the HUD", () => {
+  // The in-game block is off by default now: the picture is drawn by the control API, and a
+  // hudmessage on top of it would duplicate the numbers (and flicker at a 1 Hz refresh).
+  assert.equal(cvarDefault("stcam_hud"), "0", "stcam_hud must default to 0");
+
+  for (const name of ["stcam_name", "stcam_hp", "stcam_ar"]) {
+    assert.match(plugin, new RegExp(`register_cvar\\("${name}"`), `${name} is not registered`);
+    assert.match(plugin, new RegExp(`set_cvar_string\\("${name}"`), `${name} is never published`);
+  }
+
+  // Published before the stcam_hud gate, so the panel keeps working with the HUD switched off.
+  const feed = /stock FeedHud\(\)\s*\{[\s\S]*?\n\}/.exec(plugin)?.[0] ?? "";
+  const publish = feed.indexOf("PublishTarget(");
+  const gate = feed.indexOf("cvar_hud");
+  assert.ok(publish >= 0, "FeedHud never publishes the target");
+  assert.ok(gate > publish, "stcam_hud gates the publication: the panel would go blank");
+});
+
+test("the status line carries the armour and a single-token target", () => {
+  const status = /server_print\("stream_cam status:([^"]+)"/.exec(plugin)?.[1] ?? "";
+  assert.match(status, /ar=%d/, "the panel's parseTarget reads ar=");
+  // Names come from the game and go through a regex on the reader side: no spaces allowed.
+  assert.match(plugin, /ReplaceSpaces\(target, charsmax\(target\)\)/);
+  assert.match(plugin, /ReplaceSpaces\(spectator, charsmax\(spectator\)\)/);
+});
+
 test("the spectator's PVS anchor follows the target faster than the director tick", () => {
   // The engine builds the client's PVS from the invisible spectator's own origin. A once-a-second
   // copy was too coarse: the bot crossed a portal between ticks and its model stopped arriving,

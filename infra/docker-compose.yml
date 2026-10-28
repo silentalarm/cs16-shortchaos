@@ -122,6 +122,12 @@ services:
       # Donation text written by the control API through the shared volume. Empty disables the
       # overlay layer, which is also what happens when the image has no font.
       STREAM_OVERLAY_TXT: /overlay/overlay.txt
+      # The picture panel: the control API writes a transparent SVG (score, tops, the bot on camera,
+      # the last donation), this container rasterises it with rsvg-convert and the encoder composites
+      # the PNG over the game. Same volume, two files.
+      STREAM_UI_SVG: ${STREAM_UI_SVG:-/overlay/ui/ui.svg}
+      STREAM_UI_PNG: ${STREAM_UI_PNG:-/overlay/ui/ui.png}
+      STREAM_UI_FPS: ${STREAM_UI_FPS:-5}
       # Empty by default: the encoder then pushes to YouTube with YOUTUBE_STREAM_KEY.
       # For local viewing: rtmp://mediamtx:1935/live/test (see docs/runbook.md).
       STREAM_OUTPUT: ${STREAM_OUTPUT:-}

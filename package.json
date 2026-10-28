@@ -13,7 +13,8 @@
     "start": "node src/main.ts",
     "fake-donation": "node scripts/fake-donation.ts",
     "oauth-login": "node scripts/oauth-login.ts",
-    "stream": "node scripts/stream.ts"
+    "stream": "node scripts/stream.ts",
+    "ui-preview": "node scripts/ui-preview.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

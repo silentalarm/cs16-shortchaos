@@ -165,6 +165,77 @@ else
   log "overlay: off (STREAM_OVERLAY_TXT is empty)"
 fi
 
+# --- picture panel ----------------------------------------------------------------------------
+# The control API writes the whole on-screen interface - team race, team tops, the bot on camera,
+# the last donation - as an SVG with a transparent background. This script turns it into a PNG and
+# the encoder composites that over the game.
+#
+# Why the raster happens here and not in the control API: it needs a renderer plus fonts, and both
+# are already in this image (librsvg2-bin, fonts-dejavu-core). A native npm renderer would tie the
+# container to one platform, and node_modules is mounted from the developer's checkout.
+#
+# Only a newer SVG is converted: rsvg-convert takes ~15 ms at 720x1280, and the panel changes a few
+# times a minute, not thirty times a second. The PNG is renamed into place, so a reader never sees
+# half a file, and `-loop 1` makes ffmpeg re-open it, so the picture updates without a restart.
+UI_SVG="${STREAM_UI_SVG:-/overlay/ui/ui.svg}"
+UI_PNG="${STREAM_UI_PNG:-/overlay/ui/ui.png}"
+UI_FPS="${STREAM_UI_FPS:-5}"
+UI_LAYER=0
+
+panel_render() {
+  [ -f "$UI_SVG" ] || return 1
+  if [ -f "$UI_PNG" ] && [ "$UI_PNG" -nt "$UI_SVG" ]; then
+    return 0
+  fi
+  if rsvg-convert -w "$OUT_W" -h "$OUT_H" -o "${UI_PNG}.tmp" "$UI_SVG" 2>/dev/null &&
+     mv -f "${UI_PNG}.tmp" "$UI_PNG"; then
+    return 0
+  fi
+  return 1
+}
+
+panel_loop() {
+  while true; do
+    panel_render || true
+    sleep 0.2
+  done
+}
+
+# The encoder starts a second after this container, the panel arrives when the control API has polled
+# the game once. Waiting here is cheaper than restarting the encoder: the first frames of the stream
+# then already carry the panel instead of the bare game.
+wait_for_panel() {
+  [ -n "$UI_PNG" ] || return 0
+  local waited=0
+  while [ "$waited" -lt 20 ]; do
+    if [ -f "$UI_PNG" ]; then
+      log "ui: panel ready after ${waited}s"
+      return 0
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  log "ui: no panel after 20s, the encoder starts without it"
+  return 0
+}
+
+case "$UI_PNG" in
+  ""|off|0) log "ui: off (STREAM_UI_PNG is empty)" ;;
+  *)
+    mkdir -p "$(dirname "$UI_PNG")" 2>/dev/null || true
+    if ! command -v rsvg-convert > /dev/null 2>&1; then
+      log "ui: rsvg-convert is missing, the panel cannot be rendered (install librsvg2-bin)"
+    elif panel_render; then
+      UI_LAYER=1
+      log "ui: $UI_SVG -> $UI_PNG at ${UI_FPS} fps"
+    else
+      # The control API writes the first SVG within a second of starting, and the encoder waits for
+      # the client anyway: a restart picks the panel up on the next attempt.
+      log "ui: $UI_SVG does not exist yet, starting without the panel"
+    fi
+    ;;
+esac
+
 # --- output -----------------------------------------------------------------------------------
 # The container format follows the scheme of the target, never a separate setting: an RTMP server
 # rejects anything that is not FLV, while a file must not get the FLV wrapper.
@@ -378,6 +449,7 @@ run_encoder() {
     -thread_queue_size 512 -analyzeduration 0 -probesize 32
     -f x11grab -draw_mouse 0 -framerate "$FPS" -video_size "${CAP_W}x${CAP_H}" -i ":99.0"
   )
+  local audio_filter=""
   if [ "${AUDIO_OK:-0}" = 1 ]; then
     args+=(-thread_queue_size 512 -analyzeduration 0 -probesize 32 -f pulse -i "$PULSE_MONITOR")
     # PulseAudio timestamps drift against the X11 clock; without this ffmpeg prints
@@ -385,13 +457,29 @@ run_encoder() {
     # alimiter must run with level=false: its default auto-level applies makeup gain and the
     # recording ended up 6 dB over full scale even though the limiter was in the chain.
     # Two inputs (X11 + PulseAudio) and the engine can scream: attenuate first, then limit.
-    args+=(-af "aresample=async=1:first_pts=0,volume=-8dB,alimiter=limit=0.95:level=false")
+    #
+    # Kept in a variable and appended after every input: `-af` is an output option, and between two
+    # `-i` arguments ffmpeg reads it as an input option for the next file ("Option af ... cannot be
+    # applied to input url").
+    audio_filter="aresample=async=1:first_pts=0,volume=-8dB,alimiter=limit=0.95:level=false"
   else
     # A video-only stream is flagged by YouTube; silence still gives it an audio track.
     args+=(-f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=44100")
   fi
+  local panel=0
+  if [ -f "$UI_PNG" ]; then
+    panel=1
+    # Input 2 is the panel: the game is 0 and the audio 1 in both branches above.
+    args+=(-loop 1 -framerate "$UI_FPS" -i "$UI_PNG")
+    # format=auto keeps ffmpeg from inserting a colour conversion of the game frame twice: the PNG
+    # is RGBA, the game frame is already yuv420p by now.
+    args+=(-filter_complex "[0:v]${VF}[game];[game][2:v]overlay=0:0:format=auto,format=yuv420p[out]")
+    args+=(-map "[out]" -map "1:a")
+  else
+    args+=(-vf "$VF")
+  fi
+  if [ -n "$audio_filter" ]; then args+=(-af "$audio_filter"); fi
   args+=(
-    -vf "$VF"
     -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p
     -b:v "${BITRATE}k" -maxrate "${BITRATE}k" -bufsize "$((BITRATE * 2))k"
     -g "$((FPS * 2))" -keyint_min "$FPS" -sc_threshold 0
@@ -401,7 +489,7 @@ run_encoder() {
   # A TCP receiver connects to us, so ffmpeg has to listen; anything else dials the peer.
   case "$TARGET" in tcp://*) args+=(-listen 1) ;; esac
   args+=(-f "$TARGET_FORMAT" "$TARGET")
-  log "ffmpeg <- ${OUT_W}x${OUT_H}@${FPS}, capture ${CAP_W}x${CAP_H}, game ${GAME_W}x${GAME_H} at y=${PAD_Y}, ${BITRATE}k -> $TARGET_LABEL"
+  log "ffmpeg <- ${OUT_W}x${OUT_H}@${FPS}, capture ${CAP_W}x${CAP_H}, game ${GAME_W}x${GAME_H} at y=${PAD_Y}, panel=${panel}, ${BITRATE}k -> $TARGET_LABEL"
   # The command itself is logged without the last two arguments: for RTMP they hold the stream key.
   log "ffmpeg args: ${args[*]:0:${#args[@]}-2}"
   # ffmpeg writes its stderr to a file, never into a pipe: with a process substitution (or any pipe
@@ -581,6 +669,9 @@ if [ "$RECORD_SEC" -gt 0 ]; then
   exit 0
 fi
 
+# The panel writer first: wait_for_panel() needs it running before the encoder starts.
+if command -v rsvg-convert > /dev/null 2>&1; then panel_loop & fi
+wait_for_panel
 run_encoder_forever &
 # The watchdog needs the layout to sample the same framebuffer ffmpeg grabs, and STATUS_DIR to write
 # its heartbeat next to status.json.

@@ -39,7 +39,7 @@ RUN dpkg --add-architecture i386 \
       libpulse0:i386 libasound2t64:i386 libasound2-plugins:i386 \
       libgl1:i386 libglx-mesa0:i386 libgl1-mesa-dri:i386 \
       pulseaudio pulseaudio-utils \
-      fonts-dejavu-core \
+      fonts-dejavu-core librsvg2-bin \
       ffmpeg procps tini \
  && rm -rf /var/lib/apt/lists/* \
  && printf 'pcm.!default {\n    type pulse\n}\nctl.!default {\n    type pulse\n}\n' > /etc/asound.conf

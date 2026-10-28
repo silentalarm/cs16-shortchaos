@@ -95,8 +95,17 @@ public plugin_init()
 	cvar_interval    = register_cvar("stcam_interval", "25.0");
 	cvar_avoidRepeat = register_cvar("stcam_avoid_repeat", "1");
 	cvar_specName    = register_cvar("stcam_spectator", "StreamCam");
-	cvar_hud         = register_cvar("stcam_hud", "1");
+	// 0 by default: the picture panel is drawn outside the game by the control API (src/ui), and a
+	// hudmessage on top of it would only duplicate (and, at a 1 Hz refresh with a fade-in, flicker).
+	// 1 brings the old in-game block back as a fallback for a server without the panel.
+	cvar_hud         = register_cvar("stcam_hud", "0");
 	cvar_heartbeat   = register_cvar("stcam_heartbeat", "60.0");
+
+	// What the panel outside the game reads every second: the bot on camera and its state as
+	// single tokens (spaces become underscores, like team_war does for nicknames).
+	register_cvar("stcam_name", "-");
+	register_cvar("stcam_hp", "0");
+	register_cvar("stcam_ar", "0");
 
 	register_srvcmd("amx_stcam", "CmdStreamCam");
 
@@ -316,10 +325,47 @@ stock ApplyCamera()
  * bot model already holds it, and the ammo lookups were the calls that could abort the whole update
  * (`cs_get_user_bpammo` on a knife raises "Invalid weapon id").
  */
+/**
+ * The bot on camera as three cvars the panel can read.
+ *
+ * A nickname with a space cannot travel through a console line or a cvar query, so spaces become
+ * underscores here and the reader turns them back - the same contract team_war uses for its tops.
+ */
+stock PublishTarget(hp, armor)
+{
+	new name[NAME_LEN];
+	if (g_target > 0 && is_user_connected(g_target))
+		get_user_name(g_target, name, charsmax(name));
+	else
+		copy(name, charsmax(name), "-");
+
+	ReplaceSpaces(name, charsmax(name));
+
+	new value[8];
+	format(value, charsmax(value), "%d", hp);
+	set_cvar_string("stcam_hp", value);
+	format(value, charsmax(value), "%d", armor);
+	set_cvar_string("stcam_ar", value);
+	set_cvar_string("stcam_name", name);
+}
+
+stock ReplaceSpaces(text[], length)
+{
+	for (new i = 0; i < length && text[i] != '^0'; i++)
+	{
+		if (text[i] == ' ')
+			text[i] = '_';
+	}
+}
+
 stock FeedHud()
 {
 	new hp = get_user_health(g_target);
 	new armor = get_user_armor(g_target);
+
+	// Published for the panel drawn outside the game (src/ui): the picture must not depend on the
+	// in-game line, which is off by default.
+	PublishTarget(hp, armor);
 
 	if (g_msgHealth)
 	{
@@ -602,6 +648,7 @@ public CmdStreamCam(id, level, cid)
 	new spectator[NAME_LEN] = "none";
 	new target[NAME_LEN] = "none";
 	new hp;
+	new armor;
 	new candidates;
 
 	if (g_camId > 0 && is_user_connected(g_camId))
@@ -610,7 +657,12 @@ public CmdStreamCam(id, level, cid)
 	{
 		get_user_name(g_target, target, charsmax(target));
 		hp = get_user_health(g_target);
+		armor = get_user_armor(g_target);
 	}
+
+	// Values must stay single tokens: the panel parses this line with a regex.
+	ReplaceSpaces(spectator, charsmax(spectator));
+	ReplaceSpaces(target, charsmax(target));
 
 	for (new i = 1; i <= MAX_PLAYERS; i++)
 	{
@@ -619,10 +671,10 @@ public CmdStreamCam(id, level, cid)
 	}
 
 	// One line, key=value, no spaces inside values: docs/runbook.md greps exactly this.
-	server_print("stream_cam status: enabled=%d interval=%.1f mode=%d spectator=%s target=%s candidates=%d dwell=%.1f hp=%d active=%d",
+	server_print("stream_cam status: enabled=%d interval=%.1f mode=%d spectator=%s target=%s candidates=%d dwell=%.1f hp=%d active=%d ar=%d",
 		get_pcvar_num(cvar_enabled), get_pcvar_float(cvar_interval), get_pcvar_num(cvar_mode),
 		spectator, target, candidates,
-		get_pcvar_float(cvar_dwell), hp, g_modeSent);
+		get_pcvar_float(cvar_dwell), hp, g_modeSent, armor);
 
 	return PLUGIN_HANDLED;
 }

@@ -21,11 +21,16 @@ src/rcon.ts              minimal RCON client (GoldSrc: `challenge rcon` over UDP
 src/donationalerts.ts    OAuth2 (code + refresh) and the donations list endpoint
 src/db.ts                SQLite: donation history, dedup by id, polling cursor
 src/poller.ts            one polling pass: dedup, map, cooldown, apply, store
+src/game-poller.ts       RCON poller for the panel: team race + the bot on camera (1 Hz)
+src/ui/state.ts          the panel model: score, tops, target, donations, queue, theme
+src/ui/template.ts       the panel itself: SVG 720x1280, transparent, themes per activity
+src/ui/loop.ts           writes ui.svg only when the state changes (the capture container rasterises it)
 src/main.ts              daemon: env, wiring, graceful shutdown, POLL_ONCE mode
 scripts/fake-donation.ts appends a fake donation for the mock source
 scripts/oauth-login.ts   one-off OAuth helper, writes data/da-token.json
+scripts/ui-preview.ts    local preview of the panel, no Docker and no game server
 plugins/donation_events/ Pawn plugin: effect registry, one public handler per activity
-plugins/team_war/        Pawn plugin: T vs CT frag race on the stream HUD
+plugins/team_war/        Pawn plugin: T vs CT frag race, published as cvars for the panel
 infra/Dockerfile         game image: HLDS + ReHLDS + ReGameDLL + Metamod-R + AMXX + YaPB
 infra/build-hlds.sh      assembles the server, verifies every SHA256, compiles the plugin
 infra/update-checksums.ps1 resolves official release assets and writes infra/checksums.env
