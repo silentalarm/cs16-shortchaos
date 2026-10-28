@@ -131,7 +131,7 @@ mkdir -p "$WORK/csdm" /opt/csdm-src
 tar -xzf "$WORK/csdm.tar.gz" -C "$WORK/csdm" --strip-components=1
 cp -a "$WORK/csdm/amxmodx/scripting/." /opt/csdm-src/
 test -f /opt/csdm-src/csdm_main.sma || { echo "FATAL: CSDM sources not found" >&2; exit 1; }
-# Spawn points ship with CSDM and are read by csdm_lite (csdm_spawn_preset is not loaded).
+# Spawn points ship with CSDM; nothing reads them (csdm_lite's random spawns were removed).
 mkdir -p "$HLDS/cstrike/addons/amxmodx/configs/csdm"
 cp -f "$WORK/csdm/amxmodx/configs/csdm/"*.spawns.cfg "$HLDS/cstrike/addons/amxmodx/configs/csdm/"
 cp -f "$WORK/csdm/amxmodx/configs/csdm.cfg" "$HLDS/cstrike/addons/amxmodx/configs/csdm.cfg"

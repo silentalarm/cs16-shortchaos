@@ -1,11 +1,15 @@
 /**
- * csdm_lite - the "meat grinder": instant respawn for bots with a random weapon, on random spawns.
+ * csdm_lite - the "meat grinder": instant respawn for bots with a random weapon.
  *
  * Why not CSDM: CSDM 2.x ships a Pawn plugin layer *and* a C++ AMXX module (csdm_amxx), and the
  * plugins refuse to load without it ("Module/Library 'csdm' required for plugin"). That module needs
  * HLSDK headers and a 32-bit toolchain at build time. The behaviour we actually want for the stream
- * is small enough to own: respawn on death, strip, give a random primary, one second of protection,
- * and a spawn point from the map's CSDM preset instead of the two team heaps.
+ * is small enough to own: respawn on death, strip, give a random primary, one second of protection.
+ *
+ * Spawn points are the map's own. Random points across the map were tried and dropped: a bot that
+ * appears off the bot's navigation graph cannot build a path and stands still (3 kills in 90 s with
+ * teleports, 8 in 45 s with extra spawn entities, 149 per minute on the normal spawns). The teams
+ * meet at the spawns anyway, so the picture keeps moving without them.
  *
  * Only bots are respawned. The spectator camera is a client too; respawning it would move the
  * camera off its target on every bot death.
@@ -18,21 +22,13 @@
 #include <hamsandwich>
 
 #define PLUGIN_NAME "CSDM Lite"
-#define PLUGIN_VERSION "1.1.0"
+#define PLUGIN_VERSION "1.2.0"
 
 #define MAX_WEAPONS 8
 #define WEAPON_LEN 24
 
-// One line per point in a CSDM spawn preset; a busy map has a few hundred.
-#define MAX_SPAWNS 320
-#define SPAWN_LINE_LEN 96
-
 new g_weapons[MAX_WEAPONS][WEAPON_LEN];
 new g_weaponCount;
-
-new Float:g_spawnOrigins[MAX_SPAWNS][3];
-new g_spawnYaw[MAX_SPAWNS];
-new g_spawnCount;
 
 new g_cvarEnabled;
 new g_cvarDelay;
@@ -40,7 +36,6 @@ new g_cvarWeapons;
 new g_cvarProtect;
 new g_cvarHealth;
 new g_cvarDebug;
-new g_cvarRandomSpawn;
 
 public plugin_init()
 {
@@ -56,25 +51,10 @@ public plugin_init()
 	// Off by default: one log line per death on a 24/7 server is a lot of noise. Turn it on over
 	// RCON to prove the respawns are really happening.
 	g_cvarDebug = register_cvar("csdm_lite_debug", "0");
-	// Random spawn points across the map: implemented (see CreateScatterSpawns) but OFF by default.
-	// Measured with 80 extra spawn entities from the dust2 CSDM preset: bots stand still on those
-	// points, because YaPB cannot build a path from a place that is not on its waypoint graph -
-	// 8 kills per 45 s against 149 per minute on the normal spawns. Kept behind a cvar instead of
-	// deleted, so the idea can be finished once the graph side is solved.
-	g_cvarRandomSpawn = register_cvar("csdm_lite_random_spawn", "0");
 
 	// DeathMsg: 1 = killer, 2 = victim.
 	register_event("DeathMsg", "OnDeathMsg", "a");
 	LoadWeaponList();
-}
-
-/* Configs are read after the map is loaded, so the spawn preset of the right map is picked. The
-   entities are created a moment later: at plugin_cfg the map has not spawned its own entities yet
-   and CreateNamedEntity answers 0. */
-public plugin_cfg()
-{
-	LoadSpawnPoints();
-	set_task(3.0, "CreateScatterSpawns");
 }
 
 public OnDeathMsg()
@@ -202,160 +182,5 @@ stock bool:IsSafeWeapon(const weapon[])
 		if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'))
 			return false;
 	}
-	return true;
-}
-
-/* ---------- random spawn points ---------- */
-
-/* Reads <amxx configs>/csdm/<map>.spawns.cfg: the presets ship with CSDM and the image already
-   copies them into configs/csdm, so this needs no new dependency. One line is one point:
-   "x y z <v> yaw 0 0 <v> yaw 0" - only the first three numbers and the yaw are used. */
-stock LoadSpawnPoints()
-{
-	new map[32];
-	get_mapname(map, charsmax(map));
-
-	new dir[64];
-	get_localinfo("amxx_configsdir", dir, charsmax(dir));
-
-	new path[PLATFORM_MAX_PATH];
-	format(path, charsmax(path), "%s/csdm/%s.spawns.cfg", dir, map);
-
-	g_spawnCount = 0;
-
-	new file = fopen(path, "rt");
-	if (!file)
-	{
-		log_amx("no spawn preset for %s, engine spawns are used", map);
-		return;
-	}
-
-	new line[SPAWN_LINE_LEN];
-	new Float:values[6];
-
-	while (g_spawnCount < MAX_SPAWNS && fgets(file, line, charsmax(line)))
-	{
-		// One comparison for "empty line or whitespace": a char literal such as '\r' makes amxxpc
-		// abort with std::bad_alloc, and every control character is <= ' ' anyway.
-		if (line[0] <= ' ')
-			continue;
-
-		if (line[0] == '/')
-			continue;
-
-		if (ReadFloats(line, values, sizeof values) < 3)
-			continue;
-
-		g_spawnOrigins[g_spawnCount][0] = values[0];
-		g_spawnOrigins[g_spawnCount][1] = values[1];
-		g_spawnOrigins[g_spawnCount][2] = values[2];
-		// The yaw sits at index 4; a preset without it leaves 0.0, which means "face north".
-		g_spawnYaw[g_spawnCount] = floatround(values[4]);
-		g_spawnCount++;
-	}
-
-	fclose(file);
-
-	log_amx("loaded %d spawn points from %s", g_spawnCount, path);
-}
-
-/* Numbers out of one line. strtok() writing into the buffer it reads from crashed amxxpc before, so
-   every token is copied out into its own string first. */
-stock ReadFloats(const line[], Float:out[], maxValues)
-{
-	new length = strlen(line);
-	new index;
-	new i;
-
-	while (i < length && index < maxValues)
-	{
-		// Everything at or below a space is a separator: space, tab, CR, LF, the closing NUL.
-		while (i < length && line[i] <= ' ')
-			i++;
-
-		if (i >= length)
-			break;
-
-		new token[24];
-		new count;
-
-		while (i < length && line[i] > ' ' && count < charsmax(token))
-		{
-			token[count] = line[i];
-			count++;
-			i++;
-		}
-		token[count] = '^0';
-
-		out[index] = str_to_float(token);
-		index++;
-	}
-
-	return index;
-}
-
-/* CS picks a spawn entity at random for every respawn, so extra points are created instead of
-   teleporting bots: a teleport leaves the bot plugin with a navigation node from the old place,
-   and the bot then stands still for the rest of its life (measured: 3 kills per 90 s with
-   teleports, 149 kills per minute without). With real spawn entities the engine does the work and
-   the bots never notice. */
-/* Spawn entity classes differ per map: de_dust2 carries info_player_start and info_player_deathmatch,
-   some maps use the team-specific ones. All four are tried for every preset and the log line says
-   how many the engine accepted. */
-new const g_spawnClasses[][] =
-{
-	"info_player_start",
-	"info_player_deathmatch",
-	"info_player_counterterrorist",
-	"info_player_terrorist"
-};
-
-public CreateScatterSpawns()
-{
-	if (!get_pcvar_num(g_cvarRandomSpawn))
-		return;
-
-	new created;
-	for (new i = 0; i < g_spawnCount; i++)
-	{
-		for (new c = 0; c < sizeof g_spawnClasses; c++)
-		{
-			if (CreateSpawnEntity(g_spawnClasses[c], i))
-				created++;
-		}
-	}
-
-	if (created < 1)
-	{
-		log_amx("no extra spawn points created, engine spawns are used");
-		return;
-	}
-
-	log_amx("created %d extra spawn points from %d presets", created, g_spawnCount);
-}
-
-stock bool:CreateSpawnEntity(const classname[], index)
-{
-	// CreateNamedEntity + AllocString: the classname must live in the engine's string table, with a
-	// plain engfunc(EngFunc_CreateEntity, ...) the plugin dies with "Run time error 10".
-	new entity = engfunc(EngFunc_CreateNamedEntity, engfunc(EngFunc_AllocString, classname));
-	if (!entity)
-		return false;
-
-	new Float:origin[3];
-	origin[0] = g_spawnOrigins[index][0];
-	origin[1] = g_spawnOrigins[index][1];
-	origin[2] = g_spawnOrigins[index][2];
-	engfunc(EngFunc_SetOrigin, entity, origin);
-
-	// Face the direction the point was recorded with, otherwise a fresh bot stares at a wall.
-	// Not engfunc(EngFunc_SetAngle): that constant makes amxxpc abort with std::bad_alloc.
-	new Float:angles[3];
-	angles[0] = 0.0;
-	angles[1] = float(g_spawnYaw[index]);
-	angles[2] = 0.0;
-	set_pev(entity, pev_angles, angles);
-
-	dllfunc(DLLFunc_Spawn, entity);
 	return true;
 }

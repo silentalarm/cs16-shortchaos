@@ -41,9 +41,10 @@ Planned: ffmpeg streaming to YouTube.
 - an amount buys the most expensive activity it can afford, leftovers are not banked;
 - round-based activities apply at once and last at most until the round ends; `bot_nick` lives until
   map change;
-- the server is free for all: friendly fire on, YaPB targets teammates too (`yb_csdm_mode 2`); random
-  spawns from the CSDM presets exist (`csdm_lite_random_spawn`) but stay off - bots freeze on points
-  that are not on the YaPB waypoint graph, numbers in `docs/runbook.md`;
+- the server is free for all: friendly fire on, YaPB targets teammates too (`yb_csdm_mode 2`); bots
+  spawn on the map's own points and respawn half a second after dying, random spawns across the map
+  were tried and deleted - bots freeze on points that are not on the YaPB graph, numbers in
+  `docs/runbook.md`;
 - the stream is a race between T and CT (`plugins/team_war`): every frag counts for the killer's
   team, a team kill included, and the HUD keeps `T n : m CT` with both team tops until the map
   changes;

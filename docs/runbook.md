@@ -70,7 +70,7 @@ plugins synced from the image"), so a stale volume is not a problem; a stale *co
 
 The 110, 130, 170 and 230 RUB steps are free again: the zone activities that used them were removed.
 
-## CSDM: source and spawn presets only, the mode is csdm_lite
+## CSDM: compiled from source, never loaded (dead weight)
 
 CSDM is built from source inside the image, not downloaded as a binary: the project publishes no
 releases, so `infra/checksums.env` pins a commit tarball (`CSDM_URL`/`CSDM_SHA256`) and
@@ -80,9 +80,10 @@ Only `csdm_main`, `csdm_equip`, `csdm_spawn_preset`, `csdm_misc`, `csdm_protecti
 `DeathMsg`.
 
 **None of them is loaded** (`infra/plugins.ini`): they require the `csdm_amxx` C++ module, which is
-not built, so `csdm_lite` does the job instead and `infra/csdm.cfg` is inert - kept only so the file
-matches the upstream format. What the image still uses from that tarball is the data:
-`configs/csdm/<map>.spawns.cfg` (40 points for dust2) is read by `csdm_lite`.
+not built, so `csdm_lite` does the job instead. Nothing in the image reads CSDM's data either: the
+`configs/csdm/<map>.spawns.cfg` presets were used by `csdm_lite` while random spawns existed, and that
+code is gone (see "Spawn points" below). The whole CSDM stage is dead weight and is the next thing to
+remove: `build-csdm.sh`, `infra/csdm.cfg`, the `CSDM_URL` pin and the `/opt/defaults/csdm` sync.
 
 Everything the old CSDM setup did through `csdm.cfg` now lives in `csdm_lite` cvars:
 `csdm_lite_delay` (0.5 s respawn), `csdm_lite_weapons` (the random primary), `csdm_lite_health`
@@ -152,45 +153,32 @@ respawn count is lower than the kill count on purpose - if the round ends first,
 the bot and the task returns early without logging.
 
 Cvars: `csdm_lite_enabled` (1), `csdm_lite_delay` (0.5), `csdm_lite_weapons`, `csdm_lite_health`
-(100), `csdm_lite_protect` (1), `csdm_lite_random_spawn` (0), `csdm_lite_debug` (0). The weapon list
-is re-read only at plugin load, so changing it means `amx_reload` or a container restart.
+(100), `csdm_lite_protect` (1), `csdm_lite_debug` (0). The weapon list is re-read only at plugin
+load, so changing it means `amx_reload` or a container restart.
 
-### Random spawns across the map: implemented, off by default
+### Spawn points: the map's own
 
-`csdm_lite_random_spawn` (0). When on, `plugin_cfg` reads
-`<amxmodx>/configs/csdm/<map>.spawns.cfg` (the presets ship with CSDM and the image copies them into
-the volume, 40 points for de_dust2, `x y z` plus yaw at position 5) and creates an
-`info_player_start` + `info_player_deathmatch` entity for every point, so the engine itself picks a
-random spawn. Creating the entities with `info_player_counterterrorist` / `info_player_terrorist` does
-not work on this map: `CreateNamedEntity` answers 0 and the log says `created 0 extra spawn points`.
-
-**It is off because the bots freeze.** Two attempts, both measured on the live server:
+Random spawn points across the map were built, measured, and then **deleted** from the plugin: a bot
+that appears off the bot's navigation graph cannot build a path and stands still.
 
 | Attempt | What happened | Kills |
 |---|---|---|
 | `set_user_origin` on respawn + round start | YaPB keeps the navigation node from the old place, cannot build a path, the bot stands still: 18 of 20 bots never fired a shot | 3 in 90 s |
-| extra spawn entities (the engine spawns them) | same freeze: the CSDM points are not on YaPB's waypoint graph | 8 in 45 s |
+| extra spawn entities from the CSDM preset (the engine spawns them) | same freeze: the points are not on YaPB's graph | 8 in 45 s |
 | control: normal team spawns, FFA on | bots run and fight | 149 in 60 s |
 
-So the next step is on the graph side, not on the spawn side: pre-pick only points that sit on a
-graph node, or snap every point onto the nearest node. **The pinned bot cannot answer a single
-question in that direction:**
+The teams meet at their own spawns, so the picture keeps moving without random points - the grinder
+only has to bring a dead bot back, which it does (`ExecuteHamB(Ham_CS_RoundRespawn)`). If the idea is
+ever revived, it needs node data first, and the pinned bot cannot supply it:
 
 - `YAPB_URL` pins `yapb-4.4.957-linux.tar.xz`, and 4.4.957 exports **no AMXX natives at all**: its
   `src/module.cpp` only implements the internal `IYaPBModule` interface, there is no `ext/amxx`, and
   the archive ships no `yapb.inc`;
-- the node API - `yb_get_nearest_node`, `yb_find_nearest_node_in_radius`, `yb_get_node_origin`,
-  `yb_get_node_link_count`, `yb_set_bot_goal` - exists only on the `master` line (the docs call it
-  4.8), which is published as the **Continuous Build** pre-release, not as a stable tag;
-- the stable `.graph` files cannot be read from Pawn either: `bstor` writes a compressed blob
-  (`magic`, `version`, `compressed_size`, `uncompressed_size`), not a flat node dump.
-
-Two ways forward, both change a pinned dependency, so neither is done yet:
-
-| Option | What it costs |
-|---|---|
-| pin the continuous build, `#include <yapb>`, snap the spawn points onto `yb_get_nearest_node` | the release asset is rebuilt on every push, so a SHA256 pin drifts; the include lives in the source tree and has to be copied into the image |
-| build YaPB from a pinned commit inside the image (the CSDM way) | a CMake + 32-bit toolchain stage, and the bot is the one component whose crash takes the stream down |
+- the node API (`yb_get_nearest_node`, `yb_get_node_origin`, `yb_get_node_link_count`) exists only on
+  the `master` line, published as the **Continuous Build** pre-release, whose asset is rebuilt on
+  every push - so a SHA256 pin would drift;
+- the shipped `.graph` files are a compressed `bstor` blob (`magic`, `version`, `compressed_size`,
+  `uncompressed_size`), not a flat node dump, so they cannot be parsed instead.
 
 Two compiler traps found on the way, both `std::bad_alloc` with no diagnostics: a **char literal such
 as `'\r'`** (compare with `line[i] <= ' '`) and **`engfunc(EngFunc_SetAngle, ...)`** (use
@@ -265,8 +253,8 @@ Verified against YaPB 4.4.957 on the live server (`meta list`, `yb` help output)
 - The AMXX module with per-bot natives (`yb_set_bot_goal_origin` and friends) is **not** in the pinned
   release: `ext/amxx` is absent from 4.4.957 and the `extras` archives contain bots only. The natives
   would need a 4.8 build from source.
-- Therefore no `config/nodes.json`: nothing needs graph node ids. `csdm_lite` spawns bots from the
-  map's CSDM preset, and `team_war` only reads kills.
+- Therefore no `config/nodes.json`: nothing needs graph node ids. `csdm_lite` lets the engine place the
+  bots on the map's own spawns, and `team_war` only reads kills.
 
 Still unverified: whether `yb_debug_goal <node>` makes the whole flock converge (would be used to
 pull the crowd into the ring), and whether `yb fun <mode>` restores gravity on map change.
