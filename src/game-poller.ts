@@ -3,10 +3,15 @@ import type { UiScore, UiTarget } from "./ui/state.ts";
 /**
  * What the panel needs from the game server, polled once a second.
  *
- * Two console commands, not six cvar reads: `plugins/team_war` already prints the race on one line
- * and `plugins/stream_cam` prints the bot on camera. Both are the same numbers the plugins publish
- * as cvars, so the panel and the game can never disagree.
+ * One console command, not six cvar reads: `amx_full_status` (plugins/team_war) prints the race,
+ * the bot on camera and the end-of-map duel in a single reply. It reads the cvars the plugins
+ * publish, so the panel and the game can never disagree.
+ *
+ * Why one command and not three: RCON has no request id and `RconClient` serialises commands, so
+ * three probes per tick cost three round-trips - and a paid activity waits behind every one.
  */
+export const FULL_STATUS_COMMAND = "amx_full_status";
+/** The pre-`amx_full_status` probes, kept as a fallback for a server still running an old build. */
 export const SCORE_COMMAND = "amx_team_war status";
 export const TARGET_COMMAND = "amx_stcam status";
 /** The end-of-map duel (`plugins/map_duel`): who won it, printed for the few seconds before the map changes. */
@@ -133,6 +138,8 @@ export class GamePoller {
   #failures = 0;
   #timer: ReturnType<typeof setTimeout> | null = null;
   #stopped = true;
+  /** Set once when `amx_full_status` is not on the server: the three probes are used from then on. */
+  #legacy = false;
 
   constructor(options: GamePollerOptions) {
     this.#exec = options.exec;
@@ -167,11 +174,7 @@ export class GamePoller {
   async #tick(): Promise<void> {
     if (this.#stopped) return;
     try {
-      const [scoreReply, targetReply, duelReply] = await Promise.all([
-        this.#exec(SCORE_COMMAND),
-        this.#exec(TARGET_COMMAND),
-        this.#exec(DUEL_COMMAND),
-      ]);
+      const [scoreReply, targetReply, duelReply] = await this.#readResponses();
 
       const score = parseScore(scoreReply);
       if (score === null) {
@@ -191,6 +194,26 @@ export class GamePoller {
     } finally {
       if (!this.#stopped) this.#timer = setTimeout(() => void this.#tick(), this.#intervalMs);
     }
+  }
+
+  /**
+   * The three replies the tick parses: one RCON command when the server answers `amx_full_status`,
+   * three otherwise.
+   *
+   * The fallback covers the window between a code deploy and an image rebuild - the panel would
+   * otherwise sit on "no data" until somebody rebuilt the game server. It is decided once and never
+   * retried: a server that dropped the command mid-stream is not coming back with it, and probing
+   * it again every tick would cost the round-trip this path exists to save.
+   */
+  async #readResponses(): Promise<[string, string, string]> {
+    if (!this.#legacy) {
+      const reply = await this.#exec(FULL_STATUS_COMMAND);
+      if (parseScore(reply) !== null) return [reply, reply, reply];
+      this.#legacy = true;
+      this.#log("game.legacy_status", { command: FULL_STATUS_COMMAND });
+    }
+
+    return Promise.all([this.#exec(SCORE_COMMAND), this.#exec(TARGET_COMMAND), this.#exec(DUEL_COMMAND)]);
   }
 
   #recovered(): void {

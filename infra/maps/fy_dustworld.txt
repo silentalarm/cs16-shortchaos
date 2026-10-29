@@ -1,0 +1,14 @@
+//overview description file for fy_dustworld.bsp
+
+global
+{
+	ZOOM	3.06
+	ORIGIN	399.50      -636.50      -80
+	ROTATED 0
+}
+
+layer
+{
+	IMAGE	"overviews/fy_dustworld.tga"
+	HEIGHT	-337
+} 

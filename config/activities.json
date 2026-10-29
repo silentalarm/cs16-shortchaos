@@ -14,8 +14,27 @@
       "rounds": null,
       "cooldownSec": 60,
       "globalCooldownSec": 0,
+      "enabled": false,
+      "params": {
+        "maxNameLength": 16
+      }
+    },
+    {
+      "code": "he_party",
+      "title": "HE party",
+      "announce": "ALL WEAPONS GONE, HE GRENADES ONLY!",
+      "price": 50,
+      "priority": 10,
+      "duration": "seconds",
+      "seconds": 60,
+      "rounds": null,
+      "cooldownSec": 0,
+      "globalCooldownSec": 0,
       "enabled": true,
-      "params": { "maxNameLength": 16 }
+      "params": {
+        "seconds": 60,
+        "maxNameLength": 16
+      }
     },
     {
       "code": "bless_bot",
@@ -27,8 +46,12 @@
       "rounds": null,
       "cooldownSec": 20,
       "globalCooldownSec": 0,
-      "enabled": true,
-      "params": { "health": 250, "weapon": "weapon_deagle", "maxNameLength": 16 }
+      "enabled": false,
+      "params": {
+        "health": 250,
+        "weapon": "weapon_deagle",
+        "maxNameLength": 16
+      }
     },
     {
       "code": "meat_round",
@@ -36,12 +59,16 @@
       "announce": "MEAT ROUND! 1 HP, KNIVES ONLY",
       "price": 60,
       "priority": 0,
-      "duration": "rounds",
-      "rounds": 1,
+      "duration": "seconds",
+      "seconds": 45,
+      "rounds": null,
       "cooldownSec": 60,
       "globalCooldownSec": 0,
-      "enabled": true,
-      "params": { "health": 1 }
+      "enabled": false,
+      "params": {
+        "health": 1,
+        "seconds": 45
+      }
     },
     {
       "code": "bot_phrase",
@@ -53,22 +80,10 @@
       "rounds": null,
       "cooldownSec": 20,
       "globalCooldownSec": 0,
-      "enabled": true,
-      "params": { "maxPhraseLength": 40 }
-    },
-    {
-      "code": "he_party",
-      "title": "HE party",
-      "announce": "ALL WEAPONS GONE, HE GRENADES ONLY!",
-      "price": 70,
-      "priority": 0,
-      "duration": "seconds",
-      "seconds": 60,
-      "rounds": null,
-      "cooldownSec": 90,
-      "globalCooldownSec": 0,
-      "enabled": true,
-      "params": { "seconds": 60 }
+      "enabled": false,
+      "params": {
+        "maxPhraseLength": 40
+      }
     },
     {
       "code": "knives_only",
@@ -80,7 +95,7 @@
       "rounds": 1,
       "cooldownSec": 60,
       "globalCooldownSec": 0,
-      "enabled": true,
+      "enabled": false,
       "params": {}
     },
     {
@@ -93,8 +108,11 @@
       "rounds": null,
       "cooldownSec": 20,
       "globalCooldownSec": 0,
-      "enabled": true,
-      "params": { "health": 25, "maxNameLength": 16 }
+      "enabled": false,
+      "params": {
+        "health": 25,
+        "maxNameLength": 16
+      }
     },
     {
       "code": "moon_gravity",
@@ -102,12 +120,16 @@
       "announce": "MOON GRAVITY!",
       "price": 90,
       "priority": 0,
-      "duration": "rounds",
-      "rounds": 1,
+      "duration": "seconds",
+      "seconds": 60,
+      "rounds": null,
       "cooldownSec": 60,
       "globalCooldownSec": 0,
-      "enabled": true,
-      "params": { "gravity": 200 }
+      "enabled": false,
+      "params": {
+        "gravity": 200,
+        "seconds": 60
+      }
     },
     {
       "code": "awp_only",
@@ -119,7 +141,7 @@
       "rounds": 1,
       "cooldownSec": 60,
       "globalCooldownSec": 0,
-      "enabled": true,
+      "enabled": false,
       "params": {}
     },
     {
@@ -128,12 +150,18 @@
       "announce": "BOUNTY ON THE LEADER!",
       "price": 105,
       "priority": 0,
-      "duration": "rounds",
-      "rounds": 1,
+      "duration": "seconds",
+      "seconds": 60,
+      "rounds": null,
       "cooldownSec": 60,
       "globalCooldownSec": 0,
-      "enabled": true,
-      "params": { "health": 150, "reward": "weapon_deagle", "maxNameLength": 16 }
+      "enabled": false,
+      "params": {
+        "health": 150,
+        "reward": "weapon_deagle",
+        "maxNameLength": 16,
+        "seconds": 60
+      }
     },
     {
       "code": "bot_rain",
@@ -141,12 +169,17 @@
       "announce": "BOT RAIN!",
       "price": 120,
       "priority": 0,
-      "duration": "rounds",
-      "rounds": 1,
+      "duration": "seconds",
+      "seconds": 90,
+      "rounds": null,
       "cooldownSec": 60,
       "globalCooldownSec": 0,
-      "enabled": true,
-      "params": { "extraBots": 2, "maxBots": 22 }
+      "enabled": false,
+      "params": {
+        "extraBots": 2,
+        "maxBots": 22,
+        "seconds": 90
+      }
     },
     {
       "code": "hot_potato",
@@ -154,12 +187,17 @@
       "announce": "HOT POTATO!",
       "price": 125,
       "priority": 0,
-      "duration": "rounds",
-      "rounds": 1,
+      "duration": "seconds",
+      "seconds": 60,
+      "rounds": null,
       "cooldownSec": 60,
       "globalCooldownSec": 0,
-      "enabled": true,
-      "params": { "health": 25, "maxNameLength": 16 }
+      "enabled": false,
+      "params": {
+        "health": 25,
+        "maxNameLength": 16,
+        "seconds": 60
+      }
     },
     {
       "code": "chaos_burst",
@@ -171,7 +209,7 @@
       "rounds": null,
       "cooldownSec": 30,
       "globalCooldownSec": 0,
-      "enabled": true,
+      "enabled": false,
       "params": {}
     },
     {
@@ -180,12 +218,16 @@
       "announce": "TERMINATOR BOTS!",
       "price": 150,
       "priority": 0,
-      "duration": "rounds",
-      "rounds": 1,
+      "duration": "seconds",
+      "seconds": 60,
+      "rounds": null,
       "cooldownSec": 60,
       "globalCooldownSec": 0,
-      "enabled": true,
-      "params": { "difficulty": 100 }
+      "enabled": false,
+      "params": {
+        "difficulty": 100,
+        "seconds": 60
+      }
     },
     {
       "code": "zombie_round",
@@ -193,12 +235,18 @@
       "announce": "ZOMBIE ROUND!",
       "price": 175,
       "priority": 0,
-      "duration": "rounds",
-      "rounds": 1,
+      "duration": "seconds",
+      "seconds": 60,
+      "rounds": null,
       "cooldownSec": 60,
       "globalCooldownSec": 0,
-      "enabled": true,
-      "params": { "zombies": 3, "zombieHealth": 1000, "zombieSpeed": 1.2 }
+      "enabled": false,
+      "params": {
+        "zombies": 3,
+        "zombieHealth": 1000,
+        "zombieSpeed": 1.2,
+        "seconds": 60
+      }
     },
     {
       "code": "boss_raid",
@@ -206,17 +254,19 @@
       "announce": "BOSS RAID!",
       "price": 185,
       "priority": 0,
-      "duration": "rounds",
-      "rounds": 1,
+      "duration": "seconds",
+      "seconds": 90,
+      "rounds": null,
       "cooldownSec": 60,
       "globalCooldownSec": 0,
-      "enabled": true,
+      "enabled": false,
       "params": {
         "bosses": 2,
         "bossHealth": 1500,
         "bossWeapon": "weapon_m249",
         "gruntWeapon": "weapon_deagle",
-        "maxNameLength": 16
+        "maxNameLength": 16,
+        "seconds": 90
       }
     },
     {
@@ -225,12 +275,17 @@
       "announce": "TERMINATOR VS ALL!",
       "price": 200,
       "priority": 0,
-      "duration": "rounds",
-      "rounds": 1,
+      "duration": "seconds",
+      "seconds": 60,
+      "rounds": null,
       "cooldownSec": 60,
       "globalCooldownSec": 0,
-      "enabled": true,
-      "params": { "health": 500, "weapon": "weapon_m249" }
+      "enabled": false,
+      "params": {
+        "health": 500,
+        "weapon": "weapon_m249",
+        "seconds": 60
+      }
     },
     {
       "code": "map_change",
@@ -242,8 +297,18 @@
       "rounds": null,
       "cooldownSec": 60,
       "globalCooldownSec": 600,
-      "enabled": true,
-      "params": { "maps": ["de_dust2", "de_inferno", "de_nuke", "cs_italy", "de_aztec"] }
+      "enabled": false,
+      "params": {
+        "maps": [
+          "fy_iceworld",
+          "fy_pool_day",
+          "fy_snow",
+          "fy_buzzkill",
+          "fy_simpsons",
+          "fy_aztec",
+          "fy_dustworld"
+        ]
+      }
     }
   ]
 }

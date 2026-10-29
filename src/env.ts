@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { parseCurrencyRates } from "./mapping.ts";
 
 /**
  * Environment is read once and validated at startup: a misconfigured control API should
@@ -12,6 +13,11 @@ export interface Env {
   mock: boolean;
   mockFile: string;
   pollSec: number;
+  /**
+   * RUB per unit of a foreign currency, merged over `DEFAULT_CURRENCY_RATES`. Read from
+   * `CURRENCY_RATES` (JSON) so a moved exchange rate is a restart, not a code change.
+   */
+  currencyRates: Record<string, number>;
   da: {
     clientId: string;
     clientSecret: string;
@@ -86,7 +92,11 @@ export function loadEnv(envFile = ".env"): Env {
     overlayDir: text("OVERLAY_DIR", "data/overlay"),
     mock: flag("DA_MOCK", false),
     mockFile: text("DA_MOCK_FILE", "data/mock-donations.json"),
-    pollSec: integer("DA_POLL_SEC", 10, 3),
+    // 3 s, not 10: a viewer who paid and sees nothing for ten seconds has already swiped to the
+    // next Short. The API is polled with pagination, so a burst still arrives in one go.
+    pollSec: integer("DA_POLL_SEC", 3, 3),
+    // Throws at startup on a malformed table: a broken rate silently halves donations.
+    currencyRates: parseCurrencyRates(process.env["CURRENCY_RATES"]),
     da: {
       clientId: text("DA_CLIENT_ID"),
       clientSecret: text("DA_CLIENT_SECRET"),

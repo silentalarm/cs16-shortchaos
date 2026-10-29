@@ -242,6 +242,24 @@ public plugin_end()
 	StopAll();
 }
 
+/* A player slot is reused by the next connection, so nothing that this plugin tied to an id may
+   survive the disconnect. The effects themselves are server-wide cvars (speed, gravity) or one-shot
+   arming, but the render state is per player: a shell left on a dropped id follows the slot into the
+   next bot, and a timer keyed by that id fires on a stranger.
+ *
+ * The three extra parameters are part of the AMXX forward
+ * (`client_disconnected(id, bool:drop, message[], maxlen)`); a shorter parameter list makes amxxpc
+ * abort with std::bad_alloc instead of a readable error. */
+public client_disconnected(id, bool:drop, message[], maxlen)
+{
+	if (id < 1 || id > get_maxplayers())
+		return;
+
+	remove_task(id);
+	set_user_rendering(id);
+	log_amx("client %d left, its render state is reset", id);
+}
+
 /* A map change or a server restart must not leave a modified cvar behind: the effects live in the
    cvars of the engine, not in this plugin, so they would survive the unload. */
 stock StopAll()

@@ -32,6 +32,36 @@ export class CommandError extends Error {
 }
 
 /**
+ * Advertising and abuse that a donation nickname must never carry into the game chat.
+ *
+ * The nickname is printed to every viewer of the stream, so a link in it is free advertising bought
+ * for 50 RUB, and the banned roots are what a bored viewer types to get a slur on camera. Matching
+ * happens after transliteration and cleaning, so the patterns are ASCII: `t.me` arrives as `t_me`
+ * (the dot survives, the slash does not) and `https://x.ru` as `https_x_ru`.
+ */
+const NICK_LINK_PATTERNS: readonly RegExp[] = [
+  // Links: the scheme, the www prefix, a shortener, or a top level domain stuck to a token.
+  /(?:^|[_\-. ])(?:https?|www|t[._]me|telegram|discord|vk)(?:[_\-. ]|$)/u,
+  /[_.\-](?:ru|com|net|org|io|me)(?:[_.\-]|$)/u,
+];
+/**
+ * Banned roots, matched anywhere in the cleaned token: "pizdec" carries the root "pizd" and a
+ * separator-anchored list would let it through. The roots are deliberately specific ("bet" is not
+ * one of them: it hides inside "elizaveta").
+ */
+const NICK_BANNED_ROOTS: readonly string[] = [
+  "huy", "hui", "huylo", "pizd", "pidor", "ebal", "ebat", "suka", "suchka", "blya", "blyad",
+  "mudak", "gandon", "govno", "zalupa", "seks", "porn", "xxx", "sex",
+  "kredit", "zarabot", "casino", "stavki",
+];
+export const FALLBACK_NICK = "Anonim_Bot";
+
+function hasStopword(token: string): boolean {
+  if (NICK_LINK_PATTERNS.some((pattern) => pattern.test(token))) return true;
+  return NICK_BANNED_ROOTS.some((root) => token.includes(root));
+}
+
+/**
  * GoldSrc shows only a narrow ASCII range in player names and we send it over RCON,
  * so cyrillic is transliterated and everything else outside `[A-Za-z0-9_.-]` is dropped.
  */
@@ -52,7 +82,10 @@ function cleanToken(raw: string, maxLength: number, fallback: string): string {
 }
 
 export function sanitizeNick(raw: string, maxLength = DEFAULT_NICK_LENGTH): string {
-  return cleanToken(raw, maxLength, DEFAULT_NICK);
+  const token = cleanToken(raw, maxLength, DEFAULT_NICK);
+  // Viewer phrases are left alone: a phrase is paid for and the plugin prints it once, while a
+  // nickname sticks to the scoreboard for the whole map.
+  return hasStopword(token) ? FALLBACK_NICK : token;
 }
 
 /**

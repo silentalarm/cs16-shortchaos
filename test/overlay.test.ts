@@ -35,7 +35,7 @@ test("without donations the overlay invites the first one and lists the cheapest
   assert.equal(overlay.lines.length, 3);
   assert.equal(overlay.lines[0], HEADER);
   assert.equal(overlay.lines[1], "NO DONATIONS YET - BE THE FIRST");
-  assert.match(overlay.lines[2] ?? "", /^NEXT: 50 BOT NICKNAME \| 55 BLESS A BOT$/);
+  assert.match(overlay.lines[2] ?? "", /^NEXT: 50 HE PARTY$/);
   assert.equal(overlay.text, overlay.lines.join("\n"));
 });
 
@@ -61,7 +61,7 @@ test("the queue depth replaces the menu headline", () => {
     now: NOW,
   });
 
-  assert.match(overlay.lines[2] ?? "", /^QUEUE: 1 \| 50 BOT NICKNAME/);
+  assert.match(overlay.lines[2] ?? "", /^QUEUE: 1 \| 50 HE PARTY/);
 });
 
 test("an activity that left the catalogue falls back to a generic label", () => {

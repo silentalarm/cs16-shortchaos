@@ -6,6 +6,8 @@ import { RconClient, RconError, execOnce } from "../src/rcon.ts";
 interface FakeServer {
   port: number;
   commands: string[];
+  /** Largest number of commands the server was handling at the same time. */
+  peakInFlight: () => number;
   close: () => Promise<void>;
 }
 
@@ -36,8 +38,12 @@ async function startFake(options: {
   silent?: boolean;
   extraChunk?: string;
   noChallenge?: boolean;
+  /** Delay before a command is answered; makes overlapping requests visible. */
+  replyDelayMs?: number;
 }): Promise<FakeServer> {
   const commands: string[] = [];
+  let inFlight = 0;
+  let peak = 0;
   const socket = createSocket("udp4");
   sockets.push(socket);
 
@@ -75,8 +81,14 @@ async function startFake(options: {
     }
 
     commands.push(command);
-    send(output(options.reply ? options.reply(command) : ""));
-    if (options.extraChunk) send(output(options.extraChunk), 30);
+    inFlight += 1;
+    if (inFlight > peak) peak = inFlight;
+
+    const delayMs = options.replyDelayMs ?? 0;
+    send(output(options.reply ? options.reply(command) : ""), delayMs);
+    if (options.extraChunk) send(output(options.extraChunk), delayMs + 30);
+    // The command stops being "in flight" once its answer is on the wire, not when it was parsed.
+    setTimeout(() => { inFlight -= 1; }, delayMs);
   });
 
   await new Promise<void>((resolve) => socket.bind(0, "127.0.0.1", resolve));
@@ -85,6 +97,7 @@ async function startFake(options: {
   return {
     port: address.port,
     commands,
+    peakInFlight: () => peak,
     close: () => new Promise<void>((resolve) => socket.close(() => resolve())),
   };
 }
@@ -163,6 +176,48 @@ test("a silent server times out with a readable error", async () => {
     /challenge timed out/,
   );
   await fake.close();
+});
+
+test("commands issued at the same time are serialized and their replies never cross", async () => {
+  // The pollers call exec() through Promise.all; the protocol has no request id, so the only thing
+  // that keeps "cmd2" out of the "cmd1" answer is the queue inside the client.
+  const fake = await startFake({
+    password: "pw",
+    replyDelayMs: 25,
+    reply: (command) => `${command}:ok`,
+  });
+  const client = await RconClient.connect({ host: "127.0.0.1", port: fake.port, password: "pw" });
+  try {
+    const answers = await Promise.all([
+      client.exec("cmd1"),
+      client.exec("cmd2"),
+      client.exec("cmd3"),
+    ]);
+
+    assert.deepEqual(answers, ["cmd1:ok", "cmd2:ok", "cmd3:ok"], "an answer landed in the wrong promise");
+    assert.deepEqual(fake.commands, ["cmd1", "cmd2", "cmd3"], "the commands did not keep their order");
+    assert.equal(fake.peakInFlight(), 1, "two commands were in flight on the same socket");
+  } finally {
+    client.close();
+    await fake.close();
+  }
+});
+
+test("a failed command does not poison the commands queued behind it", async () => {
+  const fake = await startFake({ password: "pw", replyDelayMs: 10, reply: (command) => `${command}:ok` });
+  const client = await RconClient.connect({ host: "127.0.0.1", port: fake.port, password: "pw", timeoutMs: 400 });
+  try {
+    const [first, second] = await Promise.all([
+      client.exec("cmd1\nquit"),
+      client.exec("cmd2"),
+    ].map((promise) => promise.catch((error: unknown) => (error as Error).message)));
+
+    assert.match(first ?? "", /single line/);
+    assert.equal(second, "cmd2:ok", "the queue stopped after one rejected command");
+  } finally {
+    client.close();
+    await fake.close();
+  }
 });
 
 test("execOnce opens and closes its own connection", async () => {

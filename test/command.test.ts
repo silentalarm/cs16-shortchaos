@@ -39,15 +39,15 @@ test("simple activities produce a one-word command", () => {
 test("params are serialized in a stable sorted order", () => {
   assert.equal(
     buildActivityCommand(activity("zombie_round")),
-    "amx_de zombie_round zombieHealth=1000 zombieSpeed=1.2 zombies=3",
+    "amx_de zombie_round seconds=60 zombieHealth=1000 zombieSpeed=1.2 zombies=3",
   );
-  assert.equal(buildActivityCommand(activity("moon_gravity")), "amx_de moon_gravity gravity=200");
+  assert.equal(buildActivityCommand(activity("moon_gravity")), "amx_de moon_gravity gravity=200 seconds=60");
 });
 
 test("lists are comma separated", () => {
   assert.equal(
     buildActivityCommand(activity("map_change")),
-    "amx_de map_change maps=de_dust2,de_inferno,de_nuke,cs_italy,de_aztec",
+    "amx_de map_change maps=fy_iceworld,fy_pool_day,fy_snow,fy_buzzkill,fy_simpsons,fy_aztec,fy_dustworld",
   );
 });
 
@@ -87,6 +87,29 @@ test("blessing and cursing carry the nickname of the buyer", () => {
     buildActivityCommand(activity("curse_leader"), { nick: "kolya" }),
     "amx_de curse_leader health=25 nick=kolya",
   );
+});
+
+test("advertising and abuse in a nickname are replaced instead of renamed onto a bot", () => {
+  // A link in the nickname is free advertising on every stream frame for one 50 RUB donation.
+  assert.equal(sanitizeNick("https://promo.ru"), "Anonim_Bot");
+  assert.equal(sanitizeNick("www.kupi-forex.net"), "Anonim_Bot");
+  assert.equal(sanitizeNick("t.me/kanal"), "Anonim_Bot");
+  assert.equal(sanitizeNick("казино.casino"), "Anonim_Bot");
+  // Banned roots arrive in transliteration, which is what the plugin prints.
+  assert.equal(sanitizeNick("СУКА"), "Anonim_Bot");
+  assert.equal(sanitizeNick("blyad_vasya"), "Anonim_Bot");
+  assert.equal(sanitizeNick("pizdec"), "Anonim_Bot", "a root inside a longer word still counts");
+});
+
+test("an honest nickname survives the stopword filter", () => {
+  for (const name of ["Вася Пупкин", "sergio", "artur", "ivan_2000", "kaban"]) {
+    assert.notEqual(sanitizeNick(name), "Anonim_Bot", `${name} was treated as abuse`);
+  }
+});
+
+test("a viewer phrase is not stopword filtered", () => {
+  // The phrase is the product the viewer paid for; only the nickname sticks to the scoreboard.
+  assert.equal(buildActivityCommand(activity("bot_phrase"), { message: "suka" }), "amx_de bot_phrase text=suka");
 });
 
 test("a param with forbidden characters is refused before it reaches RCON", () => {

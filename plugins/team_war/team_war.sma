@@ -18,6 +18,8 @@
  * Contract (RCON):
  *   amx_team_war status   -> t=<n> ct=<n> top_t=<name>:<frags> top_ct=<name>:<frags>
  *   amx_team_war reset    -> drops every counter (a new map resets them on its own)
+ *   amx_full_status       -> the same line plus the camera target and the duel state in one reply
+ *                            (see CmdFullStatus: RCON serialises, so one round-trip beats three)
  *
  * Cvars: team_war_t / team_war_ct (score), team_war_top_t / team_war_top_ct ("name frags"),
  * team_war_name_len (14).
@@ -50,6 +52,8 @@ public plugin_init()
 {
 	register_plugin(PLUGIN_NAME, PLUGIN_VERSION, "cs16-youtube");
 	register_srvcmd("amx_team_war", "CmdTeamWar");
+	// One reply for the whole panel: see CmdFullStatus for why the three probes were merged.
+	register_srvcmd("amx_full_status", "CmdFullStatus");
 
 	// DeathMsg: 1 = killer, 2 = victim.
 	register_event("DeathMsg", "OnDeathMsg", "a");
@@ -197,6 +201,75 @@ stock TrimName(name[], maxChars)
 	}
 }
 
+/**
+ * Prints the score line. Shared by `amx_team_war status` and `amx_full_status` so the two replies
+ * can never drift apart.
+ *
+ * A nickname can contain spaces, and a key=value line with spaces in a value is unreadable in the
+ * log: underscores stand for them here, the HUD keeps the real name.
+ */
+stock PrintScoreLine()
+{
+	new tTop[NAME_LEN];
+	new ctTop[NAME_LEN];
+	new tFrags;
+	new ctFrags;
+	FindTop(TEAM_T, tTop, charsmax(tTop), tFrags);
+	FindTop(TEAM_CT, ctTop, charsmax(ctTop), ctFrags);
+	replace_all(tTop, charsmax(tTop), " ", "_");
+	replace_all(ctTop, charsmax(ctTop), " ", "_");
+	server_print("team_war status: t=%d ct=%d top_t=%s:%d top_ct=%s:%d",
+		g_teamFrags[TEAM_T], g_teamFrags[TEAM_CT], tTop, tFrags, ctTop, ctFrags);
+}
+
+/**
+ * The whole panel in one RCON reply.
+ *
+ * RCON runs over UDP without a request id and the control API serialises its commands, so three
+ * probes in a tick cost three round-trips plus the client's idle wait - and a paid activity queues
+ * behind every one of them. This prints the three lines the panel already parses, read from the
+ * cvars the other plugins publish: a copy of the numbers would be a second source of truth that
+ * could disagree with the game.
+ *
+ * Contract (RCON): amx_full_status ->
+ *   team_war status: t=<n> ct=<n> top_t=<name>:<frags> top_ct=<name>:<frags>
+ *   stream_cam status: target=<name|-> hp=<n> ar=<n>
+ *   map_duel status: state=<idle|live|done> winner=<name|->
+ */
+public CmdFullStatus(id, level, cid)
+{
+	new target[NAME_LEN];
+	get_cvar_string("stcam_name", target, charsmax(target));
+	if (target[0] == '^0')
+		copy(target, charsmax(target), "-");
+
+	new hp[8];
+	new armor[8];
+	get_cvar_string("stcam_hp", hp, charsmax(hp));
+	get_cvar_string("stcam_ar", armor, charsmax(armor));
+	if (hp[0] == '^0')
+		copy(hp, charsmax(hp), "0");
+	if (armor[0] == '^0')
+		copy(armor, charsmax(armor), "0");
+	server_print("stream_cam status: target=%s hp=%s ar=%s", target, hp, armor);
+
+	// `state` is a Pawn keyword (state machines): the locals are named around it on purpose.
+	new duelState[16];
+	new duelWinner[NAME_LEN];
+	get_cvar_string("map_duel_state", duelState, charsmax(duelState));
+	get_cvar_string("map_duel_winner", duelWinner, charsmax(duelWinner));
+	if (duelState[0] == '^0')
+		copy(duelState, charsmax(duelState), "idle");
+	if (duelWinner[0] == '^0')
+		copy(duelWinner, charsmax(duelWinner), "-");
+	// The cvar holds the name as the player typed it; the line has to stay one token per value.
+	replace_all(duelWinner, charsmax(duelWinner), " ", "_");
+	server_print("map_duel status: state=%s winner=%s", duelState, duelWinner);
+
+	PrintScoreLine();
+	return PLUGIN_HANDLED;
+}
+
 public CmdTeamWar(id, level, cid)
 {
 	new command[16];
@@ -204,18 +277,7 @@ public CmdTeamWar(id, level, cid)
 
 	if (equal(command, "status"))
 	{
-		new tTop[NAME_LEN];
-		new ctTop[NAME_LEN];
-		new tFrags;
-		new ctFrags;
-		FindTop(TEAM_T, tTop, charsmax(tTop), tFrags);
-		FindTop(TEAM_CT, ctTop, charsmax(ctTop), ctFrags);
-		// A nickname can contain spaces, and a key=value line with spaces in a value is unreadable
-		// in the log: underscores stand for them here, the HUD keeps the real name.
-		replace_all(tTop, charsmax(tTop), " ", "_");
-		replace_all(ctTop, charsmax(ctTop), " ", "_");
-		server_print("team_war status: t=%d ct=%d top_t=%s:%d top_ct=%s:%d",
-			g_teamFrags[TEAM_T], g_teamFrags[TEAM_CT], tTop, tFrags, ctTop, ctFrags);
+		PrintScoreLine();
 		return PLUGIN_HANDLED;
 	}
 

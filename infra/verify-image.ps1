@@ -64,7 +64,16 @@ if ($suid) {
 Write-Host "ok: no suid/sgid files"
 
 Write-Host "==> config sanity"
-docker run --rm --entrypoint /bin/bash $Image -c "grep -q 'addons/metamod/metamod_i386.so' /hlds/cstrike/liblist.gam && grep -q 'amxmodx_mm_i386.so' /hlds/cstrike/addons/metamod/plugins.ini && test -f /hlds/cstrike/addons/amxmodx/plugins/donation_events.amxx && test -f /hlds/cstrike/addons/amxmodx/plugins/team_war.amxx && test -f /hlds/cstrike/addons/amxmodx/plugins/csdm_main.amxx && test -f /hlds/cstrike/addons/amxmodx/configs/csdm.cfg && test -f /hlds/cstrike/addons/amxmodx/configs/csdm/de_dust2.spawns.cfg && echo 'ok: metamod, amxmodx, csdm and the plugins are wired'"
+# Six custom plugins, one line each: plugins.ini is the contract the image must satisfy, and a
+# missing .amxx means the control API sends RCON commands nobody answers.
+$plugins = 'csdm_lite', 'donation_events', 'team_war', 'stream_cam', 'chaos_core', 'map_duel'
+$check = 'grep -q ''addons/metamod/metamod_i386.so'' /hlds/cstrike/liblist.gam'
+$check += ' && grep -q ''amxmodx_mm_i386.so'' /hlds/cstrike/addons/metamod/plugins.ini'
+foreach ($plugin in $plugins) {
+    $check += " && test -f /hlds/cstrike/addons/amxmodx/plugins/$plugin.amxx"
+}
+$check += " && echo 'ok: metamod, amxmodx and all 6 custom plugins are wired'"
+docker run --rm --entrypoint /bin/bash $Image -c $check
 if ($LASTEXITCODE -ne 0) { throw "image config is incomplete" }
 
 if (-not $SkipScan) {

@@ -17,14 +17,15 @@ function simDonation(overrides: Partial<DonationRow> = {}): DonationRow {
   return { id: -START, username: "TestDonor", amount: 60, currency: "RUB", message: null, createdAt: null, ...overrides };
 }
 
-function setup() {
+function setup(options: { catalog?: typeof catalog } = {}) {
   const store = new Store(":memory:");
   const commands: string[] = [];
   let now = START;
 
   const deps = {
     store,
-    catalog,
+    catalog: options.catalog ?? catalog,
+    random: () => 0,
     apply: async (command: string) => {
       commands.push(command);
       return "L 01/01/2026 - 12:00:00: queued";
@@ -58,14 +59,14 @@ test("a simulated 40 RUB donation is rejected exactly like a real one", async ()
   }
 });
 
-test("a simulated 60 RUB donation maps to meat_round and produces the same command as a donation", async () => {
+test("a simulated 60 RUB donation buys one grenade party, exactly like a real donation", async () => {
   const ctx = setup();
   try {
     const outcome = await processDonation(ctx.deps, simDonation({ amount: 60 }), { advanceCursor: false, source: "sim" });
     assert.equal(outcome.status, "applied");
-    assert.equal(outcome.activityCode, "meat_round");
-    assert.equal(outcome.command, "amx_de meat_round health=1");
-    assert.deepEqual(ctx.commands, ["amx_de meat_round health=1"]);
+    assert.equal(outcome.activityCode, "he_party");
+    assert.equal(outcome.command, "amx_de he_party seconds=60 nick=testdonor");
+    assert.deepEqual(ctx.commands, ["amx_de he_party seconds=60 nick=testdonor"]);
   } finally {
     ctx.store.close();
   }
@@ -83,7 +84,14 @@ test("a simulation never moves the DonationAlerts cursor", async () => {
 });
 
 test("a simulated donation consumes the cooldown unless the bypass flag is set", async () => {
-  const ctx = setup();
+  // The shipped HE party has no cooldown on purpose, so the window is switched on for this test.
+  const patched = {
+    ...catalog,
+    activities: catalog.activities.map((activity) =>
+      activity.code === "he_party" ? { ...activity, cooldownSec: 60 } : activity,
+    ),
+  };
+  const ctx = setup({ catalog: patched });
   try {
     const first = await processDonation(ctx.deps, simDonation({ id: -1 }), { advanceCursor: false, source: "sim" });
     assert.equal(first.status, "applied");

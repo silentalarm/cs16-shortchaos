@@ -13,8 +13,9 @@
 
 The stream is a race between T and CT: which side puts more bots down before the map changes. The
 score is counted by the plugin from `DeathMsg`, not read from the engine scoreboard, because the
-engine subtracts a frag for a team kill and this server is free for all with friendly fire on
-(`mp_friendlyfire 1`, `yb_csdm_mode 2`). **A team kill counts for the killer's team.**
+engine subtracts a frag for a team kill and this server runs **team play: T against CT**
+(`yb_csdm_mode 0`, `mp_friendlyfire 0`), so a team kill cannot happen at all; the plugin counts by
+hand anyway because the engine score is not the race.
 
 The numbers are published as cvars (`team_war_t`, `team_war_ct`, `team_war_top_t`,
 `team_war_top_ct`) and printed on one console line for `amx_team_war status`:
@@ -38,6 +39,18 @@ once a second with a fade-in (`hold 1.6`, `fadein 0.1`) and this client renders 
 ```
 amx_team_war status   t=12 ct=9 top_t=Smith:7 top_ct=Neo:5   (spaces in names become underscores)
 amx_team_war reset    drop every counter
+amx_full_status       the same line plus the camera target and the duel state, in one reply
+```
+
+`amx_full_status` exists because of RCON's cost model: GoldSrc RCON has no request id and the control
+API serialises every command, so three probes a second were three round-trips - and a paid activity
+queued behind each of them. The command prints the three lines the panel parses, all of them read
+from the cvars the plugins publish, so `team_war` keeps no second copy of anybody's state:
+
+```
+team_war status: t=12 ct=9 top_t=Smith:7 top_ct=Neo:5
+stream_cam status: target=Smith hp=87 ar=42
+map_duel status: state=live winner=-
 ```
 
 Cvars: `team_war_name_len` (14) and the four published values above.
@@ -58,14 +71,45 @@ plugins synced from the image"), so a stale volume is not a problem; a stale *co
 `amx_de <code>` runs its handler in the same RCON call: there is no round queue and no separate
 "instant" list any more. A viewer has to see the effect while they are still watching.
 
-- round effects still end with the round: `Round_End` restores `sv_gravity` and the bot quota and
-  drops the bounty / hot-potato / boss state;
+- the round is only a fallback: with `csdm_lite` a round almost never ends, so every lasting effect
+  carries its own clock (`set_task`, `seconds=` from the catalogue) and `Round_End` /
+  `plugin_end` / `amx_de clear` drop whatever is still running;
 - `bot_nick` lives until a map change, `map_change` changes the map immediately;
 - several effects can run at the same time; `amx_de status` reports the last applied code as
   `active`, and `queued=0` stays in the line only because the admin panel parses it;
-- health, weapons and armour are reset by the next spawn, so only cvars and glows need cleanup.
+- health, weapons and armour are reset by the next spawn, so only cvars, glows and run speed need
+  cleanup.
 
 The 110, 130, 170 and 230 RUB steps are free again: the zone activities that used them were removed.
+
+## Foreign donations are converted, not dropped
+
+`src/mapping.ts` keeps a small table of RUB per unit (`USD 90`, `EUR 100`, `KZT 0.18`, `BYN 27`,
+`UAH 2.2`) and converts before the 50 RUB steps are counted: `Math.floor(amount * rate)`, so rounding
+never buys one step more. The rates sit below the market on purpose - an error then costs the donor,
+not the owner - and `CURRENCY_RATES` in `.env` (`{"USD":92}`) overrides them without a deploy.
+Everything else is still rejected as `unsupported_currency`: guessing a rate for an exotic currency
+either gives activities away or halves what somebody paid.
+
+## One step, one effect: how a donation is priced
+
+There is no price ladder any more. `minAmount` is the *step*, and every full step buys one effect
+drawn at random from the enabled entries:
+
+- 50 RUB = 1 step, 149 RUB = 2 steps, 150 RUB = 3 steps; the remainder below a full step is kept by
+  the stream, so the overlay always says "50 HE PARTY" and nobody wonders where 40 RUB went;
+- the draw ignores `price`, so an enabled entry has to cost exactly `minAmount` (`test/activities.test.ts`
+  enforces it); `price` stays in the file so the panel table sorts and so a retired entry keeps its
+  old number;
+- repeats of a clock effect are merged into one longer command (`planActivities` in `src/mapping.ts`):
+  three steps of the HE party send `seconds=180`, not three `seconds=60` lines that would each
+  restart the same minute. The plugin then *adds* the time (`EffectHeParty`), so a second donation
+  during a party extends it;
+- `enabled: false` means off sale but not gone: `/api/trigger` can still fire it by hand, and flipping
+  the flag back is all it takes to put it in the draw. The Pawn plugin keeps all 18 handlers.
+
+The donation row keeps the original amount and currency; the applied log line carries `chargedRub`
+next to them, so a conversion can be explained afterwards.
 
 ## The respawn mode: csdm_lite, no CSDM
 
@@ -113,7 +157,31 @@ amx_map_duel status   map_duel status: state=<idle|live|done> winner=<name|->
 
 Cvars: `map_duel_enabled` (1), `map_duel_minutes` (10), `map_duel_prepare` (45),
 `map_duel_limit` (60), `map_duel_weapons` (`ak47,m4a1,awp,xm1014,p90,mp5navy`), `map_duel_maps`
-(`de_dust2,de_inferno,de_nuke,cs_italy,de_aztec`, wraps around).
+(`fy_iceworld,fy_pool_day,fy_snow,fy_buzzkill,fy_simpsons,fy_aztec,fy_dustworld`, wraps around).
+
+The rotation is fight-yard maps only, and deliberately **small** ones. A vertical 9:16 feed has a
+second or two to stop a thumb, and on de_dust2 the bots spend five of them running to each other with
+an empty field in frame; on a compact arena the fight is already on screen when the frame changes.
+
+None of the seven ship with HLDS. They are fetched from GameBanana by `./infra/fetch-maps.ps1`
+(`infra/maps/maps.json` names a mod id and a SHA256 pin; the script verifies GameBanana's MD5, its AV
+verdict and the pin, so a re-uploaded file fails instead of landing in the game) and copied into the
+server by `infra/entrypoint.sh` at start - the image build never downloads a map. The fetcher
+lower-cases the map files: one pack ships `fy_Dustworld.bsp`, and on Linux the engine looks for exactly
+the name the rotation asks for.
+
+The resources travel with the map, and their placement is not obvious: a `.bsp` goes to
+`cstrike/maps/`, a `.wad` to `cstrike/` (HLDS looks for wads there) and a `.wav` to `cstrike/sound/`.
+`fy_iceworld` ships `de_vegas.wad`; with only the `.bsp` copied the server dies with
+`FATAL ERROR: TEX_InitFromWad: couldn't open de_vegas.wad`, `hlds_run` restarts it on the default map
+and the whole thing looks like "the map change was ignored". The capture container syncs missing files
+from the server volume on every start (`--skip-old-files`), otherwise CS16Client could not join a map
+that was added after its volume was created.
+
+Adding a map means editing both `map_duel_maps` and `params.maps` of the `map_change` activity -
+`test/map-duel-contract.test.ts` fails if they disagree, if a listed map has no `.bsp`, if a fetched
+map has no pin, or if the wad is routed to the wrong directory. `infra/maps/README.md` has the short
+version.
 
 A finalist that picks a bomb site as his goal and runs off is pulled back next to his opponent every
 three seconds while the fight runs (`TaskKeepTogether`, only when the two are more than 400 units
@@ -228,20 +296,20 @@ as `'\r'`** (compare with `line[i] <= ' '`) and **`engfunc(EngFunc_SetAngle, ...
 `Run time error 10`; the working call is
 `engfunc(EngFunc_CreateNamedEntity, engfunc(EngFunc_AllocString, classname))`.
 
-### Free for all: friendly fire + YaPB FFA mode, teams kept
+### Team play: T against CT, friendly fire off
 
-The stream is a deathmatch: every bot shoots every bot. Two pieces are needed, and one thing must
-not be done:
+The stream is a team deathmatch now: a bot only shoots the other team. Two cvars do it, and one thing
+must not be done:
 
 | Piece | Where | Why |
 |---|---|---|
-| `mp_friendlyfire 1` + `mp_tkpunish 0` | `infra/server.cfg` | damage between teammates is the point, and the default `mp_tkpunish 1` slays the killer for a team kill |
-| `yb_csdm_mode 2` | `infra/server.cfg` | 2 = CSDM and FFA: bots ignore teams when picking a target. Without it a bot never fires at a teammate |
+| `yb_csdm_mode 0` | `infra/server.cfg` | 0 = team play: a bot picks a target by team. 2 was the FFA mode, where a bot also shot teammates |
+| `mp_friendlyfire 0` | `infra/server.cfg` | with team play a stray shot would only feed the other side's scoreboard; `mp_tkpunish 0` stays because it is the engine default for a rule that can no longer trigger |
 | **not** `yb_join_team "ct"` | `infra/server.cfg` | pinning everybody to one team empties the other side; the engine then keeps most bots dead and idle. Measured: 0-1 kills per 40 s with one team against 90 per 40 s with two |
 
-Shipped and verified on the live server: bots join both teams, and the kill feed shows
-`<CT> killed <CT>` and `<TERRORIST> killed <TERRORIST>` next to the normal cross-team kills - 149
-kills in one minute. The teams stay because the engine needs them, but nobody on the server is safe.
+Verified live: bots fill both teams, the kill feed is `<CT> killed <TERRORIST>` and the reverse, and
+`plugins/team_war` keeps counting frags per side (a team kill cannot happen now, the rule it was built
+for is simply never triggered).
 
 Consequence worth knowing: on a team kill CS subtracts a frag, so the scoreboard runs negative and
 `FindLeaderBot()` (used by `bounty` and `curse_leader`) means "the least punished", not "the best".
@@ -309,16 +377,17 @@ API writes. Nothing is drawn by the game client: that is what made the old HUD f
 `hudmessage` replaced and re-faded once a second) and sit half-invisible on a bright map.
 
 ```
-team_war status  ─┐
-amx_stcam status ─┴─▶ game-poller (RCON, 1 Hz) ─┐
-donations + queue (SQLite, per poll) ───────────┴─▶ ui-state ─▶ ui/panel.ts ─▶ 10 text files
+amx_full_status ────┐
+                    └─▶ game-poller (RCON, 1 Hz) ─┐
+donations + queue (SQLite, per poll) ─────────────┴─▶ ui-state ─▶ ui/panel.ts ─▶ 10 text files
                                                                                     │
                           ffmpeg: x11grab ─crop/scale─▶ drawtext×10 ─▶ x264 ─▶ RTMP ◀─┘
 ```
 
-- `src/game-poller.ts` - two console commands a second (`amx_team_war status`, `amx_stcam status`);
-  a failed poll keeps the last numbers and only sets `stale`, so the panel says `NO SIGNAL` instead of
-  showing stale numbers as fresh;
+- `src/game-poller.ts` - one console command a second (`amx_full_status`); a failed poll keeps the
+  last numbers and only sets `stale`, so the panel says `NO SIGNAL` instead of showing stale numbers
+  as fresh. A server without the command (image not rebuilt yet) is detected on the first tick and
+  the three old probes are used instead, so a code deploy does not blank the panel;
 - `src/ui/state.ts` - the model (`score`, `target`, donation line, menu line, queue size, theme);
   the donation lines come from `buildOverlay()`, so the panel and the text fallback cannot disagree;
 - `src/ui/panel.ts` - the panel itself: which file holds which line, the limits, and the score bar.
@@ -397,7 +466,7 @@ NEXT: 50 BOT NICKNAME | 60 MEAT ROUND
 ```
 
 - the control API rewrites `overlay.txt` + `overlay.json` on every poll tick (`OVERLAY_DIR`, inside
-  compose the `overlay-data` volume at `/app/overlay`);
+  compose the host directory `data/overlay` mounted at `/app/overlay` and at `/overlay`);
 - the capture container reads `/overlay/overlay.txt` (`STREAM_OVERLAY_TXT`) with `reload=1`, so a
   donation shows up within one poll without restarting ffmpeg;
 - always three lines: a changing line count would make the block jump, and `textfile` keeps viewer
@@ -440,11 +509,38 @@ single `[A-Za-z0-9_.-]` token; the plugin turns `_` back into spaces before prin
 nothing printable left is dropped entirely and the plugin prints nothing instead of the buyer's
 junk. An activity opts into this by declaring `maxPhraseLength` in its params.
 
-## The HE party: the only activity on a clock
+A **nickname** is moderated before it reaches the scoreboard: after transliteration and cleaning,
+`sanitizeNick` replaces a name that carries a link (`http`, `www`, `t.me`, `.ru/.com/.net/.org/.io/.me`),
+an ad root or a banned root with `Anonim_Bot`. The phrase is deliberately not filtered - it is the
+product the viewer bought and the plugin prints it once, while a nickname sticks to the scoreboard for
+the whole map. Any activity that carries a nickname and does not rename a bot itself also puts the
+buyer on the bot leading the scoreboard as `[DONOR] <nick>` for 30 s (`AssignDonorNameToTopBot`, new
+nick or round end restores the original name).
+
+## Every lasting effect has a clock
+
+The HE party was the first activity that did not end with the round, because with `csdm_lite` a round
+almost never ends. The same is now true of every effect that changes a cvar, a run speed, health or a
+render state: `moon_gravity`, `bot_rain`, `terminators`, `meat_round`, `zombie_round`,
+`terminator_one`, `bounty`, `hot_potato` and `boss_raid` each call `StartEffectTimer(code, seconds)`
+when they apply.
+
+- the length is `params.seconds` from the RCON line (the plugin defaults to 45 s, `boss_raid` and
+  `bot_rain` to 90 s), and the catalogue's `seconds` field is what the panel shows;
+- the task id is `TASK_EFFECT_BASE + registry index`, so starting the same effect twice
+  (`remove_task` first) extends it instead of stacking two timers on the same state;
+- the timer ends the effect with the same reset `Round_End` used to do: cvars back to their saved
+  values, glows cleared, run speed back to `sv_maxspeed`, donor tag restored;
+- `Round_End`, `plugin_end` and `amx_de clear` call `StopAllEffectTimers()` as well, so a map change
+  or a manual stop cannot leave a clock behind that fires into an empty state;
+- `client_disconnected` drops everything keyed by that player id: a reused slot never inherits a
+  bounty, a potato, a boss bar, the donor tag or a renamed bot.
+
+## The HE party: a repeating clock
 
 `he_party` (70 RUB) takes every weapon away and leaves 20 bots with a knife and endless HE grenades
-for 60 seconds (`amx_de he_party seconds=60`). It is the one activity whose length is neither a round
-nor the map: `duration: "seconds"` in the catalogue, and the plugin counts the clock down itself.
+for 60 seconds (`amx_de he_party seconds=60`). It keeps its own repeating task instead of the generic
+one, because it has to re-arm the field twice a second, not only end itself.
 
 ```
 every 0.5 s, for the declared length:
@@ -461,8 +557,9 @@ every 0.5 s, for the declared length:
 
 ## The round fights: bounty, hot potato, boss raid
 
-Three activities follow the kill feed for the rest of the round. They apply at once and are dropped
-with the round, together with the cvars they touched.
+Three activities follow the kill feed. They apply at once and end on their own clock (60 s for
+`bounty` and `hot_potato`, 90 s for `boss_raid`), or earlier when the target dies, with the cvars
+they touched; `Round_End` still drops them if a round happens to end first.
 
 | Code | Price | Command | What happens |
 |---|---|---|---|
@@ -470,9 +567,9 @@ with the round, together with the cvars they touched.
 | `hot_potato` | 125 | `amx_de hot_potato health=25 nick=kolya` | a random bot becomes the potato: knife only, 25 HP, orange glow; the bot that kills the holder inherits it |
 | `boss_raid` | 185 | `amx_de boss_raid bosses=2 bossHealth=1500 bossWeapon=weapon_m249 gruntWeapon=weapon_deagle nick=petya` | N bots become bosses (1500 HP, M249, 100 armour, red glow), everyone else gets a deagle and 50 armour; each boss kill is announced |
 
-One `DeathMsg` handler serves all three, and `ClearFightState()` drops their state on round end,
-`amx_de clear` and plugin end. Only the glow has to be removed by hand: health, weapons and armour
-are reset by the next spawn.
+One `DeathMsg` handler serves all three, and `ClearFightState()` drops their state on the effect
+clock, `amx_de clear` and plugin end. Only the glow has to be removed by hand: health, weapons and
+armour are reset by the next spawn.
 
 Traps worth remembering:
 
@@ -494,13 +591,24 @@ Traps worth remembering:
 - a donation blocked by a cooldown is stored as `queued` and the activity waits for its window;
 - `drainQueue()` runs at the start of every poll tick, before fresh donations;
 - the cooldown is re-checked at apply time, so a waiting `map_change` cannot restart the map twice;
-- the wait is bounded (`maxWaitMs`, 15 min) and the queue is capped (32 entries, oldest evicted);
+- the wait is bounded (`maxWaitMs`, 15 min) and the queue is capped (256 entries, oldest evicted) -
+  the cap is a guard against a runaway queue, not a normal path: at 32 a burst of small donations
+  evicted the first ones, and an evicted row is money taken for an effect nobody saw;
+- the reserve is refilled once a second (`TaskTopUpAmmo`), and dropped weapons are swept every five
+  seconds (`TaskCleanWeapons`, `csdm_lite_clean_weapons` 1 / `csdm_lite_clean_sec` 5.0): 20 bots dying
+  every couple of seconds leave a `weaponbox` behind each time and CS 1.6 has no "never drop" switch.
+  The sweep removes `weaponbox` entities only - `armoury_entity` weapons placed by the map stay;
 - statuses: `queued` -> `applied`, `expired` (`queue_expired` / `queue_evicted`) or `failed`
   (`activity_disabled`, RCON error); the old `cooldown` value still appears in rows written before
-  the queue existed, and is what the admin panel (no queue injected) keeps producing on purpose.
+  the queue existed, and is what the admin panel (no queue injected) keeps producing on purpose;
+- the queue is in memory, but a restart does not lose it: `restoreQueue()` at startup reads every
+  `queued` row back (`ORDER BY received_at ASC`), rebuilds the RCON line with the same builder and
+  puts it in the queue with the original `received_at`. An entry that waited out `maxWaitMs` while
+  the container was down is marked `expired` instead of firing hours late, and a row whose activity
+  left the catalogue becomes `failed` / `activity_disabled`.
 
 Log events: `donation.queued`, `donation.dequeued`, `donation.queue_expired`, `donation.queue_failed`,
-`queue.evicted`, `queue.drained`.
+`queue.evicted`, `queue.drained`, `donation.restored`, `donation.restore_failed`, `queue.restored`.
 
 ## Local smoke run (no server, no money)
 
@@ -524,10 +632,12 @@ A second pass with the same DB must report `cursor` equal to the last id and pro
 5. if the app is rejected or scopes are missing, the API answers 401 and the poll logs
    `poll.error` — nothing is applied to the game.
 
-## Changing a price
+## Changing what a step buys
 
-1. edit `price` in `config/activities.json` (keep prices unique and >= `minAmount`);
-2. `npm test` — the catalogue test asserts 18 activities, unique prices and sorted order;
+1. put the effect on sale in `config/activities.json`: `enabled: true` and `price` equal to
+   `minAmount` (50), or take another one off sale with `enabled: false`;
+2. `npm test` - the catalogue test pins the deal: the only entry on sale costs exactly one step,
+   the file stays sorted by price, and every entry keeps a valid duration;
 3. restart the control API. The Pawn plugin does not care about prices.
 
 ## Adding an activity
@@ -551,14 +661,14 @@ docker logs -f cs16-youtube-hlds-1
 ```
 
 Expected in the log: Metamod loaded, `yapb_mm_i386.so` loaded, `donation_events loaded, API 1,
-10 activities`. Then from the host:
+18 activities`. Then from the host:
 
 ```powershell
 node -e "import('./src/rcon.ts').then(async m => console.log(await m.execOnce({host:'127.0.0.1',port:27015,password:process.env.RCON_PASSWORD},'amx_de codes')))"
 ```
 
-Acceptance for stage 3: `amx_de codes` lists the 10 codes, `amx_de knives_only` makes the bots
-drop their weapons immediately, `amx_de map_change maps=de_dust2` changes the map.
+Acceptance for stage 3: `amx_de codes` lists the 18 codes, `amx_de knives_only` makes the bots
+drop their weapons immediately, `amx_de map_change maps=de_dust` changes the map.
 
 Known unknowns to settle on the first real build (each one fails loudly, none fails silently):
 archive layout inside the ReHLDS/ReGameDLL/Metamod-R/YaPB zips, exact YaPB cvar names
@@ -592,7 +702,12 @@ archive layout inside the ReHLDS/ReGameDLL/Metamod-R/YaPB zips, exact YaPB cvar 
   silently ignored (rcon login timeouts). The real wire format is text:
   `challenge rcon` -> `challenge rcon <n>`, then `rcon <n> "<password>" <command>`, answered
   with `'l' + output`. `src/rcon.ts` implements that, and `amx_de codes` on the live server
-  returned all 10 codes.
+  returned all 18 codes.
+- **RCON has no request id, so commands are serialized.** `RconClient.exec()` chains every exchange
+  onto a promise queue (`#enqueue`): the challenge, the send and the collector of one command finish
+  before the next one starts. Without it, `Promise.all` from `src/game-poller.ts` (score, camera,
+  duel) plus a donation put three collectors on the same socket and answers landed in the wrong
+  promise. A rejected command does not poison the queue: the next one still runs.
 - Metamod-R still needs ReHLDS: with the stock engine it reports `Couldn't get DLL API from !`,
   so `WITH_REGAMEDLL=1` stays off until ReGameDLL is verified separately.
 - ReHLDS build order matters: HLDS -> ReHLDS engine set -> legacy libraries (skipping
@@ -601,7 +716,7 @@ archive layout inside the ReHLDS/ReGameDLL/Metamod-R/YaPB zips, exact YaPB cvar 
   dlopen()s `$HLDS/.steam/sdk32/steamclient.so` before Steam init, so the build also copies
   the legacy `libsteam_api.so` there — without it the first boot fails and `hlds_run`
   silently restarts once.
-- Verified on the rebuilt image: `plugin.contract_ok` (10 activities), a 100 RUB mock
+- Verified on the rebuilt image: `plugin.contract_ok` (18 activities), a 100 RUB mock
   donation ran `awp_only`, and the plugin reported `awp_only: 8 bots rearmed with AWP`
   in the same call (that build still had the round queue, since removed).
 - `verify-image.ps1` scans with `--ignore-unfixed`: 59 HIGH/CRITICAL findings in the Debian
@@ -786,18 +901,34 @@ menu (~60) from a bright map (de_dust2 at 640x480 is ~120). `freezedetect` compa
 of absolute brightness, so it works in both.
 
 Camera director check: `amx_stcam status` prints
-`stream_cam status: enabled=1 interval=25.0 mode=1 spectator=<name> target=<name> candidates=<n> dwell=6.0 hp=<n> active=<mode>`,
+`stream_cam status: enabled=1 interval=25.0 mode=1 spectator=<name> target=<name> candidates=<n> dwell=6.0 hp=<n> active=<mode> ar=<n> pov=<0|1> pov_active=<0|1>`,
 and the server log gets one `camera target <bot> (<reason>, score ...)` line per switch. `mode=1` is
-chase locked (third person), `active` is the mode the server wrote to the client last second, and
-`candidates` must be 20 on a 10 vs 10 server.
+chase locked (third person), `active` is the mode the server wrote to the client last second,
+`candidates` must be 20 on a 10 vs 10 server, `pov` is the first person switch and `pov_active` says
+whether the in-eye window is open right now.
 
-Why third person and nothing else: a director that re-picked the busiest bot every 8 s looked like
-the camera teleporting around the map, and an in-eye window on every kill was worse — a spectator
-has no view model of its own, so the weapon had to be faked with `WeaponList` + `CurWeapon`, and
-every cut to and from first person read on screen as the camera glitching. Plugin 0.3.4 is chase
-locked only: it holds one bot until it dies, stops moving or the hold time is up; `stcam_dwell` 6 s
-and `stcam_idle` 5 s drop a static target before the camera sits on a frozen, hidden bot. `Health` +
-`ArmorValue` + one HUD line give viewers real numbers instead of an empty health bar.
+Why the default is third person: a director that re-picked the busiest bot every 8 s looked like the
+camera teleporting around the map, and the old *server-side* in-eye window was worse - a spectator has
+no view model of its own, so the weapon had to be faked with `WeaponList` + `CurWeapon`, and every cut
+to and from first person read on screen as the camera glitching. `stcam_dwell` 6 s and `stcam_idle`
+5 s drop a static target before the camera sits on a frozen, hidden bot; `Health` + `ArmorValue` + one
+HUD line give viewers real numbers instead of an empty health bar.
+
+First person is a **pilot feature**, off by default:
+
+```powershell
+# switch it on for a test run, off again the same way
+$env:STREAM_POV = 1; ./infra/compose.ps1 up -d --no-deps --force-recreate hlds
+```
+
+`STREAM_POV=1` reaches `server.cfg` as `stcam_pov 1` (`infra/entrypoint.sh`), and the plugin then
+flips the client's observer mode to `OBS_IN_EYE` (4) for `stcam_pov_sec` (2.5 s) after the bot on
+camera gets a kill, and back to the configured chase mode afterwards or whenever the target changes.
+The field the engine reads is `pev_iuser1` on the spectator entity, which `ApplyCamera()` rewrites ten
+times a second - a client-side `spec_mode 4` request loses that race and looks like nothing happened
+(that was the first attempt, verified live: `active=` stayed 1). Watch `active=4` in
+`amx_stcam status` to know the server really is in first person; the client's own picture still has the
+limitation below (no view model in first person).
 
 One engine detail the director depends on, found the hard way: the PVS is built from the spectator's
 own `origin`, so a camera entity parked at the map origin stops receiving updates for a bot that
@@ -823,11 +954,18 @@ is judged by the server, not by the picture, because brightness is not a reliabl
 
 ## Donation handling rules
 
-- amount < 50 RUB or currency != RUB -> rejected, logged, nothing happens;
-- amount buys the most expensive activity it can afford; leftover is not banked;
-- one activity per round used to be the rule; now every activity applies at once, and only a
+- amount < 50 RUB (after conversion) -> rejected, logged, nothing happens;
+- every full 50 RUB is one step, and one step buys one effect drawn at random from the enabled
+  catalogue; the remainder below a full step is not refunded and does not buy anything - which is why
+  the minimum *is* the step;
+- a repeated clock effect from the same donation is merged into one longer command, and the plugin
+  adds the time to an effect that is already running;
+- the buyer's bot wears `[DONOR] <nick>` with a gold shell for as long as the effect lasts;
+- one activity per round used to be the rule; now every step applies at once, and only a
   cooldown-blocked donation waits (in the control API queue, not in the plugin);
-- per-donor cooldown 60 s, map change at most once per 10 minutes.
+- the shipped HE party has no cooldown, so a paid step is visible within one RCON round-trip; when an
+  effect is put back on sale with `cooldownSec`, the per-donor 60 s and per-activity windows apply
+  again.
 
 ## Security rules
 
@@ -839,7 +977,39 @@ is judged by the server, not by the picture, because brightness is not a reliabl
   AMX Mod X 1.10.0.5487, YaPB) with SHA256 checks, then scanned (trivy, ClamAV) and
   verified against a whitelist of expected binaries; no community `hlds` images.
 
-## Before a stream
+## Running it on your own machine
+
+Two modes, because the capture client is what costs:
+
+| Mode | Command | CPU | RAM |
+| --- | --- | --- | --- |
+| development (server + panel, no capture) | `./infra/compose.ps1 dev` | ~0.05 core | ~190 MB |
+| live (adds the client and the encoder) | `./infra/compose.ps1 up -d` | ~2.2 cores | ~1.1 GB |
+
+Measured on a 12-thread desktop: `xash3d` holds ~1.6 cores on its own, `ffmpeg` 0.4-0.7, Xvfb and
+PulseAudio 0.2 together, the game server 0.05. The client is expensive because it renders through
+llvmpipe (software OpenGL) at 720x2134 and no encoder setting changes that: dropping to 540x960@24
+with `-preset ultrafast` took the encoder from 0.7 to 0.4 core and the client from 1.6 to 1.55.
+
+So for development, leave the client off: `dev` stops it and keeps `hlds` + `control-api` (the panel,
+the RCON effects, the donation flow all work; only the picture is missing). Start the stream only
+when you actually broadcast, and stop it again afterwards.
+
+If the machine has to stay responsive while streaming, pin the work instead of shrinking it:
+`STREAM_CPUSET=0-3` and `HLDS_CPUSET=4-5` in `.env` leave the rest of the cores to the desktop.
+
+
+- `./infra/compose.ps1 ps` — three services `running`, `hlds` and `stream` `healthy`. A stream that
+  "lags on load" is usually a stream that is not there at all: check this before touching bitrate.
+- the containers carry `restart: unless-stopped`, which brings them back after a Docker restart but
+  **not** after a manual `stop`/`down`, and not while the Docker engine itself is not running. If the
+  host or Docker Desktop restarts, wait for the engine, then `./infra/compose.ps1 up -d`.
+- `docker exec cs16-youtube-stream-1 tail -c 400 /tmp/ffmpeg.log` with
+  `STREAM_FFMPEG_LOGLEVEL=info` shows `fps=`, `speed=`, `dup=` and `drop=`: `speed` under 1.0 means
+  the encoder cannot keep up, a `drop` counter that keeps growing means the network or the ingest is
+  behind, and a `dup` that keeps growing means the game client renders slower than the capture rate.
+- `STREAM_BITRATE_KBPS` in `.env` overrides the compose default; 3000 is the floor for 720x1280@30
+  with fast movement, 2000 makes a Counter-Strike frame fall apart in a firefight.
 
 - `npm test` green, `amx_de codes` matches the catalogue;
 - one test donation of 50 RUB -> bot nickname changes, row appears in the DB;
@@ -936,6 +1106,12 @@ Endpoints (all require `X-Admin-Token`, mutations require `application/json`, bo
 | POST | `/api/clear` | `amx_de clear` — round effect and the renamed bot |
 | POST | `/api/sim-reset` | delete rows with `source = 'sim'` |
 
+The token is accepted from the `X-Admin-Token` header only: a `?token=` in the URL would end up in
+browser history and in every proxy access log, and the panel never needed it. `/api/trigger` and
+`/api/simulate` are rate limited with a token bucket (burst of 10, one token back every 6 s, so 10
+per minute sustained); over the limit the answer is `429` with a `retry-after` header. Reads are not
+throttled, because the page polls `/api/state` every two seconds.
+
 Milestone check without the browser:
 
 ```powershell
@@ -962,7 +1138,7 @@ Expected: `"status":"applied","activityCode":"meat_round"`, and in the server co
 - simulated donations consume cooldowns unless "bypass cooldown" is ticked, and are tagged `sim`;
 - simulated ids are negative, so they never affect the poll cursor for real donations;
 - editing a price does not affect `config/activities.json`; `npm test` still asserts the shipped
-  catalogue (10 activities, unique prices, sorted order).
+  catalogue (one entry on sale at exactly `minAmount`, sorted order, valid durations).
 
 
 
@@ -970,8 +1146,10 @@ Expected: `"status":"applied","activityCode":"meat_round"`, and in the server co
 
 In first person the client draws no view model (no hands, no weapon) and no HUD text: `WeaponList`
 and `CurWeapon` are accepted without producing a gun. First person is therefore no way to show the
-weapon, and the director does not use it at all any more (plugin 0.3.0, chase locked only): the gun a
-viewer sees comes from the third person camera, where the bot model holds it.
+weapon, and the gun a viewer sees comes from the third person camera, where the bot model holds it.
+That is why the chase camera is the default. The pilot in-eye window (`stcam_pov`, see the camera
+section) is a cut to an empty-handed but genuinely first-person view - it has to be judged on the
+stream, which is why it is a switch and not a default.
 
 `cs_get_user_bpammo` on a knife (weapon id 29) raises "Invalid weapon id" and aborts the rest of the
 HUD update. The HUD line carries no ammo any more, so that call is gone with it.

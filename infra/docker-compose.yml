@@ -9,8 +9,18 @@ services:
   hlds:
     image: cs16-hlds:local
     restart: unless-stopped
+    # llvmpipe (software OpenGL, in the capture container) and libx264 fight for the same cores, and
+    # a starved renderer shows up as a stuttering capture: the heavy containers can be pinned to
+    # their own CPUs. Empty means no pinning, and a cpuset that names cores the host does not have
+    # makes `compose up` fail instead of silently running slower - keep it in .env, per host.
+    cpuset: ${HLDS_CPUSET:-}
     environment:
-      MAP: ${MAP:-de_dust2}
+      # Fight-yard pool only: the stream must never start - or fall back - on a stock map.
+      MAP: ${MAP:-fy_iceworld}
+      MAPCYCLE: ${MAPCYCLE:-fy_iceworld,fy_pool_day,fy_snow,fy_buzzkill,fy_simpsons,fy_aztec,fy_dustworld}
+      # First person camera (plugins/stream_cam): 0 = chase camera only, 1 = cut into the bot's eyes
+      # for a moment after a kill. Off by default - this is the pilot switch for the feature.
+      STREAM_POV: ${STREAM_POV:-0}
       MAXPLAYERS: ${MAXPLAYERS:-22}
       RCON_PASSWORD: ${RCON_PASSWORD:?set RCON_PASSWORD in .env}
     ports:
@@ -26,12 +36,44 @@ services:
       # Populated from the image on first start, then shared read-only with the stream service.
       - server-data:/hlds
       - hlds-logs:/hlds/cstrike/logs
+      # Custom maps (fy_pool_day and friends): drop .bsp/.res/.nav/.txt into infra/maps and the
+      # entrypoint copies them next to the stock ones. Nothing is downloaded during the build, so a
+      # map is exactly the file the operator put there - and a stock map is never overwritten.
+      - ../infra/maps:/hlds/cstrike/maps-extra:ro
+
+  # One-shot fix-up of the shared overlay volume. Compose creates a fresh named volume owned by root,
+  # and the API runs as uid 1000: without this it cannot write a single layer file ("EACCES ...
+  # bar-t.txt.tmp") and the whole picture panel stays empty. `chown` works inside a volume (a real
+  # Linux filesystem) even where a Windows bind mount refuses it. The `ui` directory is created here
+  # as well, so the capture container can never create it first as root and lock the API out.
+  control-init:
+    image: node:24-bookworm-slim
+    user: "0:0"
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["mkdir -p /overlay/ui && chown -R 1000:1000 /overlay"]
+    cap_drop:
+      - ALL
+    # chown needs exactly one capability; dropping everything and adding it back is narrower than
+    # running the container with the default root capabilities.
+    cap_add:
+      - CHOWN
+    security_opt:
+      - "no-new-privileges:true"
+    volumes:
+      - overlay-data:/overlay
 
   control-api:
     image: node:24-bookworm-slim
     restart: unless-stopped
+    # Not root: this container talks to the game server with RCON rights, so it gets the image's own
+    # unprivileged user instead of uid 0. Everything it needs to write is mounted below.
+    user: "node"
     depends_on:
-      - hlds
+      hlds:
+        condition: service_started
+      control-init:
+        condition: service_completed_successfully
     working_dir: /app
     env_file:
       - ../.env
@@ -61,8 +103,15 @@ services:
     security_opt:
       - "no-new-privileges:true"
     volumes:
-      - ..:/app
-      - control-data:/app/data
+      # The source is code, not data: it is mounted read-only, so a bug in the control API cannot
+      # rewrite the repository it was started from.
+      - ..:/app:ro
+      # Writable state lives on the host: the game's SQLite history. A bind mount (not a named volume)
+      # because the operator may want to look at the database; on Linux the host directory must belong
+      # to uid 1000 (`chown -R 1000:1000 data`), the API does not run as root.
+      - ../data:/app/data
+      # The overlay text the encoder draws is a named volume, chowned by `control-init` above: the
+      # capture container would otherwise create its files as root and the API could not write them.
       - overlay-data:/app/overlay
       - client-data:/game:ro
 
@@ -96,8 +145,15 @@ services:
   stream:
     image: cs16-stream:local
     restart: unless-stopped
+    # See HLDS_CPUSET on the game server: pin the renderer+encoder to their own cores. Empty = free.
+    cpuset: ${STREAM_CPUSET:-}
     depends_on:
-      - hlds
+      hlds:
+        condition: service_started
+      # The overlay volume must be chowned before this container touches it: it runs as root and
+      # would otherwise create /overlay/ui root-owned, which locks the API out of its own panel.
+      control-init:
+        condition: service_completed_successfully
     env_file:
       - ../.env
     environment:
@@ -112,7 +168,7 @@ services:
       # the bands (and the dimmed picture behind them).
       STREAM_BAND_PERCENT: ${STREAM_BAND_PERCENT:-20}
       STREAM_FPS: ${STREAM_FPS:-30}
-      STREAM_BITRATE_KBPS: ${STREAM_BITRATE_KBPS:-2000}
+      STREAM_BITRATE_KBPS: ${STREAM_BITRATE_KBPS:-3000}
       # Software OpenGL renders with 2 threads by default: llvmpipe otherwise takes every core and
       # starves the encoder (see infra/stream/Dockerfile).
       LP_NUM_THREADS: ${LP_NUM_THREADS:-2}
@@ -166,11 +222,12 @@ services:
     volumes:
       - server-data:/server:ro
       - client-data:/game
+      # Same named volume the control API writes: it is chowned by `control-init`, and this container
+      # reads it as root, so the panel and the encoder always see one directory.
       - overlay-data:/overlay
 
 volumes:
   hlds-logs:
-  control-data:
   server-data:
   client-data:
   overlay-data:

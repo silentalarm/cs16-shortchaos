@@ -9,9 +9,10 @@
  *   amx_de <code> key=value ...      -> applies the activity now, in the same RCON call
  *
  * Rules: every activity applies at once - a donation that shows up on screen two minutes later
- * reads as a refund request. Round effects (meat_round, knives_only, bounty and the rest) are
- * cleaned up on round end; bot_nick persists until the map changes; map_change changes the map at
- * once.
+ * reads as a refund request. Lasting effects end on their own clock (set_task + `seconds=` from the
+ * catalogue), because a csdm_lite round almost never ends; Round_End, `amx_de clear` and plugin_end
+ * are the fallback that drops whatever is still running. bot_nick persists until the map changes;
+ * map_change changes the map at once.
  * Round fights (bounty, hot_potato, boss_raid) watch DeathMsg for the rest of the round: the
  * effect changes hands when a bot dies, which is the part the viewer is paying for.
  * Adding an activity = write a handler and add one RegisterDonationEffect line.
@@ -26,11 +27,20 @@
 #define PLUGIN_VERSION "0.6.0"
 #define API_VERSION 1
 
+/* `#pragma dynamic` is in cells (4 bytes each). amxxpc aborts on this file with std::bad_alloc at a
+   smaller heap even though the plugin itself would fit: the registry, the parameter table and the
+   round-fight state push the static data to 29.6 KB of its 32 KB budget, and the compiler needs the
+   spare arena. 65536 cells is 256 KB per plugin, which a 22-slot server can afford for the one
+   plugin that matters, and it is the value that actually compiles here. */
+#pragma dynamic 65536
+
 // How long a blessed or cursed bot keeps its glow. Health and weapons reset on the next spawn.
 #define GLOW_SECONDS 20.0
 
-#define MAX_EFFECTS 32
-#define MAX_PARAMS 16
+/* The registry only has to hold the codes the catalogue sells (18 today). It used to be 32, which
+   costs 2 KB of static data for nothing - and static data is what amxxpc runs out of on this file. */
+#define MAX_EFFECTS 20
+#define MAX_PARAMS 12
 #define CODE_LEN 32
 #define KEY_LEN 24
 #define VALUE_LEN 64
@@ -49,12 +59,28 @@ new g_paramValues[MAX_PARAMS][VALUE_LEN];
 
 new g_nickBot;
 new g_nickOriginal[NICK_LEN];
+/* The name the plugin actually put on the bot, so a stale tag can be told apart from a name the
+   server itself changed. Declared here, with the other nick state: a `new` further down the file is
+   invisible to a function above it, and amxxpc answers that with std::bad_alloc, not with an error. */
+new g_nickApplied[NICK_LEN];
 new bool:g_nickActive;
+
+/* The donor tag: a bot at the top of the scoreboard temporarily wears the buyer's name. It is
+   separate from bot_nick on purpose - that one is bought outright and lasts until the map changes,
+   while this one is a badge on top of whatever activity the money bought. */
+#define TASK_DONOR_TAG 4021
+new g_donorBot;
+new g_donorOriginal[NICK_LEN];
+new g_donorApplied[NICK_LEN];
+new bool:g_donorActive;
 
 new g_savedGravity;
 new g_savedBotQuota;
 new bool:g_gravitySaved;
 new bool:g_quotaSaved;
+/* zombie_round is the only effect that touches per-player run speed; the flag keeps CleanupActive
+   from rewriting every bot's speed on a round end that never changed it. */
+new bool:g_speedBoosted;
 
 /* Round fights. All three are one-round effects that follow the kill feed, so their state lives
    next to the round state and is dropped in CleanupActive() together with the cvars we touched. */
@@ -75,11 +101,22 @@ new g_bossHealth;
 new g_bossWeapon[VALUE_LEN];
 new bool:g_bossRaidActive;
 
-/* The HE party is the only effect with a clock of its own: it does not end with the round, it ends
+/* The HE party was the first effect with a clock of its own: it does not end with the round, it ends
    when `seconds` runs out. The task runs twice a second, so the counter counts halves. */
 #define TASK_HE_PARTY 4013
+/* Accumulated party time is capped at 20 minutes: enough for any honest donation, short enough that a
+   fat-fingered amount cannot leave the server in grenade mode for an hour. The task ticks twice a
+   second, so the cap is in halves. */
+#define MAX_HE_PARTY_TICKS 2400
 new g_hePartyTicks;
 new bool:g_hePartyActive;
+
+/* Every other lasting effect now has a clock too. With csdm_lite a round almost never ends, so
+   waiting for Round_End meant a gravity change, a bounty or a boss raid could sit on the server until
+   the next map. The task id is derived from the registry index, which gives exactly one timer per
+   code: starting the same effect again replaces its timer instead of stacking a second one. */
+#define TASK_EFFECT_BASE 4500
+#define DEFAULT_EFFECT_SECONDS 45.0
 
 public plugin_init()
 {
@@ -212,6 +249,17 @@ public CmdDonationEvent(id, level, cid)
 	LoadParamsFromArgs();
 	copy(g_activeCode, CODE_LEN - 1, code);
 	RunHandler(handler);
+
+	// The buyer's name goes on the scoreboard for every activity that carries a nickname and does not
+	// rename a bot itself: the effect is what the money bought, this is who bought it. The tag lives as
+	// long as the effect the same command bought.
+	if (!equal(code, "bot_nick") && !equal(code, "bot_phrase") && !equal(code, "map_change") && !equal(code, "chaos_burst"))
+	{
+		new nick[VALUE_LEN];
+		ParamCopy("nick", nick, charsmax(nick), "");
+		AssignDonorNameToTopBot(nick, EffectSeconds(60.0));
+	}
+
 	log_amx("ran '%s' with %d params", code, g_paramCount);
 	server_print("donation_events ran %s", code);
 	g_paramCount = 0;
@@ -254,6 +302,81 @@ stock ParamCopy(const key[], out[], len, const fallback[])
 	return 0;
 }
 
+/* ---------- effect clocks ---------- */
+
+/* The length comes from the command (`seconds=`, taken from config/activities.json) and falls back to
+   the constant the effect passes: the RCON line is built by the control API, so the panel can retune a
+   duration without recompiling the plugin. */
+stock Float:EffectSeconds(Float:fallback)
+{
+	new Float:value = ParamFloat("seconds", fallback);
+	if (value < 1.0)
+		value = 1.0;
+	if (value > 600.0)
+		value = 600.0;
+	return value;
+}
+
+/* Re-arms the clock of one effect: remove_task first, because a second donation of the same activity
+   must extend the effect, not leave two timers racing to clean the same state. */
+stock StartEffectTimer(const code[], Float:seconds)
+{
+	new index = FindEffect(code);
+	if (index < 0)
+		return 0;
+
+	new taskid = TASK_EFFECT_BASE + index;
+	remove_task(taskid);
+	set_task(seconds, "TaskEffectFinished", taskid);
+	log_amx("timer: '%s' ends in %.0f s", code, seconds);
+	return taskid;
+}
+
+stock StopEffectTimer(const code[])
+{
+	new index = FindEffect(code);
+	if (index >= 0)
+		remove_task(TASK_EFFECT_BASE + index);
+}
+
+/* Drops every clock, including the HE party's. Called from Round_End, `amx_de clear` and plugin_end. */
+stock StopAllEffectTimers()
+{
+	for (new i = 0; i < g_effectCount; i++)
+		remove_task(TASK_EFFECT_BASE + i);
+
+	// remove_task alone would leave the party's flag set: TaskHeParty is gone, so nothing would ever
+	// clear it, and the next he_party would start on top of a state it believes is still running.
+	remove_task(TASK_HE_PARTY);
+	g_hePartyActive = false;
+	g_hePartyTicks = 0;
+}
+
+public TaskEffectFinished(taskid)
+{
+	new index = taskid - TASK_EFFECT_BASE;
+	if (index < 0 || index >= g_effectCount)
+		return;
+
+	new code[CODE_LEN];
+	copy(code, CODE_LEN - 1, g_codes[index]);
+	FinishEffect(code);
+}
+
+/* Ends one effect by its own clock: the same reset Round_End does, so an effect that outlived the
+   round (the normal case on a respawning server) still leaves nothing behind. */
+stock FinishEffect(const code[])
+{
+	StopEffectTimer(code);
+	CleanupActive();
+
+	if (g_activeCode[0] && equali(g_activeCode, code))
+		g_activeCode[0] = '^0';
+
+	log_amx("activity '%s' finished on its timer", code);
+	server_print("donation_events finished %s", code);
+}
+
 /* ---------- round lifecycle ---------- */
 
 public OnRoundStart()
@@ -270,7 +393,9 @@ public OnRoundEnd()
 		nickRunning = true;
 
 	// Unconditional: with every activity applying at once, a round can hold several effects, and
-	// the cleanup must not depend on which one happened to be applied last.
+	// the cleanup must not depend on which one happened to be applied last. The clocks are dropped
+	// with it: an effect the round already ended must not announce itself again in two minutes.
+	StopAllEffectTimers();
 	CleanupActive();
 
 	if (g_activeCode[0] && !nickRunning)
@@ -332,6 +457,29 @@ stock CleanupActive()
 	}
 
 	ClearFightState();
+	ClearDonorName();
+	ResetBotSpeed();
+}
+
+/* Puts every bot back on the server's own run speed. Needed because set_user_maxspeed survives both
+   death and respawn: without this the zombies of one donation would stay fast for the whole map. */
+stock ResetBotSpeed()
+{
+	if (!g_speedBoosted)
+		return;
+
+	new Float:speed = get_cvar_float("sv_maxspeed");
+	if (speed <= 0.0)
+		speed = 320.0;
+
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (IsBotAlive(id))
+			set_user_maxspeed(id, speed);
+	}
+
+	g_speedBoosted = false;
+	log_amx("speed: back to %.0f", speed);
 }
 
 /* A finished round leaves nothing behind except the glow: health, weapons and armour are reset by
@@ -360,6 +508,7 @@ stock ClearFightState()
    (the panel's "stop everything") and by nothing else. */
 stock ClearAll()
 {
+	StopAllEffectTimers();
 	CleanupActive();
 
 	if (g_nickActive)
@@ -371,12 +520,89 @@ stock ClearAll()
 
 public plugin_end()
 {
+	// A map change unloads the plugin while the server keeps running: every clock and every cvar has
+	// to be dropped here, or the next map inherits a renamed bot and a 200 gravity world.
+	StopAllEffectTimers();
 	CleanupActive();
 	if (g_nickActive)
 		RestoreNick();
 }
 
-new g_nickApplied[NICK_LEN];
+/* A player id is a slot, not a person: the engine reuses the slot of a bot that dropped, so every
+   piece of state keyed by id is dropped here. Without this the next occupant inherits somebody else's
+   bounty, potato, boss bar or nickname.
+ *
+ * `drop`, `message` and `maxlen` are part of the AMXX forward
+ * (`client_disconnected(id, bool:drop, message[], maxlen)`); nothing here depends on them. Declaring
+ * the forward with a shorter parameter list makes amxxpc abort with std::bad_alloc instead of a
+ * readable error, which costs an hour of guessing. */
+public client_disconnected(id, bool:drop, message[], maxlen)
+{
+	if (id <= 0 || id > get_maxplayers())
+		return;
+
+	// The 0.3 s re-arm a boss or the potato scheduled for this spawn.
+	remove_task(id);
+	ClearGlow(id);
+
+	if (g_bountyTarget == id)
+	{
+		g_bountyTarget = 0;
+		g_bountyActive = false;
+		StopEffectTimer("bounty");
+	}
+
+	if (g_potatoHolder == id)
+	{
+		g_potatoHolder = 0;
+		g_potatoActive = false;
+		StopEffectTimer("hot_potato");
+	}
+
+	DropBoss(id);
+
+	if (g_nickBot == id)
+	{
+		g_nickActive = false;
+		g_nickBot = 0;
+		g_nickApplied[0] = '^0';
+	}
+
+	if (g_donorBot == id)
+	{
+		// Nobody is left to restore the name on, so only the state is dropped.
+		g_donorActive = false;
+		g_donorBot = 0;
+		g_donorApplied[0] = '^0';
+		remove_task(TASK_DONOR_TAG);
+	}
+
+	log_amx("client %d left, its effect state is dropped", id);
+}
+
+/* Removes one id from the boss list and keeps the list dense, so IsBoss and the re-arm never look at
+   an empty slot that a fresh connection could take over. */
+stock DropBoss(id)
+{
+	for (new i = 0; i < g_bossCount; i++)
+	{
+		if (g_bosses[i] != id)
+			continue;
+
+		for (new j = i; j < g_bossCount - 1; j++)
+			g_bosses[j] = g_bosses[j + 1];
+
+		g_bossCount--;
+		g_bosses[g_bossCount] = 0;
+		i--;
+	}
+
+	if (g_bossCount == 0 && g_bossRaidActive)
+	{
+		g_bossRaidActive = false;
+		StopEffectTimer("boss_raid");
+	}
+}
 
 /* ---------- effects: one public function per activity code ---------- */
 
@@ -428,6 +654,9 @@ public EffectMeatRound()
 	}
 
 	log_amx("meat_round: %d bots at %d hp with knives only", bots, health);
+	// Weapons and health come back with the next respawn, but a bot that never dies would keep 1 HP
+	// for the rest of the map: the clock is what makes the effect temporary, not the round.
+	StartEffectTimer("meat_round", EffectSeconds(DEFAULT_EFFECT_SECONDS));
 }
 
 public EffectKnivesOnly()
@@ -473,17 +702,31 @@ public EffectHeParty()
 	new seconds = ParamInt("seconds", 60);
 	if (seconds < 5)
 		seconds = 5;
-	if (seconds > 300)
-		seconds = 300;
+	if (seconds > 600)
+		seconds = 600;
+
+	// A party that is already running is extended, not restarted: 150 RUB is three 50 RUB steps, and
+	// every step has to add a minute instead of re-selling the same one. The cap keeps a huge donation
+	// from parking the server in grenade mode for an hour.
+	new bool:wasActive = g_hePartyActive;
+	if (wasActive)
+		g_hePartyTicks += seconds * 2;
+	else
+		g_hePartyTicks = seconds * 2;
+
+	if (g_hePartyTicks > MAX_HE_PARTY_TICKS)
+		g_hePartyTicks = MAX_HE_PARTY_TICKS;
 
 	g_hePartyActive = true;
-	g_hePartyTicks = seconds * 2;
 
 	DisarmField();
 
-	new Float:step = 0.5;
-	set_task(step, "TaskHeParty", TASK_HE_PARTY, "", 0, "b");
-	log_amx("he_party: knives and endless HE for %d s", seconds);
+	// One repeating task for the whole run: a second `set_task` on the same id would be ignored by
+	// some AMXX builds and would double the counter on others.
+	if (!wasActive)
+		set_task(0.5, "TaskHeParty", TASK_HE_PARTY, "", 0, "b");
+
+	log_amx("he_party: knives and endless HE, +%d s (total %d s)", seconds, g_hePartyTicks / 2);
 }
 
 public TaskHeParty()
@@ -567,6 +810,9 @@ public EffectMoonGravity()
 	}
 
 	set_cvar_num("sv_gravity", gravity);
+	// sv_gravity is server wide: without a clock a single donation would change the map's physics
+	// until the next changelevel, because Round_End almost never arrives here.
+	StartEffectTimer("moon_gravity", EffectSeconds(60.0));
 	log_amx("moon_gravity: sv_gravity %d for one round", gravity);
 }
 
@@ -608,6 +854,9 @@ public EffectBotRain()
 		target = maxBots;
 
 	SetCvarFirst("yb_quota", "pb_quota", target);
+	// The quota is a server cvar: the extra bots have to go away on their own, or the stream ends up
+	// with a full server nobody asked for.
+	StartEffectTimer("bot_rain", EffectSeconds(90.0));
 	log_amx("bot_rain: quota %d -> %d", current, target);
 }
 
@@ -617,6 +866,7 @@ public EffectTerminators()
 
 	if (SetCvarFirst("yb_difficulty", "pb_skill", difficulty))
 	{
+		StartEffectTimer("terminators", EffectSeconds(60.0));
 		log_amx("terminators: bot difficulty set to %d", difficulty);
 		return;
 	}
@@ -636,6 +886,7 @@ public EffectTerminators()
 	}
 
 	log_amx("terminators: no difficulty cvar, %d bots buffed instead", bots);
+	StartEffectTimer("terminators", EffectSeconds(60.0));
 }
 
 public EffectZombieRound()
@@ -660,10 +911,18 @@ public EffectZombieRound()
 		StripWeapons(id);
 		give_item(id, "weapon_knife");
 		set_user_health(id, health);
-		set_user_maxspeed(id, speed);
+		// zombieSpeed is a multiplier of the normal run speed: set_user_maxspeed takes units, and
+		// passing 1.2 froze the zombies in place instead of making them fast.
+		new Float:baseSpeed = get_cvar_float("sv_maxspeed");
+		if (baseSpeed <= 0.0)
+			baseSpeed = 320.0;
+		set_user_maxspeed(id, baseSpeed * speed);
 		made++;
 	}
 
+	g_speedBoosted = made > 0;
+
+	StartEffectTimer("zombie_round", EffectSeconds(60.0));
 	log_amx("zombie_round: %d zombies with %d hp at speed %.2f", made, health, speed);
 }
 
@@ -702,6 +961,7 @@ public EffectTerminatorOne()
 	}
 
 	log_amx("terminator_one: bot %d has %s and %d hp, %d bots on knives", bot, weapon, health, others);
+	StartEffectTimer("terminator_one", EffectSeconds(60.0));
 }
 
 public EffectMapChange()
@@ -771,6 +1031,9 @@ public EffectBounty()
 
 	set_user_health(target, health);
 	set_user_rendering(target, kRenderFxGlowShell, 255, 200, 0, kRenderNormal, 25);
+	// The fight follows the kill feed, and with csdm_lite the round does not end: the bounty needs its
+	// own deadline or an unfound target keeps the price forever.
+	StartEffectTimer("bounty", EffectSeconds(60.0));
 
 	new botName[NICK_LEN];
 	get_user_name(target, botName, NICK_LEN - 1);
@@ -787,6 +1050,8 @@ stock ClaimBounty(killer, victim)
 	get_user_name(victim, victimName, NICK_LEN - 1);
 	// The glow would otherwise survive the respawn and mark a bot that no longer has a price.
 	ClearGlow(victim);
+	// The bounty is settled here; its clock would only fire into an empty state.
+	StopEffectTimer("bounty");
 
 	g_bountyActive = false;
 	g_bountyTarget = 0;
@@ -832,6 +1097,7 @@ public EffectHotPotato()
 	g_potatoHealth = health;
 	g_potatoActive = true;
 	PotatoArm(bot);
+	StartEffectTimer("hot_potato", EffectSeconds(60.0));
 
 	new botName[NICK_LEN];
 	get_user_name(bot, botName, NICK_LEN - 1);
@@ -865,6 +1131,7 @@ stock PassHotPotato(killer, victim)
 	// leave the glow on a corpse and the announcement would name nobody.
 	if (killer <= 0 || killer == victim || !is_user_connected(killer) || !is_user_bot(killer))
 	{
+		StopEffectTimer("hot_potato");
 		Announce("HOT POTATO BURNED OUT WITH %s", victimName);
 		log_amx("hot_potato: '%s' died without a killer, the potato is gone", victimName);
 		return;
@@ -873,6 +1140,8 @@ stock PassHotPotato(killer, victim)
 	g_potatoHolder = killer;
 	g_potatoActive = true;
 	PotatoArm(killer);
+	// Each pass resets the deadline: the potato is one effect that changes hands, not one per victim.
+	StartEffectTimer("hot_potato", EffectSeconds(60.0));
 
 	new killerName[NICK_LEN];
 	get_user_name(killer, killerName, NICK_LEN - 1);
@@ -961,6 +1230,7 @@ public EffectBossRaid()
 		Announce("BOSS RAID: %d BOSSES VS %d RAIDERS", g_bossCount, raiders);
 	else
 		Announce("%s CALLED A BOSS RAID: %d VS %d", nick, g_bossCount, raiders);
+	StartEffectTimer("boss_raid", EffectSeconds(90.0));
 	log_amx("boss_raid: '%s' %d bosses (%d hp, %s) vs %d raiders (%s)", nick, g_bossCount, health, bossWeapon, raiders, gruntWeapon);
 }
 
@@ -1326,6 +1596,81 @@ stock RestoreNick()
 	g_nickActive = false;
 	g_nickBot = 0;
 	g_nickApplied[0] = '^0';
+}
+
+/* Puts the buyer's name on the bot that leads the scoreboard (or on any living bot when the board is
+   empty of bots), so a donation is visible on the fighter everyone is watching.
+
+   Separate from EffectBotNick: that renames a bot for the whole map because that is what the viewer
+   paid for, while this tag rides on top of another activity and disappears on its own. The original
+   name is kept here and restored by ClearDonorName, so the scoreboard never keeps a stale tag. */
+stock AssignDonorNameToTopBot(const nick[], Float:seconds)
+{
+	if (nick[0] == '^0')
+		return 0;
+
+	new bot = FindLeaderBot();
+	if (!bot)
+		bot = PickRandomBot();
+	if (!bot)
+	{
+		log_amx("donor_tag: no bots are connected");
+		return 0;
+	}
+
+	// A second donation replaces the tag instead of stacking a second task on another bot.
+	if (g_donorActive)
+		ClearDonorName();
+
+	new name[NICK_LEN];
+	get_user_name(bot, g_donorOriginal, NICK_LEN - 1);
+
+	// Gold shell, and a thick one: this is the one thing on screen that says "this bot is here because
+	// somebody paid", and it has to read from a phone at 720 px, not only on a monitor.
+	set_user_rendering(bot, kRenderFxGlowShell, 255, 200, 0, kRenderNormal, 18);
+
+	// GoldSrc truncates player names at 31 characters; "[DONOR] " plus a 16 char nickname fits.
+	format(name, charsmax(name), "[DONOR] %s", nick);
+	set_user_info(bot, "name", name);
+	copy(g_donorApplied, charsmax(g_donorApplied), name);
+
+	g_donorBot = bot;
+	g_donorActive = true;
+
+	// The tag lives exactly as long as the effect it announces: both are paid for with the same money.
+	if (seconds < 5.0)
+		seconds = 5.0;
+	if (seconds > 600.0)
+		seconds = 600.0;
+
+	remove_task(TASK_DONOR_TAG);
+	set_task(seconds, "ClearDonorName", TASK_DONOR_TAG);
+	log_amx("donor_tag: bot %d '%s' is now '%s' for %.0f s", bot, g_donorOriginal, name, seconds);
+	return 1;
+}
+
+/* Restores the previous name and drops the shell. Safe to call when nothing is tagged. */
+public ClearDonorName()
+{
+	remove_task(TASK_DONOR_TAG);
+
+	if (g_donorBot > 0 && is_user_connected(g_donorBot) && g_donorApplied[0] != '^0')
+	{
+		new name[NICK_LEN];
+		get_user_name(g_donorBot, name, NICK_LEN - 1);
+		// Only the bot still wearing the tag is touched: the slot may already belong to someone else.
+		if (equal(name, g_donorApplied))
+		{
+			set_user_info(g_donorBot, "name", g_donorOriginal);
+			if (is_user_alive(g_donorBot))
+				set_user_rendering(g_donorBot);
+		}
+	}
+
+	g_donorActive = false;
+	g_donorBot = 0;
+	g_donorApplied[0] = '^0';
+	g_donorOriginal[0] = '^0';
 }
 
 /* After a map change player ids are gone, so the renamed bot can no longer be restored:

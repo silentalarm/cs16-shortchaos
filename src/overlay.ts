@@ -61,7 +61,10 @@ export function buildOverlay(input: OverlayInput): Overlay {
   if (last === undefined) {
     lines.push("NO DONATIONS YET - BE THE FIRST");
   } else {
-    const activity = catalog.activities.find((item) => item.code === last.activityCode);
+    // A row may list several codes ("he_party+bounty") when one donation bought more than one
+    // effect; the banner names the first one, which is the one the viewer saw first.
+    const code = typeof last.activityCode === "string" ? last.activityCode.split("+")[0] ?? null : null;
+    const activity = catalog.activities.find((item) => item.code === code);
     const what = activity === undefined ? "QUEUED" : activity.title.toUpperCase();
     const state = last.status === "queued" ? "WAITING " : "";
     lines.push(clean(`LAST: ${state}${last.username} ${Math.round(last.amount)} ${catalog.currency} - ${what}`));

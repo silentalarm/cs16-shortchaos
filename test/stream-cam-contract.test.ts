@@ -26,24 +26,27 @@ test("the client's default camera mode matches stcam_mode", () => {
   assert.equal(envMode, clientMode, ".env.example would start the client in another mode");
 });
 
-test("the director is third person only", () => {
+test("the director defaults to third person, with first person as an opt-in switch", () => {
   assert.equal(cvarDefault("stcam_mode"), "1", "the base mode must be chase locked (third person)");
   assert.ok(Number(cvarDefault("stcam_dwell")) > 0, "dwell is what stops the camera from hopping");
   assert.ok(Number(cvarDefault("stcam_interval")) > 0, "the hold time must be positive");
 
-  // The in-eye window was removed on purpose: a spectator has no view model, so it had to be faked
-  // with WeaponList + CurWeapon, and every cut to and from first person read as the camera glitching.
-  // The patterns below match code, not the explanatory comments above them.
-  const dead = [
-    /stcam_pov/,
-    /IsPov/,
+  // The in-eye window is a pilot feature: off by default, and it is the *server's* observer mode that
+  // decides - a client-side `spec_mode` request is overwritten by ApplyCamera() ten times a second,
+  // which is exactly why the first attempt looked like it did nothing.
+  assert.equal(cvarDefault("stcam_pov"), "0", "first person must be off unless somebody asks for it");
+  assert.ok(Number(cvarDefault("stcam_pov_sec")) > 0, "the in-eye window needs a length");
+  assert.match(plugin, /#define CAM_IN_EYE 4/, "there is no OBS_IN_EYE mode to switch to");
+  assert.match(plugin, /g_povActive[^\n]*\?\s*CAM_IN_EYE\s*:/, "ApplyCamera ignores the window");
+
+  const faked = [
     /EventDamage/,
     /register_event\("Damage"/,
     /get_user_msgid\("WeaponList"\)/,
     /get_user_msgid\("CurWeapon"\)/,
   ];
-  for (const pattern of dead) {
-    assert.doesNotMatch(plugin, pattern, `${pattern} is back: the director must stay in third person`);
+  for (const pattern of faked) {
+    assert.doesNotMatch(plugin, pattern, `${pattern} is back: the view model must come from the client`);
   }
 });
 
@@ -52,7 +55,10 @@ test("the status line still answers every key the runbook greps", () => {
   for (const key of ["enabled", "interval", "mode", "spectator", "target", "candidates", "dwell", "hp", "active"]) {
     assert.match(status, new RegExp(`${key}=`), `amx_stcam status lost the ${key} key`);
   }
-  assert.doesNotMatch(status, /pov=/, "there is no first person mode to report any more");
+  // pov= is the switch, pov_active= says whether the window is open right now: the only way to tell
+  // from outside the game that the feature fired.
+  assert.match(status, /pov=%d/, "the status line does not report the first person switch");
+  assert.match(status, /pov_active=%d/, "the status line does not report an open in-eye window");
 });
 
 test("the HUD still gets real health and armour from the server", () => {

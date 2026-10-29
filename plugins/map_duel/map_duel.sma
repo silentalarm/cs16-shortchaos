@@ -1,7 +1,8 @@
 /**
  * map_duel - the last fight of the map: the best bot of each team, then the map changes.
  *
- * Why the plugin owns the rotation: rounds are endless now (`mp_roundtime 60`, `mp_timelimit 0`), so
+ * Why the plugin owns the rotation: rounds are endless now (`mp_roundtime 9`, the engine clamps the
+ * cvar at nine minutes, `mp_timelimit 0`), so
  * the engine never rotates a map on its own. A map lives exactly `map_duel_minutes`; `map_duel_prepare`
  * seconds before the end every bot except the two finalists is killed, respawns are switched off
  * (`csdm_lite_enabled 0`) and chaos is muted (`chaos_enabled 0`) - both would otherwise rebuild the
@@ -88,7 +89,12 @@ public plugin_init()
 	cvar_weapons = register_cvar("map_duel_weapons", "ak47,m4a1,awp,xm1014,p90,mp5navy");
 	// The rotation, in order and wrapping around: the engine's mapcycle is not read because the
 	// engine never rotates this server any more.
-	register_cvar("map_duel_maps", "de_dust2,de_inferno,de_nuke,cs_italy,de_aztec");
+	// Compact fight-yard maps only, and all of them fy_*: a vertical 9:16 feed has a second or two to
+	// hook a viewer, and on de_dust2 the bots spend five of them running to each other with an empty
+	// field in frame. None of these ship with HLDS - they are fetched by infra/fetch-maps.ps1 and
+	// pinned by SHA256 in infra/maps/maps.json (test/map-duel-contract.test.ts checks both).
+	register_cvar("map_duel_maps",
+		"fy_iceworld,fy_pool_day,fy_snow,fy_buzzkill,fy_simpsons,fy_aztec,fy_dustworld");
 
 	// Published for the panel (control API -> ui/panel.ts) and for the log.
 	register_cvar("map_duel_winner", "-");

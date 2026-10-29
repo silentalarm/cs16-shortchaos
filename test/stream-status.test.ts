@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parsePluginStatus, parseProgress, readStreamHealth, HEARTBEAT_STALE_AFTER_SEC, STALE_AFTER_SEC } from "../src/stream-status.ts";
+import { parsePluginCodes, parsePluginStatus, parseProgress, readStreamHealth, HEARTBEAT_STALE_AFTER_SEC, STALE_AFTER_SEC } from "../src/stream-status.ts";
 
 const PROGRESS = [
   "frame=120",
@@ -189,6 +189,24 @@ test("a malformed heartbeat is ignored instead of failing the whole panel", () =
   } finally {
     home.cleanup();
   }
+});
+
+test("plugin codes are read after the label, so header words are not codes", () => {
+  const codes = parsePluginCodes("donation_events codes: bot_nick,meat_round,he_party");
+  assert.deepEqual(codes, ["bot_nick", "meat_round", "he_party"]);
+  // The old split of the whole line returned ["donation_events", "codes:", ...] as well.
+  assert.equal(codes.includes("donation_events"), false);
+  assert.equal(codes.includes("codes:"), false);
+});
+
+test("a plugin reply without a code list yields nothing instead of header junk", () => {
+  assert.deepEqual(parsePluginCodes("donation_events rejected unknown activity codes"), []);
+  assert.deepEqual(parsePluginCodes(""), []);
+  assert.deepEqual(parsePluginCodes("donation_events codes:"), []);
+});
+
+test("duplicate codes in the reply are reported once", () => {
+  assert.deepEqual(parsePluginCodes("codes: knives_only,knives_only,awp_only"), ["knives_only", "awp_only"]);
 });
 
 test("plugin status is parsed into active, queued and nick", () => {

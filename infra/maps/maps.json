@@ -1,0 +1,54 @@
+﻿{
+    "_comment":  [
+                     "Custom arena maps for the stream, fetched by infra/fetch-maps.ps1 from GameBanana. Only the",
+                     "Counter-Strike 1.6 upload counts: the same map name exists for CS2D, CS:S and CS:GO, so `mod` is",
+                     "what pins the right one (game row 4254).",
+                     "`sha256` is the pin of the archive GameBanana serves: the fetcher refuses a file whose hash does",
+                     "not match, so a silently re-uploaded map fails instead of landing in the game. An empty pin means",
+                     "the file has not been reviewed yet - run the fetcher with -Pin once to record it."
+                 ],
+    "maps":  [
+                 {
+                     "name":  "fy_iceworld",
+                     "mod":  86288,
+                     "sha256":  "ba1f5d7e9cc314bba9189bbbc6787dbea0fdf543c6f5b68a6936ce742a7bcec2",
+                     "note":  "two rooms, spawns a knife throw apart"
+                 },
+                 {
+                     "name":  "fy_pool_day",
+                     "mod":  86562,
+                     "sha256":  "179ce13fc281fccda549b37ad4f517a26e689b76ba0e344a629fd95bbdc55714",
+                     "note":  "open middle, contact in the first second"
+                 },
+                 {
+                     "name":  "fy_snow",
+                     "mod":  86704,
+                     "sha256":  "8ef6cba0b09d9ac97a36508932fb0fc56ddcd14f7b454406cb5faca03b4acb1a",
+                     "note":  "white arena around one central tower"
+                 },
+                 {
+                     "name":  "fy_buzzkill",
+                     "mod":  85945,
+                     "sha256":  "269fd85f19ee31bace146d08d4ced66242306ba88d9ce75d5ee283f75077df2f",
+                     "note":  "two facing platforms, the fight is the gap between them"
+                 },
+                 {
+                     "name":  "fy_simpsons",
+                     "mod":  86686,
+                     "sha256":  "82c4d24686b9147401615aa09bfe803febedffde49c83d3dfd50a011a5413b81",
+                     "note":  "house and garden, tight corners"
+                 },
+                 {
+                     "name":  "fy_aztec",
+                     "mod":  85875,
+                     "sha256":  "d28913bb44b70f2dd53192aca4bcbda76b0d882233bdad69be14583ec9d693d6",
+                     "note":  "the aztec look on a fight-yard layout"
+                 },
+                 {
+                     "name":  "fy_dustworld",
+                     "mod":  86116,
+                     "sha256":  "8a345a6bc07a341f38cd238e547ff80af1f37f847506b2b52673b78610c9615b",
+                     "note":  "dust textures, small symmetric arena"
+                 }
+             ]
+}

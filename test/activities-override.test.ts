@@ -33,15 +33,31 @@ test("params are merged over the defaults instead of replacing them", () => {
   const document = parseOverrides({ version: 1, activities: { bot_rain: { params: { extraBots: 10 } } } });
   const merged = applyOverrides(base, document);
   const rain = merged.activities.find((activity) => activity.code === "bot_rain");
-  assert.deepEqual(rain?.params, { extraBots: 10, maxBots: 22 });
+  assert.deepEqual(rain?.params, { extraBots: 10, maxBots: 22, seconds: 90 });
 });
 
-test("a disabled activity stops winning the amount mapping", () => {
-  const document = parseOverrides({ version: 1, activities: { awp_only: { enabled: false } } });
+test("disabling the only effect on sale leaves nothing to sell", () => {
+  const document = parseOverrides({ version: 1, activities: { he_party: { enabled: false } } });
   const merged = applyOverrides(base, document);
   const resolution = resolveDonation({ amount: 100, currency: "RUB" }, merged);
+
+  assert.equal(resolution.kind, "reject");
+  assert.equal(resolution.kind === "reject" && resolution.reason, "no_activity");
+});
+
+test("an override can put a retired effect back on sale for the same 50 RUB step", () => {
+  const document = parseOverrides({
+    version: 1,
+    activities: { he_party: { enabled: false }, knives_only: { enabled: true, price: 50 } },
+  });
+  const merged = applyOverrides(base, document);
+  const resolution = resolveDonation({ amount: 250, currency: "RUB" }, merged);
+
   assert.equal(resolution.kind, "activate");
-  assert.notEqual(resolution.kind === "activate" ? resolution.activity.code : null, "awp_only");
+  if (resolution.kind !== "activate") return;
+  assert.equal(resolution.units, 5, "5 steps of 50 RUB");
+  // A round-based effect has no clock to extend, so every step keeps its own line.
+  assert.deepEqual(resolution.activities.map((activity) => activity.code), Array(5).fill("knives_only"));
 });
 
 test("an override that breaks the catalogue rules is refused with a readable error", () => {

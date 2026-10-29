@@ -58,6 +58,12 @@ export class RconClient {
   readonly #handlers = new Set<(reply: Reply) => void>();
   #challenge = "";
   #closed = false;
+  /**
+   * Tail of the FIFO queue. GoldSrc RCON has no request id: a reply datagram carries only the output
+   * text, so the only way to know which command it belongs to is to keep exactly one command in
+   * flight. Everything sent through this client chains onto this promise.
+   */
+  #tail: Promise<void> = Promise.resolve();
 
   private constructor(socket: Socket, timeoutMs: number, password: string) {
     this.#socket = socket;
@@ -106,14 +112,22 @@ export class RconClient {
     this.#challenge = match[1];
   }
 
-  /** Runs a console command and resolves with the server reply. */
-  async exec(command: string): Promise<string> {
-    if (/[\r\n\0]/u.test(command)) throw new RconError("RCON command must be a single line");
-    if (this.#closed) throw new RconError("RCON connection is closed");
-    if (!this.#challenge) await this.#refreshChallenge();
+  /**
+   * Runs a console command and resolves with the server reply.
+   *
+   * The whole exchange goes through the FIFO queue below, not just the send: the datagram collector
+   * is what gets confused when two commands are in flight at once.
+   */
+  exec(command: string): Promise<string> {
+    // Refused before it reaches the queue: a broken line must not wait behind three healthy ones.
+    if (/[\r\n\0]/u.test(command)) return Promise.reject(new RconError("RCON command must be a single line"));
+    return this.#enqueue(async () => {
+      if (this.#closed) throw new RconError("RCON connection is closed");
+      if (!this.#challenge) await this.#refreshChallenge();
 
-    const body = `rcon ${this.#challenge} "${this.#password}" ${command}`;
-    return this.#collect(body);
+      const body = `rcon ${this.#challenge} "${this.#password}" ${command}`;
+      return this.#collect(body);
+    });
   }
 
   close(): void {
@@ -128,6 +142,19 @@ export class RconClient {
     } catch {
       // already closed
     }
+  }
+
+  /**
+   * Runs `task` after every command queued before it, and resolves with its result.
+   *
+   * The failure branch replays the next task too: a rejected command (timeout, expired challenge)
+   * must not leave the queue permanently broken for the rest of the stream. `#tail` itself is always
+   * a resolving promise, so one rejection is not carried forward.
+   */
+  #enqueue<T>(task: () => Promise<T>): Promise<T> {
+    const result = this.#tail.then(task, task);
+    this.#tail = result.then(() => undefined, () => undefined);
+    return result;
   }
 
   #send(body: string): Promise<void> {

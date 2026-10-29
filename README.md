@@ -42,21 +42,40 @@ Planned: ffmpeg streaming to YouTube.
 
 ## Rules baked into the catalogue
 
-- minimum donation is 50 RUB, non-RUB donations are rejected, never converted;
-- an amount buys the most expensive activity it can afford, leftovers are not banked;
-- round-based activities apply at once and last at most until the round ends; `bot_nick` lives until
-  map change;
-- the server is free for all: friendly fire on, YaPB targets teammates too (`yb_csdm_mode 2`); bots
+- minimum donation is 50 RUB, and that 50 RUB is exactly one step: every full 50 RUB buys one effect
+  drawn at random from the enabled catalogue (150 RUB = three steps), so no money is lost to a
+  leftover; the shipped catalogue sells one effect, the HE party, 60 seconds per step;
+- a repeated effect is merged, not repeated: three steps of the HE party buy 180 seconds, and the
+  plugin adds the time to a party that is already running;
+- foreign donations (USD, EUR, KZT, BYN, UAH) are converted into RUB before the steps are counted,
+  at a conservative built-in rate (`CURRENCY_RATES` in `.env` overrides it) and floored, an unknown
+  currency is still rejected;
+- the buyer's name goes on the scoreboard: `[DONOR] <nick>` with a gold shell on the bot that tops the
+  frag list, for as long as the effect the same command bought;
+- lasting activities apply at once and end on their own clock (`seconds` in the catalogue, 60 s per
+  step), because a `csdm_lite` round almost never ends;
+- the server runs team play: T against CT, friendly fire off, YaPB targets the other team only
+  (`yb_csdm_mode 0`, `mp_friendlyfire 0`); bots keep their teams and fight each other;
+- a dead bot leaves a weapon box behind and CS 1.6 has no "never drop" switch, so `csdm_lite` sweeps
+  the litter every five seconds (`csdm_lite_clean_weapons`, `csdm_lite_clean_sec`) - map-placed weapons
+  are left alone;
   spawn on the map's own points and respawn half a second after dying, random spawns across the map
   were tried and deleted - bots freeze on points that are not on the YaPB graph, numbers in
   `docs/runbook.md`;
 - the stream is a race between T and CT (`plugins/team_war`): every frag counts for the killer's
   team, a team kill included, and the HUD keeps `T n : m CT` with both team tops until the map
   changes;
-- `bounty`, `hot_potato` and `boss_raid` follow `DeathMsg` and end with the round; a boss is
-  re-armed on every spawn so `csdm_lite` cannot undo the raid;
-- `map_change` changes the map at once and is rate limited to once per 10 minutes;
+- `bounty`, `hot_potato` and `boss_raid` follow `DeathMsg` and end on their clock (or when the
+  target dies); a boss is re-armed on every spawn so `csdm_lite` cannot undo the raid;
+- `map_change` changes the map at once and is rate limited to once per 10 minutes; the rotation
+  (`map_duel_maps`) is seven fight-yard maps - `fy_iceworld`, `fy_pool_day`, `fy_snow`, `fy_buzzkill`,
+  `fy_simpsons`, `fy_aztec`, `fy_dustworld` - because a vertical feed cannot wait five seconds for the
+  bots to meet. None of them ship with HLDS: they are fetched by `infra/fetch-maps.ps1` from
+  GameBanana and pinned by SHA256 in `infra/maps/maps.json` (nothing is downloaded during a build);
 - `announce` must be printable ASCII: GoldSrc chat cannot render cyrillic;
+- a nickname is moderated: links, ad roots and banned roots are replaced with `Anonim_Bot`, and the
+  buyer also appears on the scoreboard as `[DONOR] <nick>` for 30 s unless the activity renames a bot
+  itself;
 - codes are stable: the Pawn plugin registers effect handlers by code.
 
 ## Commands
@@ -124,7 +143,9 @@ instead of going live, `STREAM_WARMUP_SEC` waits for the spectator client to joi
 
 The camera is driven by the game server, not by the client: `plugins/stream_cam` picks the living
 bot that moved the most in the last second and keeps it on screen in third person (`stcam_dwell`,
-`stcam_interval`) — no hopping between bots and no in-eye cuts. The server also re-sends `jointeam 6`,
+`stcam_interval`) — no hopping between bots. First person is a pilot feature behind `STREAM_POV`: after
+the bot on camera gets a kill the capture client is cut into its eyes for 2.5 s (`stcam_pov`,
+`stcam_pov_sec`), off by default and switchable per host. The server also re-sends `jointeam 6`,
 which is the only way to close the client-side "choose a team" panel — while it is up the stream
 shows a frozen menu. `STREAM_SPEC_MODE=1` is `OBS_CHASE_LOCKED`; `spec_mode 6` is `OBS_MAP_CHASE`,
 the map overview, which shows no gameplay at all. `STREAM_SPEC_SWITCH_SEC` re-enables the old

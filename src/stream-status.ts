@@ -281,3 +281,22 @@ export function parsePluginStatus(reply: string): PluginStatus {
     raw: reply.trim(),
   };
 }
+
+/**
+ * Activity codes out of `donation_events codes: a,b,c`.
+ *
+ * Splitting the whole reply on whitespace and commas (the first version) put the plugin name and the
+ * `codes:` label into the "supported" set: a code that merely looked like a header word counted as
+ * supported, and an empty answer from a server without the plugin still produced two tokens. Only
+ * the list after the label counts here, and only tokens shaped like a code survive.
+ */
+export function parsePluginCodes(reply: string): string[] {
+  const label = /codes:/iu.exec(reply);
+  if (label === null) return [];
+
+  const list = reply.slice(label.index + label[0].length);
+  const codes = list
+    .split(/[\s,]+/u)
+    .filter((token) => /^[a-z][a-z0-9_]{2,31}$/u.test(token));
+  return [...new Set(codes)];
+}

@@ -26,7 +26,12 @@ export interface PendingActivity {
   dueAt: number;
 }
 
-export const DEFAULT_MAX_ENTRIES = 32;
+/**
+ * Room for an honest burst: at 32 a spike of small donations evicted the earliest entrants, and an
+ * evicted row is money taken for an effect nobody ever saw. The bound stays so a runaway queue
+ * cannot grow without limit - eviction is the last resort now, not the normal path.
+ */
+export const DEFAULT_MAX_ENTRIES = 256;
 export const DEFAULT_MAX_WAIT_MS = 15 * 60_000;
 
 export interface QueueOptions {

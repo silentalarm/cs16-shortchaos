@@ -100,6 +100,52 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Token bucket for the two endpoints that reach the game server.
+ *
+ * Why a bucket and not "one request per second": the panel legitimately sends a trigger and then a
+ * simulation while the owner works, and a hard 1 s gap would answer 429 to their own clicks. A
+ * bucket absorbs that burst (10 tokens) and still caps the sustained rate at 10 per minute, which is
+ * the limit that matters for an endpoint that renames bots and starts map changes.
+ */
+export interface RateLimitOptions {
+  /** How many requests may arrive back to back. */
+  capacity?: number;
+  /** How long one spent token takes to come back; 6000 ms = 10 per minute at full burst. */
+  refillMs?: number;
+}
+
+const DEFAULT_RATE_LIMIT: Required<RateLimitOptions> = { capacity: 10, refillMs: 6000 };
+/** Only the routes that send RCON commands are limited: reads must never be throttled. */
+const RATE_LIMITED_PATHS = new Set(["/api/trigger", "/api/simulate"]);
+
+export class TokenBucket {
+  readonly #capacity: number;
+  readonly #refillMs: number;
+  readonly #buckets = new Map<string, { tokens: number; updatedAt: number }>();
+
+  // Two fields instead of parameter properties: native TS stripping has no compiler to expand them.
+  constructor(options: RateLimitOptions = {}) {
+    this.#capacity = Math.max(1, options.capacity ?? DEFAULT_RATE_LIMIT.capacity);
+    this.#refillMs = Math.max(1, options.refillMs ?? DEFAULT_RATE_LIMIT.refillMs);
+  }
+
+  /** 0 when the request is allowed, otherwise the whole seconds to wait before retrying. */
+  take(key: string, now: number): number {
+    const previous = this.#buckets.get(key);
+    const elapsed = previous === undefined ? 0 : Math.max(0, now - previous.updatedAt);
+    const tokens = Math.min(this.#capacity, (previous?.tokens ?? this.#capacity) + elapsed / this.#refillMs);
+
+    if (tokens < 1) {
+      this.#buckets.set(key, { tokens, updatedAt: now });
+      return Math.max(1, Math.ceil(((1 - tokens) * this.#refillMs) / 1000));
+    }
+
+    this.#buckets.set(key, { tokens: tokens - 1, updatedAt: now });
+    return 0;
+  }
+}
+
 export interface AdminDeps {
   /** Shared secret from .env; every /api call must present it in X-Admin-Token. */
   token: string;
@@ -118,6 +164,10 @@ export interface AdminDeps {
   mode: { mock: boolean; dryRun: boolean; simAllowed: boolean };
   log: (event: string, details?: Record<string, unknown>) => void;
   now?: () => number;
+  /** Burst and refill of the trigger/simulate limiter; the defaults are the production values. */
+  rateLimit?: RateLimitOptions;
+  /** Currency table for simulated foreign donations; the poller uses the same one. */
+  rates?: Record<string, number>;
 }
 
 async function serveStatic(deps: AdminDeps, path: string, response: ServerResponse): Promise<void> {
@@ -160,15 +210,16 @@ async function handleSimulate(deps: AdminDeps, request: IncomingMessage, respons
   const message = typeof rawMessage === "string" ? rawMessage.slice(0, 200) : null;
 
   const outcome = await processDonation(
-    { store: deps.store, catalog: deps.getCatalog(), apply: deps.apply, log: deps.log, now: deps.now },
+    { store: deps.store, catalog: deps.getCatalog(), apply: deps.apply, log: deps.log, now: deps.now, rates: deps.rates },
     { id: nextSimId(deps), username, amount, currency, message, createdAt: new Date(deps.now?.() ?? Date.now()).toISOString() },
     { advanceCursor: false, bypassCooldown: body["bypassCooldown"] === true, source: "sim" },
   );
 
   deps.log("admin.simulated", { amount, username, status: outcome.status, activity: outcome.activityCode });
-  const activity = outcome.activityCode === null
+  const firstCode = typeof outcome.activityCode === "string" ? outcome.activityCode.split("+")[0] ?? null : null;
+  const activity = firstCode === null
     ? null
-    : deps.getCatalog().activities.find((item) => item.code === outcome.activityCode) ?? null;
+    : deps.getCatalog().activities.find((item) => item.code === firstCode) ?? null;
 
   sendJson(response, 200, {
     outcome,
@@ -328,7 +379,12 @@ async function handleTrigger(deps: AdminDeps, request: IncomingMessage, response
 const ACTIVITY_PATH = /^\/api\/activity\/([a-z0-9_]{1,32})$/;
 const ACTIVITY_RESET_PATH = /^\/api\/activity\/([a-z0-9_]{1,32})\/reset$/;
 
-async function route(deps: AdminDeps, request: IncomingMessage, response: ServerResponse): Promise<void> {
+async function route(
+  deps: AdminDeps,
+  limiter: TokenBucket,
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<void> {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
   const path = url.pathname;
 
@@ -338,11 +394,21 @@ async function route(deps: AdminDeps, request: IncomingMessage, response: Server
   }
   if (!path.startsWith("/api/")) throw new HttpError(404, "not found");
 
-  // The token may travel as a header (the panel) or as a query parameter (curl one-liners);
-  // it is never echoed back and never written to the log.
+  // The token travels in a header only. A `?token=` was dropped on purpose: query strings end up in
+  // browser history, in proxy access logs and in the Referer of every link on the page, and the
+  // panel never needed it. It is never echoed back either.
   const header = request.headers["x-admin-token"];
-  const received = typeof header === "string" ? header : (url.searchParams.get("token") ?? "");
+  const received = typeof header === "string" ? header : "";
   if (!sameToken(deps.token, received)) throw new HttpError(401, "missing or invalid X-Admin-Token");
+
+  if (request.method === "POST" && RATE_LIMITED_PATHS.has(path)) {
+    const waitSec = limiter.take(path, deps.now?.() ?? Date.now());
+    if (waitSec > 0) {
+      response.setHeader("retry-after", String(waitSec));
+      deps.log("admin.rate_limited", { path, retryAfterSec: waitSec });
+      throw new HttpError(429, `too many requests on ${path}, retry in ${waitSec}s`);
+    }
+  }
 
   if (request.method === "GET" && path === "/api/state") {
     const state = await buildState({
@@ -400,8 +466,9 @@ async function route(deps: AdminDeps, request: IncomingMessage, response: Server
 }
 
 export function createAdminServer(deps: AdminDeps): Server {
+  const limiter = new TokenBucket(deps.rateLimit);
   return createServer((request, response) => {
-    route(deps, request, response).catch((error: unknown) => {
+    route(deps, limiter, request, response).catch((error: unknown) => {
       const status = error instanceof HttpError ? error.status : 500;
       const message = error instanceof Error ? error.message : String(error);
       if (status >= 500) deps.log("admin.error", { message });

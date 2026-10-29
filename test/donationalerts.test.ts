@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   DonationAlertsError,
+  MAX_PAGES,
   buildAuthorizeUrl,
   exchangeCode,
   fetchDonations,
@@ -121,4 +122,90 @@ test("fetchDonations sends the bearer token and returns rows", async () => {
 test("an unauthorized poll fails loudly so the token refresh can happen", async () => {
   const fakeFetch: typeof fetch = async () => jsonResponse({ message: "Unauthenticated" }, 401);
   await assert.rejects(fetchDonations("expired", fakeFetch), /401/);
+});
+
+test("a burst that spans several pages is read completely, oldest rows included", async () => {
+  const pages: Record<string, unknown> = {
+    "1": {
+      data: [
+        { id: 105, username: "Newest", amount: 50, currency: "RUB" },
+        { id: 104, username: "Second", amount: 50, currency: "RUB" },
+      ],
+      meta: { current_page: 1, last_page: 3 },
+    },
+    "2": {
+      data: [
+        { id: 103, username: "Third", amount: 50, currency: "RUB" },
+        { id: 102, username: "Fourth", amount: 50, currency: "RUB" },
+      ],
+      meta: { current_page: 2, last_page: 3 },
+    },
+    "3": {
+      data: [{ id: 101, username: "Oldest unseen", amount: 50, currency: "RUB" }],
+      meta: { current_page: 3, last_page: 3 },
+    },
+  };
+
+  const requested: string[] = [];
+  const fakeFetch: typeof fetch = async (input) => {
+    const page = new URL(String(input)).searchParams.get("page") ?? "1";
+    requested.push(page);
+    return jsonResponse(pages[page] ?? { data: [], meta: { current_page: Number(page), last_page: 3 } });
+  };
+
+  // The cursor is the id of the last donation already processed: everything above it is new.
+  const rows = await fetchDonations("token", fakeFetch, { cursor: 100 });
+  assert.deepEqual(rows.map((row) => row.id), [105, 104, 103, 102, 101]);
+  assert.deepEqual(requested, ["1", "2", "3"], "the poll stopped before walking past last_page");
+});
+
+test("pagination stops on the page that reaches the processed cursor", async () => {
+  const requested: string[] = [];
+  const fakeFetch: typeof fetch = async (input) => {
+    const page = new URL(String(input)).searchParams.get("page") ?? "1";
+    requested.push(page);
+    if (page === "1") {
+      return jsonResponse({
+        data: [
+          { id: 9, username: "New", amount: 50, currency: "RUB" },
+          { id: 8, username: "Already seen", amount: 50, currency: "RUB" },
+        ],
+        meta: { current_page: 1, last_page: 40 },
+      });
+    }
+    return jsonResponse({ data: [{ id: 7, username: "Ancient", amount: 50, currency: "RUB" }] });
+  };
+
+  const rows = await fetchDonations("token", fakeFetch, { cursor: 8 });
+  assert.deepEqual(rows.map((row) => row.id), [9, 8]);
+  assert.deepEqual(requested, ["1"], "an older page was fetched although the cursor was already reached");
+});
+
+test("pagination is bounded by MAX_PAGES even when the feed never ends", async () => {
+  const requested: string[] = [];
+  const fakeFetch: typeof fetch = async (input) => {
+    const page = Number(new URL(String(input)).searchParams.get("page") ?? "1");
+    requested.push(String(page));
+    return jsonResponse({
+      data: [{ id: 1000 - page, username: `D${page}`, amount: 50, currency: "RUB" }],
+      meta: { current_page: page, last_page: 999 },
+    });
+  };
+
+  const rows = await fetchDonations("token", fakeFetch);
+  assert.equal(requested.length, MAX_PAGES);
+  assert.equal(rows.length, MAX_PAGES);
+});
+
+test("an empty page ends the walk instead of asking for page 3", async () => {
+  const requested: string[] = [];
+  const fakeFetch: typeof fetch = async (input) => {
+    const page = new URL(String(input)).searchParams.get("page") ?? "1";
+    requested.push(page);
+    return jsonResponse({ data: page === "1" ? [{ id: 5, username: "A", amount: 50, currency: "RUB" }] : [] });
+  };
+
+  const rows = await fetchDonations("token", fakeFetch);
+  assert.deepEqual(rows.map((row) => row.id), [5]);
+  assert.deepEqual(requested, ["1", "2"]);
 });

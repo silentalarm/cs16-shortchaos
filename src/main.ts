@@ -9,9 +9,10 @@ import { fetchDonations } from "./donationalerts.ts";
 import { loadEnv } from "./env.ts";
 import { GamePoller } from "./game-poller.ts";
 import { buildOverlay, writeOverlay } from "./overlay.ts";
-import { drainQueue, pollOnce } from "./poller.ts";
+import { drainQueue, pollOnce, restoreQueue } from "./poller.ts";
 import { PendingQueue } from "./queue.ts";
 import { RconClient } from "./rcon.ts";
+import { parsePluginCodes } from "./stream-status.ts";
 import { TokenStore } from "./token-store.ts";
 import { UiLoop } from "./ui/loop.ts";
 import { buildUiState, type UiState } from "./ui/state.ts";
@@ -24,8 +25,9 @@ const overrideStore = new OverrideStore(env.admin.overridePath);
 let catalog = applyOverrides(baseCatalog, overrideStore.read());
 const store = openStore(env.dbPath);
 /**
- * Paid activities that hit a cooldown wait here instead of being rejected. In memory on purpose:
- * a restart loses the waiting list, and the rows stay `queued` in SQLite, which the panel shows.
+ * Paid activities that hit a cooldown wait here instead of being rejected. The entries themselves are
+ * in memory, but the rows stay `queued` in SQLite and are restored at startup (see `restoreQueue`),
+ * so a restart delays a paid activity instead of losing it.
  */
 const queue = new PendingQueue();
 
@@ -73,7 +75,7 @@ function liveSource(clientId: string, clientSecret: string, redirectUri: string)
       log("oauth.refreshed");
     }
 
-    const rows = await fetchDonations(accessToken);
+    const rows = await fetchDonations(accessToken, fetch, { cursor });
     return rows.filter((row) => row.id > cursor);
   };
 }
@@ -155,13 +157,17 @@ function currentUiState(): UiState {
  * Rewrites the text the encoder draws under the picture: last donation and what it bought, the
  * cheapest things a viewer can buy, how many paid activities are waiting. Best effort on purpose -
  * a read-only directory must never stop the donation loop.
+ *
+ * One read of the history serves both consumers: `refreshUiInputs()` fills the panel state and the
+ * overlay is built from that snapshot, instead of asking SQLite the same question a second time in
+ * the same tick.
  */
 function refreshOverlay(): void {
   try {
     refreshUiInputs();
     writeOverlay(
       env.overlayDir,
-      buildOverlay({ recent: store.recent(5), catalog, pending: queue.snapshot(), now: Date.now() }),
+      buildOverlay({ recent: uiRecent, catalog, pending: uiPending, now: Date.now() }),
     );
   } catch (error) {
     log("overlay.error", { error: (error as Error).message });
@@ -198,12 +204,17 @@ async function checkPluginContract(): Promise<void> {
   if (env.rcon.dryRun) return;
   try {
     const reply = await apply(CODES_PROBE);
-    const supported = new Set(reply.split(/[\s,]+/).filter(Boolean));
+    const supported = new Set(parsePluginCodes(reply));
+    if (supported.size === 0) {
+      // A server without the plugin answers something unrelated; saying "0 missing" would hide that.
+      log("plugin.contract_unknown", { reply: reply.slice(0, 120) });
+      return;
+    }
     const missing = catalog.activities.filter((activity) => !supported.has(activity.code)).map((activity) => activity.code);
     if (missing.length > 0) {
       log("plugin.contract_mismatch", { missing, hint: "activities exist in the catalogue but not in the Pawn plugin" });
     } else {
-      log("plugin.contract_ok", { activities: catalog.activities.length });
+      log("plugin.contract_ok", { activities: supported.size });
     }
   } catch (error) {
     log("plugin.contract_failed", { error: (error as Error).message });
@@ -232,6 +243,7 @@ function startAdmin(): import("node:http").Server | null {
     streamStatusDir: env.admin.streamStatusDir,
     playback: { port: env.admin.hlsPort, path: env.admin.hlsPath },
     mode: { mock: env.mock, dryRun: env.rcon.dryRun, simAllowed: env.admin.simAllowed },
+    rates: env.currencyRates,
     log,
   });
 
@@ -257,6 +269,11 @@ async function main(): Promise<void> {
   });
   await checkPluginContract();
 
+  // Paid donations that were waiting for their cooldown when the process died are still `queued` in
+  // SQLite. They go back into the queue before the first tick, so a restart does not swallow them.
+  const restored = restoreQueue({ store, catalog, apply, log, queue });
+  if (restored > 0) log("queue.restored", { entries: restored, pending: queue.size });
+
   let running = false;
   const tick = async (): Promise<void> => {
     if (running) return;
@@ -268,7 +285,7 @@ async function main(): Promise<void> {
         log("queue.drained", { ...drained, pending: queue.size });
       }
 
-      const summary = await pollOnce({ store, catalog, fetchDonations: source, apply, log, queue });
+      const summary = await pollOnce({ store, catalog, fetchDonations: source, apply, log, queue, rates: env.currencyRates });
       if (summary.seen > 0) log("poll.done", { ...summary });
     } catch (error) {
       log("poll.error", { error: (error as Error).message });

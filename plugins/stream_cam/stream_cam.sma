@@ -14,10 +14,11 @@
  *     re-picked the busiest bot every 8 s, and on a 20-bot server that reads as the camera
  *     teleporting around the map. A target now only changes when it dies, when it has been
  *     standing still, or when the hold time is up;
- *   - shows the action in third person only (chase locked: the bot model with its weapon in hand is
- *     always visible). An in-eye window on every kill was tried and removed: a spectator has no view
- *     model of its own, so the weapon had to be faked with WeaponList + CurWeapon, and each cut to
- *     and from first person read on screen as the camera glitching;
+ *   - shows the action in third person (chase locked: the bot model with its weapon in hand is always
+ *     visible). A first-person window is available as an opt-in cvar (stcam_pov): after the followed
+ *     bot gets a kill the client is put into its own in-eye spectator mode for stcam_pov_sec seconds.
+ *     It is client side on purpose - the older server-side version faked a view model with
+ *     WeaponList + CurWeapon and every cut read on screen as the camera glitching; off by default;
  *   - feeds the client the observed bot's health and armour, because a spectator has no player state
  *     of its own: without this the HUD shows an empty health bar. The same values are repeated as
  *     one HUD line together with the nickname, so the stream carries readable numbers at 720p;
@@ -32,7 +33,8 @@
  *
  * cvars: stcam_enable 1, stcam_mode 1 (1 = chase locked, 2 = chase free), stcam_dwell 6.0,
  *        stcam_idle 5.0, stcam_interval 25.0 (max hold on one target), stcam_avoid_repeat 1,
- *        stcam_spectator "StreamCam", stcam_hud 1, stcam_heartbeat 60.0.
+ *        stcam_spectator "StreamCam", stcam_hud 1, stcam_heartbeat 60.0,
+ *        stcam_pov 0 (1 = cut to first person after a kill), stcam_pov_sec 2.5.
  */
 #include <amxmodx>
 #include <fakemeta>
@@ -40,7 +42,7 @@
 #include <fun>
 
 #define PLUGIN_NAME "Stream Camera"
-#define PLUGIN_VERSION "0.3.4"
+#define PLUGIN_VERSION "0.4.0"
 
 #define TASK_TICK 42001
 #define TASK_FOLLOW 42002
@@ -50,6 +52,10 @@
 
 // HL observer modes (m_iObserverMode). Named here so the include set stays minimal.
 #define CAM_CHASE_LOCKED 1
+// 4 = OBS_IN_EYE: the client looks through the target's eyes. The server owns this field and rewrites
+// it ten times a second, which is why a client-side `spec_mode` request never survived - the first
+// version of the in-eye window did exactly that and appeared to do nothing.
+#define CAM_IN_EYE 4
 
 new Float:g_prevOrigin[MAX_PLAYERS + 1][3];
 new bool:g_hasOrigin[MAX_PLAYERS + 1];
@@ -80,6 +86,14 @@ new cvar_avoidRepeat;
 new cvar_specName;
 new cvar_hud;
 new cvar_heartbeat;
+new cvar_pov;
+new cvar_povSec;
+
+// In-eye window: the client is put into its own "first person" spectator mode for a couple of seconds
+// after the followed bot gets a kill. Client side, not server side: a spectator has no view model of
+// its own, and the old server-side version had to fake one (WeaponList + CurWeapon) which flickered.
+new bool:g_povActive;
+new Float:g_povUntil;
 
 new g_msgHealth;
 new g_msgArmor;
@@ -100,6 +114,11 @@ public plugin_init()
 	// 1 brings the old in-game block back as a fallback for a server without the panel.
 	cvar_hud         = register_cvar("stcam_hud", "0");
 	cvar_heartbeat   = register_cvar("stcam_heartbeat", "60.0");
+	// First person, off by default: 1 cuts the client into the followed bot's eyes for
+	// stcam_pov_sec seconds after that bot gets a kill. It is a client mode (spec_mode), so nothing
+	// has to be faked server side - and turning it off is one cvar.
+	cvar_pov         = register_cvar("stcam_pov", "0");
+	cvar_povSec      = register_cvar("stcam_pov_sec", "2.5");
 
 	// What the panel outside the game reads every second: the bot on camera and its state as
 	// single tokens (spaces become underscores, like team_war does for nicknames).
@@ -177,6 +196,7 @@ public client_disconnected(id)
 		g_holdUntil = 0.0;
 		g_idleSince = 0.0;
 		g_modeSent = -1;
+		g_povActive = false;
 	}
 	if (id == g_target)
 		g_target = 0;
@@ -222,6 +242,11 @@ public TaskTick()
 
 	new Float:now = get_gametime();
 	UpdateActivity();
+
+	// Close the in-eye window on time, and never leave the client in first person when the camera is
+	// about to follow somebody else.
+	if (g_povActive && now >= g_povUntil)
+		LeavePov();
 
 	if (!IsPlayable(g_target))
 	{
@@ -306,7 +331,8 @@ stock SyncCameraOrigin()
 stock ApplyCamera()
 {
 	// pev_iuser1 is m_iObserverMode, pev_iuser2 is m_hObserverTarget (HL SDK entity fields).
-	new mode = get_pcvar_num(cvar_mode);
+	// The in-eye window is a change of that same field: the client asks, the server decides.
+	new mode = (g_povActive && get_pcvar_num(cvar_pov)) ? CAM_IN_EYE : get_pcvar_num(cvar_mode);
 	set_pev(g_camId, pev_iuser1, mode);
 	set_pev(g_camId, pev_iuser2, g_target);
 
@@ -356,6 +382,33 @@ stock ReplaceSpaces(text[], length)
 		if (text[i] == ' ')
 			text[i] = '_';
 	}
+}
+
+/**
+ * Cuts the client into the target's eyes: the flag flips and the observer mode is re-applied at once,
+ * so the cut lands in the same frame instead of the next director tick. ApplyCamera() owns the field
+ * the engine actually reads (pev_iuser1); a client-side `spec_mode` request loses that race, which is
+ * why it is not used here.
+ */
+stock EnterPov()
+{
+	if (g_camId <= 0 || g_povActive || !get_pcvar_num(cvar_pov))
+		return;
+
+	g_povActive = true;
+	g_povUntil = get_gametime() + get_pcvar_float(cvar_povSec);
+	ApplyCamera();
+}
+
+/** Back to the chase camera the stream runs on. Safe to call when the window is not open. */
+stock LeavePov()
+{
+	if (!g_povActive)
+		return;
+
+	g_povActive = false;
+	if (g_camId > 0)
+		ApplyCamera();
 }
 
 stock FeedHud()
@@ -496,6 +549,10 @@ stock PickTarget(const reason[], preferred)
 	new candidates;
 	new Float:bestScore = -1.0;
 
+	// A cut to another bot must not happen inside a first-person window: the client would be left
+	// looking through the eyes of somebody the panel no longer names.
+	LeavePov();
+
 	for (new id = 1; id <= MAX_PLAYERS; id++)
 	{
 		if (!IsPlayable(id))
@@ -552,6 +609,11 @@ public EventDeathMsg()
 		return;
 
 	g_kills[killer] += headshot ? 2 : 1;
+
+	// The viewer has just watched this bot kill somebody: cut into its eyes for a moment. Opt-in
+	// (stcam_pov, 0 by default) - the chase camera stays the default picture.
+	if (killer == g_target)
+		EnterPov();
 }
 
 public OnRoundStart()
@@ -671,10 +733,11 @@ public CmdStreamCam(id, level, cid)
 	}
 
 	// One line, key=value, no spaces inside values: docs/runbook.md greps exactly this.
-	server_print("stream_cam status: enabled=%d interval=%.1f mode=%d spectator=%s target=%s candidates=%d dwell=%.1f hp=%d active=%d ar=%d",
+	server_print("stream_cam status: enabled=%d interval=%.1f mode=%d spectator=%s target=%s candidates=%d dwell=%.1f hp=%d active=%d ar=%d pov=%d pov_active=%d",
 		get_pcvar_num(cvar_enabled), get_pcvar_float(cvar_interval), get_pcvar_num(cvar_mode),
 		spectator, target, candidates,
-		get_pcvar_float(cvar_dwell), hp, g_modeSent, armor);
+		get_pcvar_float(cvar_dwell), hp, g_modeSent, armor,
+		get_pcvar_num(cvar_pov), g_povActive ? 1 : 0);
 
 	return PLUGIN_HANDLED;
 }

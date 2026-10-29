@@ -38,10 +38,11 @@ test("the HE party keeps the field on knives and grenades until its clock runs o
   const effect = /public EffectHeParty\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
   assert.match(effect, /ParamInt\("seconds", 60\)/, "the length is not read from the command");
   // Twice a second, repeating: the re-arm is what hands a thrown grenade back and what undoes the
-  // rifle csdm_lite gives a bot that died during the party.
+  // rifle csdm_lite gives a bot that died during the party. Armed once per run, because a second
+  // `set_task` on the same id is silently dropped by some AMXX builds.
   assert.match(
     effect,
-    /set_task\(step, "TaskHeParty", TASK_HE_PARTY, "", 0, "b"\)/,
+    /if \(!wasActive\)\s*\n\s*set_task\(0\.5, "TaskHeParty", TASK_HE_PARTY, "", 0, "b"\)/,
     "the field is disarmed once instead of continuously",
   );
 
@@ -99,6 +100,104 @@ test("every command the catalogue can produce stays a single line", () => {
     assert.equal(command.includes("\n") || command.includes("\r"), false, `${activity.code} produced a multi-line command`);
     assert.ok(command.length <= 200, `${activity.code} produced an oversized command`);
   }
+});
+
+test("the donor's nickname is tagged onto a bot without stealing bot_nick's job", () => {
+  const assign = /stock AssignDonorNameToTopBot\(const nick\[\], Float:seconds\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(assign, "", "AssignDonorNameToTopBot is missing");
+  assert.match(assign, /FindLeaderBot\(\)/, "the bot on top of the scoreboard is not preferred");
+  assert.match(assign, /PickRandomBot\(\)/, "there is no fallback when the leader is gone");
+  assert.match(assign, /format\(name, charsmax\(name\), "\[DONOR\] %s", nick\)/, "the tag format changed");
+  assert.match(assign, /set_user_info\(bot, "name", name\)/, "the bot is never renamed");
+  assert.match(assign, /get_user_name\(bot, g_donorOriginal/, "the original name is not kept for the reset");
+  assert.match(assign, /remove_task\(TASK_DONOR_TAG\)/, "a second donation stacks a second tag");
+  // The viewer has to see which bot their money bought, so the shell is bright and it lasts as long as
+  // the effect that came with the same command.
+  assert.match(assign, /kRenderFxGlowShell, 255, 200, 0/, "the tag lost its gold shell");
+  assert.match(assign, /set_task\(seconds, "ClearDonorName", TASK_DONOR_TAG\)/, "the tag ignores the effect clock");
+
+  // The tag is part of the shared reset, not a leak that survives the round.
+  assert.match(/stock CleanupActive\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "", /ClearDonorName\(\)/);
+  assert.match(/public ClearDonorName\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "", /set_user_info\(g_donorBot, "name", g_donorOriginal\)/);
+
+  // Every nickname-carrying activity gets the tag, except the ones that rename a bot themselves.
+  const dispatch = /public CmdDonationEvent\(id, level, cid\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(dispatch, /AssignDonorNameToTopBot\(nick, EffectSeconds/, "the tag is never applied");
+  assert.match(dispatch, /!equal\(code, "bot_nick"\)/, "bot_nick would lose the name the viewer bought");
+  assert.match(dispatch, /!equal\(code, "map_change"\)/, "a map change has nobody to rename");
+});
+
+test("a repeated HE party adds time instead of restarting the same minute", () => {
+  const handler = /public EffectHeParty\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(handler, "", "EffectHeParty is missing");
+  // 150 RUB is three 50 RUB steps: the plugin must add 180 seconds, not run 60 three times.
+  assert.match(handler, /g_hePartyTicks \+= seconds \* 2/, "a second party restarts the clock");
+  assert.match(handler, /MAX_HE_PARTY_TICKS/, "the accumulated clock has no ceiling");
+  assert.match(handler, /if \(!wasActive\)\s*\n\s*set_task\(0\.5, "TaskHeParty"/, "the repeating task is armed twice");
+  assert.match(source, /#define MAX_HE_PARTY_TICKS \d+/, "the ceiling is not defined");
+});
+
+test("every lasting effect on a clock ends itself, because a round never does", () => {
+  // csdm_lite respawns every bot in half a second, so Round_End almost never arrives: an effect that
+  // waits for it would stay on the server until the map changes.
+  const timed = catalog.activities.filter(
+    (activity) => activity.duration === "seconds" && activity.code !== "he_party",
+  );
+  assert.ok(timed.length >= 9, `only ${timed.length} effects carry a clock`);
+
+  for (const activity of timed) {
+    const handlerName = registered().get(activity.code);
+    assert.ok(handlerName, `${activity.code} has no handler`);
+    const handler = new RegExp(`public ${handlerName}\\(\\)\\s*\\{[\\s\\S]*?\\n\\}`).exec(source)?.[0] ?? "";
+    assert.match(
+      handler,
+      new RegExp(`StartEffectTimer\\("${activity.code}"`),
+      `${activity.code} never starts its own clock`,
+    );
+  }
+});
+
+test("the effect clock reads seconds= from the command and replaces an older timer", () => {
+  const start = /stock StartEffectTimer\(const code\[\], Float:seconds\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(start, "", "StartEffectTimer is missing");
+  assert.match(start, /remove_task\(taskid\)/, "a second donation stacks a second timer");
+  assert.match(start, /set_task\(seconds, "TaskEffectFinished", taskid\)/);
+  assert.match(start, /TASK_EFFECT_BASE \+ index/, "the task id is not derived from the registry index");
+
+  const seconds = /stock Float:EffectSeconds\(Float:fallback\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(seconds, /ParamFloat\("seconds", fallback\)/, "the RCON parameter is ignored");
+  assert.match(seconds, /value > 600\.0/, "a donated duration is not bounded");
+  assert.match(source, /#define DEFAULT_EFFECT_SECONDS 45\.0/);
+});
+
+test("every reset path drops the clocks, not only the state", () => {
+  for (const name of ["OnRoundEnd", "ClearAll", "plugin_end"]) {
+    const body = new RegExp(`(?:public|stock) ${name}\\(\\)\\s*\\{[\\s\\S]*?\\n\\}`).exec(source)?.[0] ?? "";
+    assert.match(body, /StopAllEffectTimers\(\)/, `${name} leaves a timer behind`);
+  }
+  // The panel's "stop everything" also has to end the repeating HE party task.
+  assert.match(/stock StopAllEffectTimers\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "", /remove_task\(TASK_HE_PARTY\)/);
+});
+
+test("a dropped player id takes its effect state with it", () => {
+  // The forward is `client_disconnected(id, bool:drop, message[], maxlen)`; a shorter copy of it makes
+  // amxxpc abort with std::bad_alloc instead of reporting the mismatch, so the signature is the contract.
+  const disconnected = /public client_disconnected\(id, bool:drop, message\[\], maxlen\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(disconnected, "", "client_disconnected is not handled");
+  assert.match(disconnected, /remove_task\(id\)/, "the delayed re-arm survives the disconnect");
+  assert.match(disconnected, /ClearGlow\(id\)/, "the glow stays on a reused slot");
+  assert.match(disconnected, /DropBoss\(id\)/);
+  assert.match(disconnected, /g_donorBot == id/, "the donor tag stays on a reused slot");
+  assert.match(disconnected, /g_bountyTarget == id/);
+  assert.match(disconnected, /g_potatoHolder == id/);
+});
+
+test("chaos_core resets a slot the engine hands to the next bot", () => {
+  const chaos = readFileSync(new URL("../plugins/chaos_core/chaos_core.sma", import.meta.url), "utf8");
+  const disconnected = /public client_disconnected\(id, bool:drop, message\[\], maxlen\)\s*\{[\s\S]*?\n\}/.exec(chaos)?.[0] ?? "";
+  assert.notEqual(disconnected, "", "chaos_core has no client_disconnected");
+  assert.match(disconnected, /set_user_rendering\(id\)/, "the render state of the slot is left behind");
+  assert.match(chaos, /public plugin_end\(\)\s*\{\s*StopAll\(\);/, "plugin_end no longer reverts the cvars");
 });
 
 test("no unfinished markers left in the plugin source", () => {

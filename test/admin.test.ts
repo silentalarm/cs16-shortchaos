@@ -27,7 +27,15 @@ interface Context {
   path: string;
 }
 
-async function withServer(run: (context: Context) => Promise<void>, options: { simAllowed?: boolean } = {}): Promise<void> {
+interface ServerOptions {
+  simAllowed?: boolean;
+  /** Test knob for the trigger/simulate limiter; production uses the defaults in server.ts. */
+  rateLimit?: { capacity?: number; refillMs?: number };
+  /** Controllable clock for the bucket: the tests must not sleep for a real minute. */
+  now?: () => number;
+}
+
+async function withServer(run: (context: Context) => Promise<void>, options: ServerOptions = {}): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), "cs16-admin-"));
   const overridePath = join(dir, "activities.override.json");
   const store = new Store(":memory:");
@@ -50,6 +58,8 @@ async function withServer(run: (context: Context) => Promise<void>, options: { s
     playback: { port: 8888, path: "live/test" },
     mode: { mock: true, dryRun: false, simAllowed: options.simAllowed ?? true },
     log: () => {},
+    now: options.now,
+    rateLimit: options.rateLimit,
   });
 
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -83,6 +93,42 @@ test("the panel page is served, and the API refuses a request without the token"
     const wrong = await api(url, "/api/state", {}, "not-the-token");
     assert.equal(wrong.status, 401);
   });
+});
+
+test("the token is only accepted from the X-Admin-Token header", async () => {
+  await withServer(async ({ url }) => {
+    // A query-string token ends up in browser history and in every proxy log: it is not a way in.
+    const viaQuery = await fetch(`${url}/api/state?token=${encodeURIComponent(TOKEN)}`);
+    assert.equal(viaQuery.status, 401);
+
+    const viaHeader = await api(url, "/api/state");
+    assert.equal(viaHeader.status, 200);
+  });
+});
+
+test("trigger and simulate answer 429 once the bucket is empty, and recover after the refill", async () => {
+  let clock = Date.parse("2026-01-01T12:00:00.000Z");
+  await withServer(async ({ url, commands }) => {
+    const trigger = (): Promise<Response> =>
+      api(url, "/api/trigger", { method: "POST", body: JSON.stringify({ code: "awp_only" }) });
+
+    assert.equal((await trigger()).status, 200);
+    assert.equal((await trigger()).status, 200);
+
+    const limited = await trigger();
+    assert.equal(limited.status, 429);
+    assert.ok(Number(limited.headers.get("retry-after")) >= 1, "the answer says when to come back");
+    assert.equal(commands.filter((command) => command === "amx_de awp_only").length, 2, "a limited request never reached RCON");
+
+    // One token per second in this configuration: after the wait the panel works again.
+    clock += 1000;
+    assert.equal((await trigger()).status, 200);
+
+    // The read path is not throttled: the page polls the state every two seconds.
+    for (let i = 0; i < 20; i += 1) {
+      assert.equal((await api(url, "/api/state")).status, 200);
+    }
+  }, { rateLimit: { capacity: 2, refillMs: 1000 }, now: () => clock });
 });
 
 test("state lists the catalogue, the overrides and the stream telemetry slot", async () => {
@@ -119,10 +165,25 @@ test("a simulated donation returns the verdict and the exact RCON command", asyn
     };
 
     assert.equal(body.outcome.status, "applied");
-    assert.equal(body.outcome.activityCode, "meat_round");
-    assert.equal(body.outcome.command, "amx_de meat_round health=1");
-    assert.equal(body.activity?.code, "meat_round");
-    assert.ok(commands.includes("amx_de meat_round health=1"));
+    assert.equal(body.outcome.activityCode, "he_party");
+    assert.equal(body.outcome.command, "amx_de he_party seconds=60 nick=vasya");
+    assert.equal(body.activity?.code, "he_party");
+    assert.ok(commands.includes("amx_de he_party seconds=60 nick=vasya"));
+  });
+});
+
+test("a simulated foreign donation is converted with the same table the poller uses", async () => {
+  await withServer(async ({ url }) => {
+    // 2 USD = 180 RUB = three 50 RUB steps of the only effect on sale.
+    const response = await api(url, "/api/simulate", {
+      method: "POST",
+      body: JSON.stringify({ amount: 2, currency: "usd", username: "Almaty" }),
+    });
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { outcome: { status: string; activityCode: string; command: string } };
+    assert.equal(body.outcome.status, "applied");
+    assert.equal(body.outcome.activityCode, "he_party");
+    assert.equal(body.outcome.command, "amx_de he_party seconds=180 nick=almaty");
   });
 });
 
@@ -216,8 +277,8 @@ test("running an activity with parameters sends them and refuses values that wou
     });
     assert.equal(withParams.status, 200);
     const body = (await withParams.json()) as { command: string };
-    assert.equal(body.command, "amx_de bot_rain extraBots=10 maxBots=22");
-    assert.ok(commands.includes("amx_de bot_rain extraBots=10 maxBots=22"));
+    assert.equal(body.command, "amx_de bot_rain extraBots=10 maxBots=22 seconds=90");
+    assert.ok(commands.includes("amx_de bot_rain extraBots=10 maxBots=22 seconds=90"));
 
     const injected = await api(url, "/api/trigger", {
       method: "POST",

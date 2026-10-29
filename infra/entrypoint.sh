@@ -3,7 +3,11 @@
 set -euo pipefail
 
 : "${RCON_PASSWORD:?RCON_PASSWORD must be set, refusing to run an open server}"
-MAP="${MAP:-de_dust2}"
+MAP="${MAP:-fy_iceworld}"
+# The map cycle the engine falls back to (nextmap, a bare `changelevel`). mp_timelimit is 0 and the
+# duel owns the rotation, so this is only a safety net - but it must not list stock maps either:
+# that is how a stream ends up on de_dust2 after an unrelated restart. One name per line.
+MAPCYCLE="${MAPCYCLE:-fy_iceworld,fy_pool_day,fy_snow,fy_buzzkill,fy_simpsons,fy_aztec,fy_dustworld}"
 MAXPLAYERS="${MAXPLAYERS:-22}"
 PORT="${PORT:-27015}"
 SERVER_CFG=/hlds/cstrike/server.cfg
@@ -53,6 +57,47 @@ if [ -f "$YAPB_CFG" ] && ! grep -q "cs16-youtube overrides" "$YAPB_CFG"; then
   } >> "$YAPB_CFG"
   echo "yapb.cfg: chat and radio disabled, quota ${BOT_QUOTA:-20}"
 fi
+
+# Custom maps, dropped in by the operator: `infra/maps` is mounted read-only at maps-extra (see
+# infra/docker-compose.yml) and copied into the server's own directories here. The image itself never
+# downloads a map, so nothing unverified enters the build; a stock file is never overwritten.
+#
+# Placement matters: a .bsp in maps/ is the map, but the .wad next to it is not - HLDS looks for wads
+# in cstrike/ and dies with "TEX_InitFromWad: couldn't open de_vegas.wad" when it cannot find one
+# (fy_iceworld ships de_vegas.wad). Sounds, sprites and models have their own directories too.
+MAPS_EXTRA=/hlds/cstrike/maps-extra
+if [ -d "$MAPS_EXTRA" ]; then
+  files=0
+  for file in "$MAPS_EXTRA"/*; do
+    [ -f "$file" ] || continue
+    name=$(basename "$file")
+    case "$name" in
+      *.bsp|*.res|*.nav|*.txt) dest=/hlds/cstrike/maps ;;
+      *.wad) dest=/hlds/cstrike ;;
+      *.wav|*.mp3) dest=/hlds/cstrike/sound ;;
+      *.spr) dest=/hlds/cstrike/sprites ;;
+      *.mdl) dest=/hlds/cstrike/models ;;
+      *) continue ;;
+    esac
+    [ -e "$dest/$name" ] && continue
+    mkdir -p "$dest"
+    if cp "$file" "$dest/" 2>/dev/null; then files=$((files + 1)); fi
+  done
+  echo "maps: ${files} file(s) added from maps-extra"
+fi
+
+# Stock mapcycle.txt lists the 25 maps HLDS ships with; the stream is a fight-yard stream, so the
+# safety net is rewritten from MAPCYCLE every start. mp_timelimit 0 means only the duel changes the
+# map, and that uses map_duel_maps - this file exists so nothing can silently pick de_dust2.
+printf '%s\n' "$MAPCYCLE" | tr ',' '\n' | sed '/^$/d' > /hlds/cstrike/mapcycle.txt
+echo "mapcycle: $(tr '\n' ' ' < /hlds/cstrike/mapcycle.txt)"
+
+# First person camera: 0 = the chase camera only (the default picture), 1 = after the bot on camera
+# gets a kill the capture client is cut into its eyes for stcam_pov_sec seconds (plugins/stream_cam).
+# Patched into server.cfg rather than passed on the command line: the plugin re-reads its cvars on
+# every map change, and one env var is the whole switch, so the feature can be turned off per host.
+sed -i -E "s|^stcam_pov .*$|stcam_pov ${STREAM_POV:-0}|" "$SERVER_CFG" 2>/dev/null || true
+grep -q '^stcam_pov ' "$SERVER_CFG" || echo "stcam_pov ${STREAM_POV:-0}" >> "$SERVER_CFG"
 
 echo "starting hlds: map=${MAP} maxplayers=${MAXPLAYERS} port=${PORT} sv_lan=${SV_LAN:-1}"
 exec /hlds/hlds_run \

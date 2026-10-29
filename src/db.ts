@@ -188,6 +188,24 @@ export class Store {
   }
 
   /**
+   * Rows still waiting for their cooldown window, oldest first.
+   *
+   * The queue itself is in memory, so after a restart these rows are the only evidence that a viewer
+   * paid and nothing has run yet. Without this the row stays `queued` forever: the poller only looks
+   * at ids above the cursor and the panel shows a donation that will never happen.
+   */
+  queuedDonations(): StoredDonation[] {
+    const rows = this.#db
+      .prepare(`
+        SELECT id, username, amount, currency, message, created_at AS createdAt,
+               status, activity_code AS activityCode, reason, received_at AS receivedAt, source
+        FROM donations WHERE status = 'queued' ORDER BY received_at ASC, id ASC
+      `)
+      .all() as unknown as StoredDonation[];
+    return rows;
+  }
+
+  /**
    * Deletes rows produced by the admin simulator. Real donations are untouched: wiping them would
    * reset the cooldown history and let a troll buy the same activity twice in a row.
    */

@@ -150,21 +150,71 @@ export function parseDonations(raw: unknown): DonationRow[] {
   return rows;
 }
 
+/** `meta.last_page` is the only pagination hint the API ships; null when the answer omits it. */
+function lastPageOf(raw: unknown): number | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const meta = (raw as { meta?: unknown }).meta;
+  if (typeof meta !== "object" || meta === null) return null;
+  const last = (meta as { last_page?: unknown }).last_page;
+  return typeof last === "number" && Number.isInteger(last) && last > 0 ? last : null;
+}
+
+/** How many pages one poll may walk. A burst bigger than this is left for the next poll. */
+export const MAX_PAGES = 5;
+
+export interface FetchOptions {
+  /**
+   * The newest donation id already processed. Pagination stops on the page that reaches it, which is
+   * what makes reading page 2+ safe: without a cursor the feed can slide between two requests and the
+   * same rows come back twice (they are deduplicated here) while older ones are never seen.
+   */
+  cursor?: number;
+  /** Override for tests and for a deliberately shallow poll. */
+  maxPages?: number;
+}
+
 export async function fetchDonations(
   accessToken: string,
   fetchImpl: typeof fetch = fetch,
+  options: FetchOptions = {},
 ): Promise<DonationRow[]> {
-  const response = await fetchImpl(`${API_BASE}/alerts/donations?page=1`, {
-    headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
-  });
-  const text = await response.text();
-  if (!response.ok) {
-    throw new DonationAlertsError(`GET donations failed with ${response.status}: ${text.slice(0, 200)}`);
+  const maxPages = Math.max(1, Math.trunc(options.maxPages ?? MAX_PAGES));
+  const collected = new Map<number, DonationRow>();
+
+  for (let page = 1; page <= maxPages; page += 1) {
+    const response = await fetchImpl(`${API_BASE}/alerts/donations?page=${page}`, {
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      throw new DonationAlertsError(`GET donations failed with ${response.status}: ${text.slice(0, 200)}`);
+    }
+
+    let json: unknown;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      throw new DonationAlertsError("GET donations returned non JSON");
+    }
+
+    let rows: DonationRow[];
+    try {
+      rows = parseDonations(json);
+    } catch (error) {
+      if (error instanceof DonationAlertsError) throw error;
+      throw new DonationAlertsError("GET donations returned non JSON");
+    }
+
+    for (const row of rows) collected.set(row.id, row);
+
+    // Three ways to stop: an empty page, a page that already reaches the processed cursor (the
+    // poller would drop those rows anyway), or the last page the API admits to having.
+    if (rows.length === 0) break;
+    if (options.cursor !== undefined && rows.some((row) => row.id <= options.cursor!)) break;
+    const lastPage = lastPageOf(json);
+    if (lastPage !== null && page >= lastPage) break;
   }
-  try {
-    return parseDonations(JSON.parse(text));
-  } catch (error) {
-    if (error instanceof DonationAlertsError) throw error;
-    throw new DonationAlertsError("GET donations returned non JSON");
-  }
+
+  // Newest first, like one page of the API: the poller sorts asc itself before processing.
+  return [...collected.values()].sort((left, right) => right.id - left.id);
 }

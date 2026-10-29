@@ -40,6 +40,8 @@ new g_cvarHealth;
 new g_cvarDebug;
 new g_cvarAmmo;
 new g_cvarAmmoReserve;
+new g_cvarClean;
+new g_cvarCleanSec;
 
 public plugin_init()
 {
@@ -59,6 +61,11 @@ public plugin_init()
 	// Off by default: one log line per death on a 24/7 server is a lot of noise. Turn it on over
 	// RCON to prove the respawns are really happening.
 	g_cvarDebug = register_cvar("csdm_lite_debug", "0");
+	// 20 bots dying every couple of seconds leave a weapon box behind each time, and the litter costs
+	// entity slots and collisions on a small fy_ map. The engine has no "no drop" switch, so the
+	// boxes are swept instead: 1 = clean, csdm_lite_clean_sec = how often.
+	g_cvarClean = register_cvar("csdm_lite_clean_weapons", "1");
+	g_cvarCleanSec = register_cvar("csdm_lite_clean_sec", "5.0");
 
 	// DeathMsg: 1 = killer, 2 = victim.
 	register_event("DeathMsg", "OnDeathMsg", "a");
@@ -69,6 +76,35 @@ public plugin_init()
 	// hooking every weapon event.
 	new Float:interval = 1.0;
 	set_task(interval, "TaskTopUpAmmo", 0, "", 0, "b");
+
+	// Dropped weapons: not a per-death hook, a sweep. The box a dead bot leaves behind is what piles
+	// up; removing it in a task cannot race the engine's own drop on death.
+	new Float:cleanSec = get_pcvar_float(g_cvarCleanSec);
+	if (cleanSec < 1.0)
+		cleanSec = 1.0;
+	set_task(cleanSec, "TaskCleanWeapons", 0, "", 0, "b");
+}
+
+/**
+ * Removes every weapon box lying on the map ("weaponbox" is what a CS 1.6 death drop is: the gun,
+ * the ammo and a copy of the model). Nothing is taken out of a player's hands, and entities placed by
+ * the map itself (armoury_entity) are left alone - some maps are built around them.
+ */
+public TaskCleanWeapons()
+{
+	if (!get_pcvar_num(g_cvarClean) || !get_pcvar_num(g_cvarEnabled))
+		return;
+
+	new entity = -1;
+	new removed;
+	while ((entity = engfunc(EngFunc_FindEntityByString, entity, "classname", "weaponbox")) > 0)
+	{
+		engfunc(EngFunc_RemoveEntity, entity);
+		removed++;
+	}
+
+	if (removed > 0 && get_pcvar_num(g_cvarDebug))
+		log_amx("cleaned %d dropped weapon box(es)", removed);
 }
 
 /* Reserve ammo only: the magazine empties at its own pace, the reload animation stays, and the bot

@@ -72,6 +72,20 @@ test("recent donations come back newest first with their verdict", () => {
   }
 });
 
+test("the queue of waiting donations is read back oldest first", () => {
+  const store = new Store(":memory:");
+  try {
+    store.record(donation({ id: 2, status: "queued", receivedAt: "2026-01-01T12:05:00.000Z" }));
+    store.record(donation({ id: 1, status: "queued", receivedAt: "2026-01-01T12:00:00.000Z" }));
+    store.record(donation({ id: 3, status: "applied", receivedAt: "2026-01-01T12:01:00.000Z" }));
+
+    assert.deepEqual(store.queuedDonations().map((row) => row.id), [1, 2]);
+    assert.equal(store.queuedDonations()[0]?.activityCode, "bot_nick");
+  } finally {
+    store.close();
+  }
+});
+
 test("a store can be reopened on the same file", async () => {
   const { mkdtempSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");

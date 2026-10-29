@@ -96,3 +96,25 @@ test("the status probe reports both scores and both tops", () => {
     assert.match(status, new RegExp(key), `amx_team_war status lost ${key}`);
   }
 });
+
+test("amx_full_status answers the whole panel in one reply", () => {
+  // One command per poll tick: RCON has no request id and the client serialises commands, so three
+  // probes cost three round-trips and every paid activity queues behind them.
+  assert.match(plugin, /register_srvcmd\("amx_full_status", "CmdFullStatus"\)/);
+
+  const handler = /public CmdFullStatus\([^)]*\)\s*\{[\s\S]*?\n\}/.exec(plugin)?.[0] ?? "";
+  assert.ok(handler !== "", "CmdFullStatus is not implemented");
+
+  // Read from the cvars the other plugins publish: a second copy of the numbers could disagree
+  // with what the game actually shows.
+  for (const cvar of ["stcam_name", "stcam_hp", "stcam_ar", "map_duel_state", "map_duel_winner"]) {
+    assert.match(handler, new RegExp(`get_cvar_string\\("${cvar}"`), `${cvar} is never read`);
+  }
+
+  // The two lines the other plugins own, printed from their cvars; the score line comes from
+  // PrintScoreLine() below so the two commands can never drift apart.
+  for (const line of ["stream_cam status:", "map_duel status:"]) {
+    assert.match(handler, new RegExp(`"${line}`), `${line} is missing from the reply`);
+  }
+  assert.match(handler, /PrintScoreLine\(\)/, "the reply would drift from amx_team_war status");
+});

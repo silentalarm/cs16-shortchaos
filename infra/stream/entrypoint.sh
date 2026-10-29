@@ -34,6 +34,10 @@ STATUS_DIR="${STREAM_STATUS_DIR:-${GAME_DIR:-/game}/.stream}"
 SERVER_ADDR="${SERVER_ADDR:-127.0.0.1:27015}"
 FPS="${STREAM_FPS:-30}"
 BITRATE="${STREAM_BITRATE_KBPS:-2000}"
+# x264 gets a fixed thread budget: llvmpipe (software OpenGL) renders the game in the same container
+# and both scale with the core count, so an unbounded encoder starves the client and the picture
+# stutters in the capture itself. 2 threads keeps 720p30 well inside its budget.
+ENC_THREADS="${STREAM_ENCODE_THREADS:-2}"
 RTMP_BASE="${STREAM_RTMP:-rtmps://a.rtmps.youtube.com:443/live2}"
 PLAYER_NAME="${STREAM_CAM_NAME:-StreamCam}"
 
@@ -342,6 +346,16 @@ copy_tree() {
     tar -xf - -C "$GAME_DIR/$d" || { log "copy of $d failed"; return 1; }
 }
 
+# A map added to the server after the first run (or the .wad that came with it) is not in the client
+# volume yet, and CS16Client cannot join a map it does not have: the stream would break on exactly
+# the map change a donation paid for. --skip-old-files makes this a stat per file, not a copy.
+sync_new_files() {
+  local d="$1"
+  ( cd "$SERVER_DIR/$d" && tar --ignore-failed-read \
+      --exclude=logs --exclude=server.cfg --exclude='*.log' --exclude='*.mdmp' -cf - . ) |
+    tar -xf - -C "$GAME_DIR/$d" --skip-old-files || { log "sync of $d failed"; return 1; }
+}
+
 prepare_game_dir() {
   mkdir -p "$GAME_DIR"
   local d
@@ -349,6 +363,8 @@ prepare_game_dir() {
     if [ ! -d "$GAME_DIR/$d" ]; then
       log "first run: copying $d from $SERVER_DIR (one-time, ~1 min)"
       copy_tree "$d" || return 1
+    else
+      sync_new_files "$d" || return 1
     fi
   done
   # Engine + bundled SDL2/ffmpeg libraries must sit in the same directory as the game dirs.
@@ -522,7 +538,7 @@ run_encoder() {
   args+=(-vf "$VF")
   if [ -n "$audio_filter" ]; then args+=(-af "$audio_filter"); fi
   args+=(
-    -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p
+    -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -threads "$ENC_THREADS"
     -b:v "${BITRATE}k" -maxrate "${BITRATE}k" -bufsize "$((BITRATE * 2))k"
     -g "$((FPS * 2))" -keyint_min "$FPS" -sc_threshold 0
     -c:a aac -b:a 128k -shortest

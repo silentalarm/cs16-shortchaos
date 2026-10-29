@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 /**
  * map_duel ends every map with a fight between the two team tops, and it is the only thing that
@@ -111,13 +111,87 @@ test("changelevel only ever uses a name from map_duel_maps", () => {
   const next = body("NextMap");
   assert.match(next, /get_cvar_string\("map_duel_maps"/, "the rotation is not the plugin's list");
   assert.match(next, /IsSafeName\(item\)/, "an RCON cvar would reach a console command unchecked");
+});
 
-  // The list has to stay in step with the maps the donation activity knows about.
-  const activities = readFileSync(new URL("../config/activities.json", import.meta.url), "utf8");
-  const configured = /register_cvar\("map_duel_maps", "([^"]+)"\)/.exec(plugin)?.[1] ?? "";
-  for (const map of ["de_dust2", "de_inferno", "de_nuke", "cs_italy", "de_aztec"]) {
-    assert.ok(configured.includes(map), `map_duel_maps has no ${map}`);
-    assert.ok(activities.includes(map), `activities.json has no ${map}`);
+test("nothing outside the fight-yard pool can start or catch the stream", () => {
+  // The duel owns the rotation (mp_timelimit 0), but a stale `MAP` or the stock 25-map mapcycle is
+  // exactly how a stream comes back on de_dust2 after an unrelated restart.
+  const entrypoint = readFileSync(new URL("../infra/entrypoint.sh", import.meta.url), "utf8");
+  const compose = readFileSync(new URL("../infra/docker-compose.yml", import.meta.url), "utf8");
+
+  const startMap = /MAP="\$\{MAP:-([a-z0-9_]+)\}"/.exec(entrypoint)?.[1] ?? "";
+  assert.match(startMap, /^fy_/, `the server starts on ${startMap || "?"} instead of a fight-yard map`);
+  assert.ok(compose.includes(`MAP: \${MAP:-${startMap}}`), "compose and the entrypoint disagree on the start map");
+
+  const cycle = /MAPCYCLE="\$\{MAPCYCLE:-([^"}]+)\}"/.exec(entrypoint)?.[1] ?? "";
+  const cycleMaps = cycle.split(",").filter((map) => map !== "");
+  assert.deepEqual(cycleMaps, [
+    "fy_iceworld", "fy_pool_day", "fy_snow", "fy_buzzkill", "fy_simpsons", "fy_aztec", "fy_dustworld",
+  ]);
+  assert.match(entrypoint, /mapcycle\.txt/, "the stock mapcycle is never rewritten");
+});
+
+test("a fetched map brings its resources, and they land in the right directory", () => {
+  // A .bsp on its own is not enough: fy_iceworld ships de_vegas.wad, and with the wad missing HLDS
+  // dies with "TEX_InitFromWad: couldn't open de_vegas.wad" and comes back on the default map.
+  const entrypoint = readFileSync(new URL("../infra/entrypoint.sh", import.meta.url), "utf8");
+  const copy = /MAPS_EXTRA=[\s\S]*?\nfi\n/.exec(entrypoint)?.[0] ?? "";
+  assert.ok(copy !== "", "the entrypoint does not copy maps-extra at all");
+  assert.match(copy, /\*\.wad\) dest=\/hlds\/cstrike ;;/, "wads are not placed where HLDS looks for them");
+  assert.match(copy, /\*\.bsp\|[^\n]*dest=\/hlds\/cstrike\/maps/, "maps do not go to cstrike/maps");
+
+  const fetcher = readFileSync(new URL("../infra/fetch-maps.ps1", import.meta.url), "utf8");
+  assert.match(fetcher, /'de_vegas\.wad'|\.wad/, "the fetcher does not take wads out of the archive");
+
+  // The capture container has to see a map added after its volume was created, otherwise it cannot
+  // join and the stream freezes on the map change a donation paid for.
+  const stream = readFileSync(new URL("../infra/stream/entrypoint.sh", import.meta.url), "utf8");
+  assert.match(stream, /sync_new_files/, "a new map never reaches the client volume");
+  assert.match(stream, /--skip-old-files/, "the sync would copy everything on every start");
+});
+
+test("the rotation is fight-yard maps only, and every one of them is fetched", () => {
+  // A vertical feed has a second or two to hook a viewer: on a big map the bots spend five of them
+  // running to each other with an empty field in frame.
+  const configured = /register_cvar\("map_duel_maps",\s*"([^"]+)"\)/.exec(plugin)?.[1] ?? "";
+  const rotation = configured.split(",").filter((map) => map !== "");
+  assert.deepEqual(rotation, [
+    "fy_iceworld", "fy_pool_day", "fy_snow", "fy_buzzkill", "fy_simpsons", "fy_aztec", "fy_dustworld",
+  ]);
+  for (const map of rotation) {
+    assert.match(map, /^fy_/, `${map} is not a fight-yard map - the pool is fy_* only`);
+  }
+
+  // changelevel onto a map the server does not have hangs the stream, so a name has to be backed by
+  // a file: either one of the maps that ship with HLDS, or one infra/fetch-maps.ps1 installed.
+  const stock = new Set([
+    "as_oilrig", "cs_747", "cs_assault", "cs_backalley", "cs_estate", "cs_havana", "cs_italy",
+    "cs_militia", "cs_office", "cs_siege", "de_airstrip", "de_aztec", "de_cbble", "de_chateau",
+    "de_dust", "de_dust2", "de_inferno", "de_nuke", "de_piranesi", "de_prodigy", "de_storm",
+    "de_survivor", "de_torn", "de_train", "de_vertigo",
+  ]);
+  const mapsDir = new URL("../infra/maps/", import.meta.url);
+  for (const map of rotation) {
+    if (stock.has(map)) continue;
+    assert.ok(
+      existsSync(new URL(`${map}.bsp`, mapsDir)),
+      `${map} is neither a stock map nor in infra/maps - run ./infra/fetch-maps.ps1`,
+    );
+    // A fetched map is pinned by hash, otherwise a re-uploaded file silently replaces it.
+    const manifest = readFileSync(new URL("maps.json", mapsDir), "utf8");
+    const pinned = new RegExp(`"name":\\s*"${map}"[\\s\\S]{0,200}?"sha256":\\s*"([0-9a-f]{64})"`).exec(manifest);
+    assert.ok(pinned !== null, `${map} has no sha256 pin in infra/maps/maps.json`);
+  }
+
+  // Two copies of the list exist on purpose - the cvar is what the duel uses, the activity's
+  // `maps=` is what a donation sends - so the test is what keeps them equal.
+  const activities = JSON.parse(
+    readFileSync(new URL("../config/activities.json", import.meta.url), "utf8"),
+  ) as { activities: { code: string; params?: { maps?: string[] } }[] };
+  const mapChange = activities.activities.find((activity) => activity.code === "map_change");
+  const sent = mapChange?.params?.maps ?? [];
+  for (const map of rotation) {
+    assert.ok(sent.includes(map), `the map_change activity does not know ${map}`);
   }
 });
 

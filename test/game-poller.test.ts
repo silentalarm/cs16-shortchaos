@@ -10,6 +10,12 @@ import { GamePoller, parseScore, parseTarget, parseWinner } from "../src/game-po
 const SCORE_LINE = "team_war status: t=12 ct=9 top_t=Mr_Smith:7 top_ct=Neo:5";
 const TARGET_LINE =
   "stream_cam status: enabled=1 interval=25.0 mode=1 spectator=StreamCam target=Mr_Smith candidates=20 dwell=6.0 hp=87 active=1 ar=42";
+const DUEL_LINE = "map_duel status: state=live winner=-";
+
+/** What `amx_full_status` prints: the three lines above, in one RCON reply. */
+function fullStatus(score = SCORE_LINE, target = "stream_cam status: target=Mr_Smith hp=87 ar=42", duel = DUEL_LINE): string {
+  return `${score}\n${target}\n${duel}`;
+}
 
 test("the team race line becomes a score", () => {
   assert.deepEqual(parseScore(SCORE_LINE), { t: 12, ct: 9, topT: "Mr Smith 7", topCt: "Neo 5" });
@@ -55,10 +61,7 @@ test("the duel line names the winner, and only once the duel is decided", () => 
 test("the winner of the last duel reaches the panel and goes away with the map", async () => {
   let duel = "map_duel status: state=live winner=-";
   const poller = new GamePoller({
-    exec: async (command) => {
-      if (command.startsWith("amx_map_duel")) return duel;
-      return command.startsWith("amx_team_war") ? SCORE_LINE : TARGET_LINE;
-    },
+    exec: async (command) => (command === "amx_full_status" ? fullStatus(SCORE_LINE, undefined, duel) : ""),
     intervalMs: 100,
     staleAfter: 1,
     log: () => {},
@@ -86,7 +89,7 @@ test("a dead server dims the panel instead of emptying it", async () => {
   const poller = new GamePoller({
     exec: async (command) => {
       if (fail) throw new Error("RCON command timed out");
-      return command.startsWith("amx_team_war") ? reply : TARGET_LINE;
+      return command === "amx_full_status" ? fullStatus(reply) : "";
     },
     intervalMs: 100,
     staleAfter: 1,
@@ -111,6 +114,60 @@ test("a dead server dims the panel instead of emptying it", async () => {
   assert.equal(poller.snapshot().score?.t, 13);
 
   poller.stop();
+});
+
+test("the whole panel costs one RCON command per tick", async () => {
+  const commands: string[] = [];
+  const poller = new GamePoller({
+    exec: async (command) => {
+      commands.push(command);
+      return fullStatus();
+    },
+    intervalMs: 100,
+    staleAfter: 1,
+    log: () => {},
+  });
+
+  poller.start();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  poller.stop();
+
+  // Three probes cost three round-trips through a serialised RCON socket, and a paid activity used
+  // to wait behind every one of them.
+  assert.deepEqual(commands, ["amx_full_status"]);
+  assert.deepEqual(poller.snapshot().score, { t: 12, ct: 9, topT: "Mr Smith 7", topCt: "Neo 5" });
+  assert.deepEqual(poller.snapshot().target, { name: "Mr Smith", hp: 87, armor: 42 });
+});
+
+test("an old image without amx_full_status falls back to the three probes", async () => {
+  const commands: string[] = [];
+  const events: string[] = [];
+  const poller = new GamePoller({
+    exec: async (command) => {
+      commands.push(command);
+      if (command === "amx_team_war status") return SCORE_LINE;
+      if (command === "amx_stcam status") return TARGET_LINE;
+      if (command === "amx_map_duel status") return "map_duel status: state=done winner=Mr_Smith";
+      return "Unknown command: amx_full_status";
+    },
+    intervalMs: 100,
+    staleAfter: 1,
+    log: (event) => events.push(event),
+  });
+
+  poller.start();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  // The first tick recovers on its own instead of leaving the panel empty until the image is rebuilt.
+  assert.equal(poller.snapshot().score?.t, 12);
+  assert.equal(poller.snapshot().winner, "Mr Smith");
+  assert.deepEqual(events, ["game.legacy_status"]);
+
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  poller.stop();
+
+  // Decided once: the missing command is not probed again on every tick.
+  assert.equal(commands.filter((command) => command === "amx_full_status").length, 1);
+  assert.ok(commands.length > 3, "the fallback stopped polling");
 });
 
 test("a dry run (no password) never invents a score", async () => {

@@ -1,24 +1,38 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { loadActivities } from "../src/activities.ts";
+import type { ActivitiesConfig, Activity } from "../src/activities.ts";
 import { Store } from "../src/db.ts";
 import type { DonationRow } from "../src/db.ts";
 import { drainQueue, pollOnce } from "../src/poller.ts";
 import { PendingQueue } from "../src/queue.ts";
 
 /**
- * A donation that hits a cooldown is paid money: it waits for its window instead of being
- * rejected. These tests pin the three things that make that safe — the wait is bounded, the
- * command is the one the viewer paid for, and the row ends up `applied` exactly once.
+ * A donation that hits a cooldown is paid money: it waits for its window instead of being rejected.
+ * These tests pin the three things that make that safe - the wait is bounded, the command is the one
+ * the viewer paid for, and the row ends up `applied` exactly once.
+ *
+ * The shipped catalogue sells HE party with no cooldown (a 50 RUB step must always run at once), so
+ * these tests switch a cooldown on for it instead of relying on an effect that is off sale.
  */
 const catalog = loadActivities(new URL("../config/activities.json", import.meta.url));
 const START = Date.parse("2026-01-01T12:00:00.000Z");
+const COMMAND = "amx_de he_party seconds=60 nick=vasya";
 
-function donation(overrides: Partial<DonationRow> = {}): DonationRow {
-  return { id: 1, username: "Vasya", amount: 75, currency: "RUB", message: null, createdAt: null, ...overrides };
+function catalogWith(patch: Partial<Pick<Activity, "cooldownSec" | "globalCooldownSec">>): ActivitiesConfig {
+  return {
+    ...catalog,
+    activities: catalog.activities.map((activity) =>
+      activity.code === "he_party" ? { ...activity, ...patch } : activity,
+    ),
+  };
 }
 
-function setup() {
+function donation(overrides: Partial<DonationRow> = {}): DonationRow {
+  return { id: 1, username: "Vasya", amount: 50, currency: "RUB", message: null, createdAt: null, ...overrides };
+}
+
+function setup(options: { catalog?: ActivitiesConfig } = {}) {
   const store = new Store(":memory:");
   const queue = new PendingQueue();
   const commands: string[] = [];
@@ -28,8 +42,9 @@ function setup() {
 
   const deps = {
     store,
-    catalog,
+    catalog: options.catalog ?? catalog,
     queue,
+    random: () => 0,
     fetchDonations: async (cursor: number) => feed.filter((row) => row.id > cursor),
     apply: async (command: string) => {
       commands.push(command);
@@ -60,10 +75,10 @@ function entry(donationId: number, dueAt: number, overrides: Partial<Parameters<
   return {
     donationId,
     username: "A",
-    amount: 75,
+    amount: 50,
     source: "da" as const,
-    activityCode: "knives_only",
-    command: "amx_de knives_only",
+    activityCode: "he_party",
+    command: COMMAND,
     reason: "donor_cooldown",
     enqueuedAt: START,
     dueAt,
@@ -119,16 +134,16 @@ test("postponing keeps the entry in the queue with a later due time", () => {
   assert.equal(queue.due(START + 90_000).ready.length, 0);
   assert.equal(queue.due(START + 120_000).ready.length, 1);
   assert.equal(queue.postpone(99, START, "donor_cooldown"), false);
-
+});
 test("a donation blocked by a cooldown is queued and applied later through the same command", async () => {
-  const ctx = setup();
+  const ctx = setup({ catalog: catalogWith({ cooldownSec: 60 }) });
   try {
-    ctx.setFeed([donation({ id: 1, amount: 75 }), donation({ id: 2, amount: 100 })]);
+    ctx.setFeed([donation({ id: 1, amount: 50 }), donation({ id: 2, amount: 50 })]);
     const first = await pollOnce(ctx.deps);
 
     assert.equal(first.applied, 1);
     assert.equal(first.queued, 1);
-    assert.deepEqual(ctx.commands, ["amx_de knives_only"]);
+    assert.deepEqual(ctx.commands, [COMMAND]);
     assert.equal(ctx.queue.size, 1);
 
     const queuedRow = ctx.store.recent()[0];
@@ -138,12 +153,12 @@ test("a donation blocked by a cooldown is queued and applied later through the s
     // Nothing may run before the window opens.
     const early = await drainQueue(ctx.deps);
     assert.equal(early.applied, 0);
-    assert.deepEqual(ctx.commands, ["amx_de knives_only"]);
+    assert.deepEqual(ctx.commands, [COMMAND]);
 
     ctx.advance(60_000);
     const late = await drainQueue(ctx.deps);
     assert.equal(late.applied, 1);
-    assert.deepEqual(ctx.commands, ["amx_de knives_only", "amx_de awp_only"]);
+    assert.deepEqual(ctx.commands, [COMMAND, COMMAND]);
     assert.equal(ctx.queue.size, 0);
 
     const appliedRow = [...ctx.store.recent()].find((row) => row.id === 2);
@@ -156,21 +171,18 @@ test("a donation blocked by a cooldown is queued and applied later through the s
 });
 
 test("a queued activity that is still cooling down globally waits instead of firing twice", async () => {
-  const ctx = setup();
+  const ctx = setup({ catalog: catalogWith({ cooldownSec: 60, globalCooldownSec: 600 }) });
   try {
-    // The same donor twice in a minute: the second one waits for the 60 s donor cooldown, which
-    // runs out long before the 10 min global map_change cooldown.
-    ctx.setFeed([
-      donation({ id: 1, username: "A", amount: 250 }),
-      donation({ id: 2, username: "A", amount: 250 }),
-    ]);
+    // The same donor twice in a minute: the second one waits for the 60 s donor cooldown, which runs
+    // out long before the 10 min global window of the effect itself.
+    ctx.setFeed([donation({ id: 1, username: "A", amount: 50 }), donation({ id: 2, username: "A", amount: 50 })]);
     await pollOnce(ctx.deps);
     assert.equal(ctx.commands.length, 1);
     assert.equal(ctx.queue.size, 1);
 
     ctx.advance(60_000);
     const drain = await drainQueue(ctx.deps);
-    assert.equal(drain.applied, 0, "map_change may not restart the map twice in ten minutes");
+    assert.equal(drain.applied, 0, "the effect may not restart inside its global window");
     assert.equal(drain.requeued, 1, "the entry goes back into the queue, it is not dropped");
     assert.equal(ctx.queue.size, 1);
 
@@ -190,7 +202,7 @@ test("a queued entry for an activity that left the catalogue fails loudly, not s
     ctx.store.record({
       id: 42,
       username: "Vasya",
-      amount: 75,
+      amount: 50,
       currency: "RUB",
       status: "queued",
       activityCode: "removed_activity",
@@ -209,10 +221,10 @@ test("a queued entry for an activity that left the catalogue fails loudly, not s
 });
 
 test("without a queue a cooldown keeps the old reject-on-the-spot behaviour", async () => {
-  const ctx = setup();
+  const ctx = setup({ catalog: catalogWith({ cooldownSec: 60 }) });
   try {
     const { queue: _omitted, ...withoutQueue } = ctx.deps;
-    ctx.setFeed([donation({ id: 1, amount: 75 }), donation({ id: 2, amount: 100 })]);
+    ctx.setFeed([donation({ id: 1, amount: 50 }), donation({ id: 2, amount: 50 })]);
 
     const summary = await pollOnce(withoutQueue);
     assert.equal(summary.applied, 1);
@@ -222,6 +234,4 @@ test("without a queue a cooldown keeps the old reject-on-the-spot behaviour", as
   } finally {
     ctx.store.close();
   }
-});
-
 });

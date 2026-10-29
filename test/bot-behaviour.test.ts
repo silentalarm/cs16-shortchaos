@@ -25,8 +25,23 @@ test("a bot never fights with a knife, and never stands still instead of shootin
   // Camping and shift-walking are what "стоял и смотрел" looks like from the camera.
   assert.match(serverCfg, /^yb_camping_allowed 0$/m, "bots are allowed to camp again");
   assert.match(serverCfg, /^yb_walking_allowed 0$/m, "bots still walk slowly when they hear somebody");
-  // Free for all targeting stays on: with a team check a bot stares at a teammate and never shoots.
-  assert.match(serverCfg, /^yb_csdm_mode 2$/m, "bots went back to team-only targeting");
+  // Team play: T against CT. yb_csdm_mode 0 makes a bot target the other team only; 2 (FFA) was the
+  // old setting, where every bot was a target and a team kill fed the scoreboard.
+  assert.match(serverCfg, /^yb_csdm_mode 0$/m, "bots went back to free-for-all targeting");
+  assert.match(serverCfg, /^mp_friendlyfire 0$/m, "friendly fire would hand the other side free frags");
+});
+
+test("dropped weapons are swept off the map", () => {
+  // 20 bots dying every couple of seconds leave one weapon box each, and CS 1.6 has no "never drop"
+  // switch: the litter has to be removed. A sweep, not a per-death hook - the engine's own drop runs
+  // on death and a hook there would race it.
+  assert.match(csdm, /register_cvar\("csdm_lite_clean_weapons", "1"\)/, "the sweep is not on by default");
+  assert.match(csdm, /set_task\(cleanSec, "TaskCleanWeapons", 0, "", 0, "b"\)/, "the sweep does not repeat");
+
+  const clean = body("TaskCleanWeapons");
+  assert.match(clean, /"classname", "weaponbox"/, "the sweep does not look for death drops");
+  assert.match(clean, /EngFunc_RemoveEntity/, "the box is never removed");
+  assert.doesNotMatch(clean, /armoury_entity/, "the sweep would delete the map's own placed weapons");
 });
 
 test("ammo is endless in reserve, the magazine still empties", () => {

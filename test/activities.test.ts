@@ -35,10 +35,17 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
   assert.equal(new Set(codes).size, codes.length, "codes are unique");
   assert.equal(codes.includes("zone_start"), false, "the zone activities are gone for good");
 
+  // One effect is on sale: a 50 RUB step rolls a random enabled activity, so an entry that is not
+  // enabled can never be drawn and the old price ladder is gone until the replacement effects land.
+  const onSale = config.activities.filter((activity) => activity.enabled);
+  assert.deepEqual(onSale.map((activity) => activity.code), ["he_party"], "only the grenade party is on sale");
+  for (const activity of onSale) {
+    assert.equal(activity.price, config.minAmount, `${activity.code} must cost exactly one 50 RUB step`);
+  }
+
   const prices = config.activities.map((activity) => activity.price);
-  assert.equal(new Set(prices).size, prices.length, "prices are unique so mapping needs no viewer input");
-  assert.equal(Math.min(...prices), config.minAmount, "cheapest activity costs the minimum donation");
-  assert.deepEqual([...prices].sort((a, b) => a - b), prices, "catalogue is sorted by price ascending");
+  assert.equal(Math.min(...prices), config.minAmount, "nothing costs less than one step");
+  assert.deepEqual([...prices].sort((a, b) => a - b), prices, "the catalogue file stays sorted by price");
 
   for (const activity of config.activities) {
     if (activity.duration === "rounds") {
@@ -56,7 +63,19 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
   assert.ok(mapChange.globalCooldownSec >= 600, "map change is rate limited to once per 10 minutes");
 });
 
-test("the HE party carries its own clock, not a round", () => {
+test("every effect on a clock carries that clock in its params as well", () => {
+  const config = loadActivities(shippedConfig);
+  const timed = config.activities.filter((activity) => activity.duration === "seconds");
+  assert.equal(timed.length, 10, "he_party plus the nine effects that used to wait for Round_End");
+
+  for (const activity of timed) {
+    // The plugin reads the length from the command the control API builds, so both places must agree.
+    assert.equal(activity.params.seconds, activity.seconds, `${activity.code} sends a different length`);
+    assert.ok(activity.seconds !== null && activity.seconds >= 1 && activity.seconds <= 600);
+  }
+});
+
+test("the HE party is the whole shop: one step, sixty seconds, no cooldown", () => {
   const config = loadActivities(shippedConfig);
   const party = config.activities.find((activity) => activity.code === "he_party");
 
@@ -65,9 +84,13 @@ test("the HE party carries its own clock, not a round", () => {
   assert.equal(party.seconds, 60);
   // The plugin reads the length from the command the control API builds, so both places must agree.
   assert.equal(party.params.seconds, party.seconds);
-  // Knives only is the cheap knife round; the party is the one with grenades, so they cannot share a
-  // price - the ladder maps a donation amount to exactly one activity.
-  assert.equal(party.price, 70);
+  // One fixed step: a viewer pays 50 RUB, gets 60 seconds, and can buy as many steps as they like.
+  assert.equal(party.price, config.minAmount);
+  // No cooldown: a paid step must show up on screen at once, or the viewer sees nothing for their money.
+  assert.equal(party.cooldownSec, 0);
+  assert.equal(party.globalCooldownSec, 0);
+  // The buyer's name goes on a bot, so the effect has somebody to point at.
+  assert.equal(party.params.maxNameLength, 16);
 });
 
 test("the round fights carry the parameters the plugin reads", () => {
@@ -77,7 +100,7 @@ test("the round fights carry the parameters the plugin reads", () => {
   const bounty = byCode.get("bounty");
   assert.ok(bounty);
   assert.equal(bounty.price, 105);
-  assert.equal(bounty.duration, "rounds");
+  assert.equal(bounty.duration, "seconds", "a round never ends here, so the bounty has a clock");
   assert.equal(bounty.params.health, 150);
   assert.equal(bounty.params.reward, "weapon_deagle");
 
