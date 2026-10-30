@@ -25,10 +25,9 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
 
   assert.equal(config.currency, "RUB");
   assert.equal(config.minAmount, 50);
-  // Six survivors of the 2026-10 reset: the five events on sale plus he_party, which the owner kept
-  // off sale. The other seventeen codes were deleted from the catalogue and from the Pawn plugin; the
-  // plan for the next forty-four is in docs/activities/catalogue.md.
-  assert.equal(config.activities.length, 6, "five 2025-10 events plus the kept he_party");
+  // Eight survivors of the 2026-10 reset: the five 2025-10 events, `he_party` (kept off sale) and the
+  // two hero modes of S1. The rest of the plan is in docs/activities/catalogue.md.
+  assert.equal(config.activities.length, 8, "five 2025-10 events, he_party and the two hero modes");
 
   const codes = config.activities.map((activity) => activity.code);
   assert.equal(new Set(codes).size, codes.length, "codes are unique");
@@ -37,10 +36,11 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
 
   // The 2025-10 deal: eight events, one price, one length. A 50 RUB step rolls one of them at random,
   // so an entry that is not enabled can never be drawn and every enabled entry has to cost exactly
-  // one step and last exactly 15 seconds - otherwise the same money buys a longer or a cheaper show.
-  // `lightsaber_duel` is the one agreed exception: the opera bed is the event's whole soundtrack, so the
-  // clock is 30 seconds and the track is cut by it instead of ending mid-phrase.
-  const longer: Record<string, number> = { lightsaber_duel: 30 };
+  // one step. `lightsaber_duel` is one agreed exception to the 15 second length: the opera bed is the
+  // event's whole soundtrack, so the clock is 30 seconds and the track is cut by it. The hero modes are
+  // the second exception: a round needs a minute to have a story, and 15 seconds of Nemesis is the
+  // "nothing happened" the old `terminator_one` was rejected for.
+  const longer: Record<string, number> = { lightsaber_duel: 30, nemesis: 60, survivor: 60 };
   const onSale = config.activities.filter((activity) => activity.enabled);
   assert.deepEqual(
     onSale.map((activity) => activity.code).sort(),
@@ -48,10 +48,12 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
       "glass_cannon",
       "lightsaber_duel",
       "meteor_shower",
+      "nemesis",
       "one_bullet",
       "red_light",
+      "survivor",
     ],
-    "five events on sale",
+    "seven events on sale",
   );
   for (const activity of onSale) {
     const seconds = longer[activity.code] ?? 15;
@@ -80,7 +82,7 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
 test("every effect on a clock carries that clock in its params as well", () => {
   const config = loadActivities(shippedConfig);
   const timed = config.activities.filter((activity) => activity.duration === "seconds");
-  assert.equal(timed.length, 6, "the five events on sale plus the kept he_party");
+  assert.equal(timed.length, 8, "every shipped code is a clock");
 
   for (const activity of timed) {
     // The plugin reads the length from the command the control API builds, so both places must agree.
@@ -107,11 +109,20 @@ test("the HE party is the whole shop: one step, sixty seconds, no cooldown", () 
   assert.equal(party.params.maxNameLength, 16);
 });
 
-test("the catalogue is exactly the six codes the plugin still registers", () => {
+test("the catalogue is exactly the eight codes the plugin still registers", () => {
   const config = loadActivities(shippedConfig);
   assert.deepEqual(
     config.activities.map((activity) => activity.code).sort(),
-    ["glass_cannon", "he_party", "lightsaber_duel", "meteor_shower", "one_bullet", "red_light"],
+    [
+      "glass_cannon",
+      "he_party",
+      "lightsaber_duel",
+      "meteor_shower",
+      "nemesis",
+      "one_bullet",
+      "red_light",
+      "survivor",
+    ],
   );
 
   const byCode = new Map(config.activities.map((activity) => [activity.code, activity]));
@@ -127,6 +138,18 @@ test("the catalogue is exactly the six codes the plugin still registers", () => 
   const party = byCode.get("he_party");
   assert.ok(party);
   assert.equal(party.enabled, false, "he_party stays off sale but stays in the plugin");
+
+  // The hero modes carry the numbers the plugin reads; a typo here is a hero with the default health.
+  const nemesis = byCode.get("nemesis");
+  assert.ok(nemesis);
+  assert.equal(nemesis.params.baseHealth, 1500);
+  assert.equal(nemesis.params.perBot, 600);
+  assert.equal(nemesis.params.knife, 250);
+
+  const survivor = byCode.get("survivor");
+  assert.ok(survivor);
+  assert.equal(survivor.params.weapon, "weapon_m249");
+  assert.equal(survivor.params.baseHealth, 1200);
 });
 
 test("price below the minimum donation is rejected", () => {

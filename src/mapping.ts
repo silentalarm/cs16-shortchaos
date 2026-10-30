@@ -46,6 +46,11 @@ export const EVENT_KEYWORDS: Readonly<Record<string, string>> = {
   saber: "lightsaber_duel",
   jedi: "lightsaber_duel",
   bullet: "one_bullet",
+  // The hero modes of S1: a viewer who types the word buys the mode, everybody else rolls.
+  nemesis: "nemesis",
+  boss: "nemesis",
+  survivor: "survivor",
+  hero: "survivor",
 };
 
 /** The event the message asks for, or null when it names nothing that is on sale. */

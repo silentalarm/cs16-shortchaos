@@ -21,6 +21,11 @@ export interface TrackSpec {
   wave: Wave;
   /** Pulse width of the square wave; 0.125 is the thin, "8-bit" timbre. */
   duty?: number;
+  /**
+   * Length of the bed in seconds. Defaults to `MUSIC_SECONDS`; a hero mode runs for a minute and its
+   * bed has to cover the whole event, because the player cuts playback on the event clock.
+   */
+  seconds?: number;
   /** One note per eighth note, `-` for a rest. */
   lead: readonly string[];
   /** One note per quarter note, `-` for a rest. */
@@ -94,6 +99,25 @@ export const TRACKS: Record<string, TrackSpec> = {
     lead: "E4 - - - - - - - B3 - - - - - - -".split(" "),
     bass: "E2 - - - C2 - - -".split(" "),
     drums: 0.7,
+  },
+  // The hero modes are a minute long, so their beds are too (`seconds`): a 15 second loop under a 60
+  // second round leaves 45 seconds of silence, and the silence is what the viewer remembers.
+  nemesis: {
+    bpm: 150,
+    wave: "saw",
+    seconds: 60,
+    lead: "D3 D3 F3 D3 A3 - G3 F3 E3 E3 G3 E3 Bb3 - A3 G3 D3 D3 F3 D3 A3 - C4 Bb3 A3 - G3 - F3 - E3 -".split(" "),
+    bass: "D2 D2 D2 D2 Bb1 Bb1 C2 C2 D2 D2 D2 D2 Bb1 Bb1 A1 A1".split(" "),
+    drums: 1,
+  },
+  survivor: {
+    bpm: 128,
+    wave: "square",
+    duty: 0.375,
+    seconds: 60,
+    lead: "A4 C5 E5 A5 - G5 E5 C5 B4 D5 F5 B5 - A5 F5 D5 A4 C5 E5 A5 - E5 C5 A4 G4 B4 D5 G5 - F5 D5 B4".split(" "),
+    bass: "A2 A2 F2 F2 C3 C3 G2 G2 A2 A2 F2 F2 G2 G2 E2 E2".split(" "),
+    drums: 0.85,
   },
 };
 
@@ -200,7 +224,9 @@ export function renderTrack(code: string): Buffer {
   const spec = TRACKS[code] ?? TRACKS[DEFAULT_TRACK];
   if (spec === undefined) throw new Error(`no music track for ${code}`);
 
-  const mix = new Float32Array(MUSIC_SAMPLE_RATE * MUSIC_SECONDS);
+  // Per-track length: a 60 second hero mode with a 15 second bed is 45 seconds of silence.
+  const seconds = spec.seconds ?? MUSIC_SECONDS;
+  const mix = new Float32Array(MUSIC_SAMPLE_RATE * seconds);
   const random = mulberry32(code.split("").reduce((hash, char) => (hash * 31 + char.charCodeAt(0)) >>> 0, 7));
   const eighth = 60 / spec.bpm / 2;
   const quarter = eighth * 2;
@@ -208,7 +234,7 @@ export function renderTrack(code: string): Buffer {
 
   const lead = spec.lead.map(midi);
   if (lead.length > 0) {
-    for (let step = 0; step * eighth < MUSIC_SECONDS; step += 1) {
+    for (let step = 0; step * eighth < seconds; step += 1) {
       const note = lead[step % lead.length] ?? -1;
       if (note >= 0) addTone(mix, step * eighth, eighth * 0.92, frequency(note), spec.wave, duty, 0.22);
     }
@@ -216,7 +242,7 @@ export function renderTrack(code: string): Buffer {
 
   const bass = spec.bass.map(midi);
   if (bass.length > 0) {
-    for (let step = 0; step * quarter < MUSIC_SECONDS; step += 1) {
+    for (let step = 0; step * quarter < seconds; step += 1) {
       const note = bass[step % bass.length] ?? -1;
       if (note >= 0) addTone(mix, step * quarter, quarter * 0.92, frequency(note), "tri", 0.5, 0.3);
     }
@@ -224,7 +250,7 @@ export function renderTrack(code: string): Buffer {
 
   const drums = spec.drums ?? 0;
   if (drums > 0) {
-    for (let beat = 0; beat * quarter < MUSIC_SECONDS; beat += 1) {
+    for (let beat = 0; beat * quarter < seconds; beat += 1) {
       addKick(mix, beat * quarter, 0.32 * drums);
       if (beat % 2 === 1) addNoise(mix, beat * quarter, 0.12, 0.1 * drums, random);
       addNoise(mix, beat * quarter + eighth, 0.03, 0.035 * drums, random);

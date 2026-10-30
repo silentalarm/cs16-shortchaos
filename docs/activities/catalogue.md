@@ -24,8 +24,8 @@ until `test/activities.test.ts` is relaxed to allow an instant entry on sale).
 
 | # | code | What the viewer sees | sec | params | status |
 |---|---|---|---|---|---|
-| 7 | `nemesis` | one bot: HP = base + perBot×alive bots, knife at 250, ×1.3 speed, camera locked on it | 60 | `baseHealth=3000 perBot=1500 knife=250 speed=1.3` | planned |
-| 8 | `survivor` | one bot: HP = 2500 + 75×bots, M249 + deagle, holds off the field | 60 | `baseHealth=2500 perBot=75 weapon=weapon_m249` | planned |
+| 7 | `nemesis` | one bot: HP = base + perBot×alive bots, knife at 250, ×1.3 speed, camera locked on it | 60 | `baseHealth=1500 perBot=600 knife=250 speed=1.3` | on sale |
+| 8 | `survivor` | one bot: HP = 1200 + 40×bots, M249 + knife, camera on it | 60 | `baseHealth=1200 perBot=40 weapon=weapon_m249 speed=1.1` | on sale |
 | 9 | `outbreak` | a third of the bots start infected (1500 HP, knife); a knife kill converts the victim | 60 | `share=33 health=1500 knife=150 speed=1.15` | planned |
 | 10 | `juggernaut` | one bot at 5000 HP, no guns, only body-checks; whoever kills it becomes it | 60 | `health=5000 speed=1.2` | planned |
 | 11 | `assassin` | one semi-transparent bot with a knife hunts the frag leader; role passes on death | 45 | `alpha=60 health=250 speed=1.25` | planned |

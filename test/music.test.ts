@@ -6,7 +6,8 @@ import { DEFAULT_TRACK, MUSIC_SAMPLE_RATE, MUSIC_SECONDS, renderTrack, TRACKS } 
 /**
  * Event music is synthesised at image build time (`infra/music/generate.ts`) and played by the capture
  * container. These tests pin the two things a broken build would break silently: the file has to be a
- * real 15-second WAV, and every event on sale has to resolve to a bed (its own, or the default one).
+ * real WAV of the event's length, and every event on sale has to resolve to a bed (its own, or the
+ * default one).
  */
 const catalog = loadActivities(new URL("../config/activities.json", import.meta.url));
 const onSale = catalog.activities.filter((activity) => activity.enabled);
@@ -50,6 +51,20 @@ test("every event on sale has a bed of its own", () => {
       `${activity.code} would fall back to ${DEFAULT_TRACK}, add its notes to src/music.ts`,
     );
   }
+});
+
+test("a hero mode gets a bed as long as its round", () => {
+  // The player cuts playback on the event clock, so a 60 second mode needs a 60 second bed: a 15 second
+  // loop leaves 45 seconds of silence, and silence is what the viewer remembers.
+  for (const code of ["nemesis", "survivor"]) {
+    const wav = renderTrack(code);
+    const samples = wav.readUInt32LE(40) / 2;
+    assert.equal(samples, MUSIC_SAMPLE_RATE * 60, `${code} has a bed that does not cover its round`);
+  }
+
+  // Everything else keeps the 15 second default.
+  const short = renderTrack("glass_cannon");
+  assert.equal(short.readUInt32LE(40) / 2, MUSIC_SAMPLE_RATE * MUSIC_SECONDS);
 });
 
 test("an unknown code falls back instead of throwing", () => {

@@ -171,6 +171,20 @@ new bool:g_cannonActive;
 new g_cannonSavedHealth;
 new g_cannonHealth = 1000;
 
+/* The hero modes (`nemesis`, `survivor`): one bot carries the round. The state is shared by both codes
+   on purpose - two hero events at the same time would fight over the same claims anyway, and the claim
+   layer makes the newer one the owner. Everything the guard task needs is snapshotted, because by the
+   time it fires the parameter table belongs to another donation. */
+#define TASK_HERO_GUARD 4801
+new g_heroBot;
+new bool:g_heroActive;
+new g_heroCode[CODE_LEN];
+new g_heroHealth;
+new g_heroSavedHealth;
+new g_heroKnife;
+new g_heroWeapon[VALUE_LEN];
+new Float:g_heroSpeed;
+
 new bool:g_meteorActive;
 new g_meteorSprite;
 /* Snapshot of the command's parameters: MeteorStrike runs 43 times a second from a timer, and by then
@@ -201,6 +215,12 @@ public plugin_init()
 	register_event("CurWeapon", "OnCurWeapon", "be", "1=1");
 	// A dropped weapon is a pickup away from breaking the duel; the touch hook refuses it.
 	RegisterHam(Ham_Touch, "weaponbox", "OnWeaponBoxTouch");
+	// The nemesis knife: the hero's swipe is rewritten per hit, every other hit keeps its damage.
+	RegisterHam(Ham_TakeDamage, "player", "OnTakeDamage");
+
+	// The hero modes (S1 of docs/activities/systems.md): one bot carries the round.
+	RegisterDonationEffect("nemesis", "EffectNemesis");
+	RegisterDonationEffect("survivor", "EffectSurvivor");
 
 	RegisterDonationEffect("he_party", "EffectHeParty");
 
@@ -699,6 +719,13 @@ stock EndEffectState(const code[])
 		return;
 	}
 
+	if (equal(code, "nemesis") || equal(code, "survivor"))
+	{
+		// Both hero modes share one state; EndHero asks the claim layer whether this event still owns it.
+		EndHero(code);
+		return;
+	}
+
 	if (equal(code, "he_party"))
 	{
 		// The party owns its own repeating task instead of a generic clock, so its undo is explicit.
@@ -1053,6 +1080,15 @@ public ResetEventState()
 	remove_task(TASK_METEOR);
 	remove_task(TASK_RED_STOP);
 	remove_task(TASK_RED_GO);
+
+	// A hero mode holds a bot's health and the camera; a full reset gives both back, and
+	// `amx_stcam unlock` is idempotent when nothing was held.
+	remove_task(TASK_HERO_GUARD);
+	g_heroActive = false;
+	g_heroBot = 0;
+	g_heroSavedHealth = 0;
+	g_heroCode[0] = '^0';
+	server_cmd("amx_stcam unlock");
 
 	if (g_cannonBot > 0 && g_cannonSavedHealth > 0 && is_user_alive(g_cannonBot))
 		set_user_health(g_cannonBot, g_cannonSavedHealth);
@@ -1485,6 +1521,208 @@ public EffectOneBullet()
 	StartEffectTimer("one_bullet", EffectSeconds(EVENT_SECONDS));
 	log_amx("one_bullet: %d bots down to one round", bots);
 	DonorSay("ONE BULLET EACH");
+}
+
+/* ---------- the hero modes: nemesis and survivor (S1 of docs/activities/systems.md) ---------- */
+/*
+ * One bot carries the whole round: scaled health, a fixed weapon, a knife that hits for what the donor
+ * paid for, and the camera locked on it. The numbers are the Zombie Plague ones adapted to a 60 second
+ * clock and ~20 bots - `baseHealth + perBot x alive bots`, because 30 000 HP does not die inside a
+ * minute and a boss that survives its own event reads as a broken event.
+ *
+ * `nemesis` fights with a knife at `knife` damage, `survivor` with a rifle; the rest is shared, so the
+ * two codes differ in their parameters and not in their code.
+ */
+public EffectNemesis()
+{
+	BeginEvent("nemesis");
+
+	if (!StartHero("nemesis", "weapon_knife"))
+	{
+		log_amx("nemesis: no bots are connected");
+		return;
+	}
+
+	StartEffectTimer("nemesis", EffectSeconds(60.0));
+	DonorSay("NEMESIS: ONE BOT AGAINST EVERYONE");
+}
+
+public EffectSurvivor()
+{
+	BeginEvent("survivor");
+
+	if (!StartHero("survivor", "weapon_m249"))
+	{
+		log_amx("survivor: no bots are connected");
+		return;
+	}
+
+	StartEffectTimer("survivor", EffectSeconds(60.0));
+	DonorSay("SURVIVOR: EVERYONE WANTS HIM DEAD");
+}
+
+stock bool:StartHero(const code[], const weapon[])
+{
+	g_heroBot = PickRandomBot();
+	if (!g_heroBot)
+		return false;
+
+	new alive;
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (IsBotAlive(id))
+			alive++;
+	}
+
+	new baseHealth = ParamInt("baseHealth", 1500);
+	new perBot = ParamInt("perBot", 600);
+	g_heroHealth = baseHealth + perBot * alive;
+	if (g_heroHealth < 100)
+		g_heroHealth = 100;
+
+	g_heroKnife = equal(code, "nemesis") ? ParamInt("knife", 250) : 0;
+
+	g_heroSpeed = ParamFloat("speed", 1.3);
+	if (g_heroSpeed < 1.0)
+		g_heroSpeed = 1.0;
+
+	ParamCopy("weapon", g_heroWeapon, charsmax(g_heroWeapon), weapon);
+	if (g_heroWeapon[0] == '^0')
+		copy(g_heroWeapon, charsmax(g_heroWeapon), weapon);
+
+	copy(g_heroCode, CODE_LEN - 1, code);
+	g_heroActive = true;
+
+	new owner = FindEffect(code);
+	ClaimTake(CLAIM_HEALTH, owner, g_heroHealth);
+	ClaimTake(CLAIM_SPEED, owner, floatround(g_heroSpeed * 100.0));
+	ClaimTake(CLAIM_WEAPONS, owner, 1);
+	ClaimTake(CLAIM_GLOW, owner, 1);
+	ClaimTake(CLAIM_CAMERA, owner, 1);
+
+	ArmHero(g_heroBot);
+
+	// The role moves when the bot dies: a boss that stays dead for the rest of its clock leaves the
+	// viewer watching nothing, which is the problem glass_cannon solved with its ammo task.
+	remove_task(TASK_HERO_GUARD);
+	set_task(0.5, "TaskHeroGuard", TASK_HERO_GUARD, "", 0, "b");
+
+	log_amx("%s: bot %d, %d hp (%d alive), knife %d, weapon %s",
+		code, g_heroBot, g_heroHealth, alive, g_heroKnife, g_heroWeapon);
+	return true;
+}
+
+/* Puts the hero shape on one bot: the weapon, the health, the extra speed, the glow and the camera. */
+stock ArmHero(id)
+{
+	// The health it had before the buff, so the clock can put it back: a 13 500 HP bot that keeps the
+	// number after the event is a bot the viewer keeps seeing for the rest of the map.
+	g_heroSavedHealth = get_user_health(id);
+	if (g_heroSavedHealth < 1)
+		g_heroSavedHealth = 100;
+
+	StripWeapons(id);
+	give_item(id, "weapon_knife");
+	if (!equal(g_heroWeapon, "weapon_knife"))
+		give_item(id, g_heroWeapon);
+
+	set_user_health(id, g_heroHealth);
+
+	new Float:speed = get_cvar_float("sv_maxspeed");
+	if (speed <= 0.0)
+		speed = 320.0;
+	set_user_maxspeed(id, speed * g_heroSpeed);
+
+	set_user_rendering(id, kRenderFxGlowShell, 255, 0, 0, kRenderNormal, 20);
+
+	LockCameraOn(id);
+}
+
+/* Hands the camera to the hero for the rest of the clock: the money bought that bot's shots, and the
+   director follows whoever looks busiest (docs/activities/roadmap.md, stage 1). The nickname goes out
+   the way `stream_cam status` publishes it - spaces as underscores - and the plugin reads it back. */
+stock LockCameraOn(id)
+{
+	if (id <= 0 || !is_user_connected(id))
+		return;
+
+	new name[VALUE_LEN];
+	get_user_name(id, name, charsmax(name));
+	for (new i = 0, len = strlen(name); i < len; i++)
+	{
+		if (name[i] == ' ')
+			name[i] = '_';
+	}
+
+	new seconds = ParamInt("seconds", 60);
+	server_cmd("amx_stcam lock %s %d", name, seconds);
+	log_amx("hero camera lock: %s for %d s", name, seconds);
+}
+
+public TaskHeroGuard()
+{
+	if (!g_heroActive)
+	{
+		remove_task(TASK_HERO_GUARD);
+		return;
+	}
+
+	if (IsBotAlive(g_heroBot))
+		return;
+
+	g_heroBot = PickRandomBot();
+	if (!g_heroBot)
+		return;
+
+	// The same numbers as the bot that died: a replacement hero must not be a cheaper fight.
+	ArmHero(g_heroBot);
+	Announce("THE HERO MOVED TO ANOTHER BOT");
+}
+
+/* Ends a hero mode. Only the effect that still owns the field puts the hero back: a newer hero event
+   has already replaced these numbers, and that is what the claim layer is for. */
+stock EndHero(const code[])
+{
+	new owner = FindEffect(code);
+	remove_task(TASK_HERO_GUARD);
+
+	if (ClaimRelease(CLAIM_HEALTH, owner) && g_heroBot > 0 && g_heroSavedHealth > 0 && is_user_alive(g_heroBot))
+		set_user_health(g_heroBot, g_heroSavedHealth);
+
+	if (ClaimRelease(CLAIM_SPEED, owner) && g_heroBot > 0 && is_user_alive(g_heroBot))
+	{
+		new Float:speed = get_cvar_float("sv_maxspeed");
+		if (speed <= 0.0)
+			speed = 320.0;
+		set_user_maxspeed(g_heroBot, speed);
+	}
+
+	if (ClaimRelease(CLAIM_GLOW, owner) && g_heroBot > 0)
+		ClearGlow(g_heroBot);
+
+	ClaimRelease(CLAIM_WEAPONS, owner);
+	// The camera goes back to the director, unless a newer hero event took it: the claim knows.
+	if (ClaimRelease(CLAIM_CAMERA, owner))
+		server_cmd("amx_stcam unlock");
+
+	g_heroActive = false;
+	g_heroBot = 0;
+	g_heroSavedHealth = 0;
+	g_heroCode[0] = '^0';
+}
+
+/* The nemesis knife: a 250 damage swipe is what the viewer paid for, and a stock knife does 55 in the
+   back. Only the hero's knife is rewritten - every other hit keeps its own damage. */
+public OnTakeDamage(victim, inflictor, attacker, Float:damage, damagebits)
+{
+	if (!g_heroActive || g_heroKnife <= 0 || attacker != g_heroBot)
+		return HAM_IGNORED;
+
+	if (!IsBotAlive(attacker) || get_user_weapon(attacker) != CSW_KNIFE)
+		return HAM_IGNORED;
+
+	SetHamParamFloat(4, float(g_heroKnife));
+	return HAM_HANDLED;
 }
 
 /* Removes the glow a bless/curse put on a bot. Health and weapons do not need this: the next

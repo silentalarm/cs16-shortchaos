@@ -182,10 +182,20 @@ test("a simulated foreign donation is converted with the same table the poller u
     assert.equal(response.status, 200);
     const body = (await response.json()) as { outcome: { status: string; activityCode: string; command: string } };
     assert.equal(body.outcome.status, "applied");
-    const onSale = ["crowd_pile", "sniper_moment", "glass_cannon", "ice_floor", "meteor_shower", "red_light", "lightsaber_duel", "one_bullet"];
+    const onSale = [
+      "glass_cannon",
+      "lightsaber_duel",
+      "meteor_shower",
+      "nemesis",
+      "one_bullet",
+      "red_light",
+      "survivor",
+    ];
     for (const code of body.outcome.activityCode.split("+")) assert.ok(onSale.includes(code), `${code} is not on sale`);
     assert.match(body.outcome.command, /nick=almaty/);
-  assert.match(body.outcome.command, /seconds=(15|30|45)/, "150 RUB is three 15 second steps");
+    // 150 RUB is three steps; the steps of one clock code merge into one longer run, so the length is
+    // 15, 30 or 60 per step, stacked.
+    assert.match(body.outcome.command, /seconds=(15|30|45|60|90|120|180)/, "the steps were not merged");
   });
 });
 

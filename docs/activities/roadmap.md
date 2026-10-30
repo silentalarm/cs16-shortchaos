@@ -46,13 +46,20 @@ leaves the other intact.
 
 ## Stage 2 — S1 round modes (6 codes)
 
-- [ ] zombie model pack in the image, precached, applied and reset;
-- [ ] health scaling `baseHealth + perBot × alive bots`, boss knife, speed, camera lock;
-- [ ] `outbreak` conversion on `DeathMsg`;
-- [ ] `chaos_plague` calls `amx_chaos force`;
-- [ ] on sale: `nemesis`, `survivor` first, the other four after the first pair is stable.
+- [x] the hero system: `baseHealth + perBot × alive bots`, a fixed weapon, the knife damage rewritten
+      in `Ham_TakeDamage`, ×speed, red glow, and the camera locked with `amx_stcam lock` (stage 1);
+- [x] the role moves to a new bot when the hero dies (`TaskHeroGuard`, task 4801), with the numbers
+      snapshotted - a replacement must not be a cheaper fight;
+- [x] `nemesis` and `survivor` on sale, each with a 60 second bed in `src/music.ts` (a 15 second loop
+      under a minute of round is 45 seconds of silence);
+- [x] `EndHero` releases health/speed/glow/weapons/camera through the claim layer, `ResetEventState`
+      drops the guard task and unlocks the camera on a full reset;
+- [ ] `outbreak` (a third of the field infected, knife kills convert), `juggernaut`, `assassin`,
+      `chaos_plague` — the other four codes of the system;
+- [ ] the zombie model pack: every hero mode currently reads by glow and name, not by model (S7).
 
 **Done when:** a boss round ends on its clock in front of the camera, twice in a row, with no stuck bot.
+Partially built: the mechanism and two codes are in the plugin, and the live round is the thing to watch.
 
 ## Stage 3 — S2 classes (5 codes)
 
