@@ -26,10 +26,10 @@ until `test/activities.test.ts` is relaxed to allow an instant entry on sale).
 |---|---|---|---|---|---|
 | 7 | `nemesis` | one bot: HP = base + perBot×alive bots, knife at 250, ×1.3 speed, camera locked on it | 60 | `baseHealth=1500 perBot=600 knife=250 speed=1.3` | on sale |
 | 8 | `survivor` | one bot: HP = 1200 + 40×bots, M249 + knife, camera on it | 60 | `baseHealth=1200 perBot=40 weapon=weapon_m249 speed=1.1` | on sale |
-| 9 | `outbreak` | a third of the bots start infected (1500 HP, knife); a knife kill converts the victim | 60 | `share=33 health=1500 knife=150 speed=1.15` | planned |
-| 10 | `juggernaut` | one bot at 5000 HP, no guns, only body-checks; whoever kills it becomes it | 60 | `health=5000 speed=1.2` | planned |
-| 11 | `assassin` | one semi-transparent bot with a knife hunts the frag leader; role passes on death | 45 | `alpha=60 health=250 speed=1.25` | planned |
-| 12 | `chaos_plague` | all of the above at once plus `amx_chaos force` from `plugins/chaos_core` | 60 | `share=25 chaos=1` | planned |
+| 9 | `outbreak` | a third of the bots start infected (1500 HP, knife); a knife kill converts the victim | 60 | `share=33 health=1500 infectKnife=150 speed=1.15` | on sale |
+| 10 | `juggernaut` | one bot at 5000 HP with a knife; whoever kills it becomes it | 60 | `baseHealth=5000 perBot=0 knife=200 speed=1.2 transfer=1` | on sale |
+| 11 | `assassin` | one semi-transparent bot with a knife; the role passes on death | 45 | `baseHealth=250 perBot=0 knife=200 speed=1.25 alpha=140` | on sale (see note) |
+| 12 | `chaos_plague` | the boss, the infection and `amx_chaos force` in one event | 60 | `baseHealth=1500 perBot=300 knife=250 share=25 health=1500 infectKnife=150` | on sale |
 
 ## S2 — classes (Zombie Plague classes)
 
@@ -110,6 +110,12 @@ until `test/activities.test.ts` is relaxed to allow an instant entry on sale).
 | 50 | `credits` | credits roll with the bots' and donors' names | 10 | — | planned |
 
 ## Not in this list, on purpose
+
+**The assassin has no target yet.** It is a semi-transparent knife hero, and the camera follows it - but
+"hunts the frag leader" needs the bot to *walk towards* somebody, and the pinned YaPB 4.4.957 ships no
+per-bot goal natives (`docs/runbook.md`, "Phase 0: what the bot plugin actually exposes"). Until a YaPB
+build with `ext/amxx` is pinned, the assassin hunts whatever its own AI picks; the code is honest about
+it (`alpha`, `knife`, `speed`) and the name promises more than the bot does.
 
 **Removed with the reset (17):** listed in `README.md`. They were disabled, and the owner asked for
 everything disabled to go except `he_party`.

@@ -184,6 +184,23 @@ new g_heroSavedHealth;
 new g_heroKnife;
 new g_heroWeapon[VALUE_LEN];
 new Float:g_heroSpeed;
+/* 0 = draw the red glow, 1..255 = semi-transparent (255 is invisible). `assassin` is the code that
+   needs this: a hero the viewer cannot see is not a hero, a hero they barely see is a hunter. */
+new g_heroAlpha;
+/* Where the role goes when the hero dies: 0 = a random bot, 1 = the killer (`juggernaut`: the bot that
+   killed the boss becomes the boss, which is the whole point of the mode). */
+new bool:g_heroToKiller;
+new g_heroNext;
+
+/* Outbreak: every bot carries a flag, a knife kill converts the victim and the respawn hook re-arms it.
+   A flag and not a health value: csdm_lite re-arms on every spawn, so the only thing that has to survive
+   a death is "this bot is on the infected side". */
+#define MAX_SLOTS 33
+new g_infected[MAX_SLOTS];
+new bool:g_outbreakActive;
+new g_infectHealth;
+new g_infectKnife;
+new Float:g_infectSpeed;
 
 new bool:g_meteorActive;
 new g_meteorSprite;
@@ -211,6 +228,9 @@ public plugin_init()
 
 	// ResetHUD is delivered to the player who just spawned: the duel re-arms its rule there.
 	register_event("ResetHUD", "OnPlayerSpawn", "be");
+	// DeathMsg drives the round modes: the juggernaut role moves to its killer and an infected knife
+	// converts the victim (S1, docs/activities/systems.md).
+	register_event("DeathMsg", "OnDeathMsg", "a");
 	// CurWeapon fires on every weapon switch: lightsaber_duel turns one back into a knife.
 	register_event("CurWeapon", "OnCurWeapon", "be", "1=1");
 	// A dropped weapon is a pickup away from breaking the duel; the touch hook refuses it.
@@ -221,6 +241,10 @@ public plugin_init()
 	// The hero modes (S1 of docs/activities/systems.md): one bot carries the round.
 	RegisterDonationEffect("nemesis", "EffectNemesis");
 	RegisterDonationEffect("survivor", "EffectSurvivor");
+	RegisterDonationEffect("juggernaut", "EffectJuggernaut");
+	RegisterDonationEffect("assassin", "EffectAssassin");
+	RegisterDonationEffect("outbreak", "EffectOutbreak");
+	RegisterDonationEffect("chaos_plague", "EffectChaosPlague");
 
 	RegisterDonationEffect("he_party", "EffectHeParty");
 
@@ -719,10 +743,24 @@ stock EndEffectState(const code[])
 		return;
 	}
 
-	if (equal(code, "nemesis") || equal(code, "survivor"))
+	if (equal(code, "nemesis") || equal(code, "survivor") || equal(code, "juggernaut") || equal(code, "assassin"))
 	{
-		// Both hero modes share one state; EndHero asks the claim layer whether this event still owns it.
+		// Every hero mode shares one state; EndHero asks the claim layer whether this event still owns it.
 		EndHero(code);
+		return;
+	}
+
+	if (equal(code, "outbreak"))
+	{
+		EndOutbreak(code);
+		return;
+	}
+
+	if (equal(code, "chaos_plague"))
+	{
+		// Two systems in one code, so two undos: the boss and the infection.
+		EndHero(code);
+		EndOutbreak(code);
 		return;
 	}
 
@@ -1002,21 +1040,33 @@ stock bool:HasGun(id)
    drop it with the same `remove_task(id)`. */
 public OnPlayerSpawn(id)
 {
-	if (!g_duelActive)
+	if (!g_duelActive && !g_outbreakActive)
 		return;
 
 	if (!is_user_connected(id) || !is_user_bot(id))
 		return;
 
-	set_task(0.3, "ReArmOnSpawn", id);
+	// The infection is the reason this hook now fires on every respawn: csdm_lite hands the bot a rifle
+	// half a second after it died, and an infected bot has to come back with a knife.
+	if (g_duelActive || IsInfected(id))
+		set_task(0.3, "ReArmOnSpawn", id);
 }
 
 public ReArmOnSpawn(id)
 {
-	if (!g_duelActive || !IsBotAlive(id))
+	if (!IsBotAlive(id))
 		return;
 
-	DuelArm(id);
+	// The infection outranks the duel: an infected bot keeps its knife and its health even mid-duel,
+	// and the claim layer decides whose numbers win when both events are running.
+	if (g_outbreakActive && IsInfected(id))
+	{
+		ArmInfected(id);
+		return;
+	}
+
+	if (g_duelActive)
+		DuelArm(id);
 }
 
 /* ---------- helpers ---------- */
@@ -1089,6 +1139,13 @@ public ResetEventState()
 	g_heroSavedHealth = 0;
 	g_heroCode[0] = '^0';
 	server_cmd("amx_stcam unlock");
+
+	// The infection is a flag per bot, so a reset has to walk the slots or an infected bot comes back
+	// as one on the next respawn without any event running.
+	g_outbreakActive = false;
+	for (new id = 0; id < MAX_SLOTS; id++)
+		g_infected[id] = 0;
+	g_heroNext = 0;
 
 	if (g_cannonBot > 0 && g_cannonSavedHealth > 0 && is_user_alive(g_cannonBot))
 		set_user_health(g_cannonBot, g_cannonSavedHealth);
@@ -1561,6 +1618,68 @@ public EffectSurvivor()
 	DonorSay("SURVIVOR: EVERYONE WANTS HIM DEAD");
 }
 
+public EffectJuggernaut()
+{
+	BeginEvent("juggernaut");
+
+	if (!StartHero("juggernaut", "weapon_knife"))
+	{
+		log_amx("juggernaut: no bots are connected");
+		return;
+	}
+
+	StartEffectTimer("juggernaut", EffectSeconds(60.0));
+	DonorSay("THE JUGGERNAUT: KILL HIM AND YOU BECOME HIM");
+}
+
+public EffectAssassin()
+{
+	BeginEvent("assassin");
+
+	if (!StartHero("assassin", "weapon_knife"))
+	{
+		log_amx("assassin: no bots are connected");
+		return;
+	}
+
+	StartEffectTimer("assassin", EffectSeconds(45.0));
+	DonorSay("AN ASSASSIN IS HUNTING THE FIELDS");
+}
+
+public EffectOutbreak()
+{
+	BeginEvent("outbreak");
+
+	if (!StartOutbreak("outbreak"))
+	{
+		log_amx("outbreak: no bots are connected");
+		return;
+	}
+
+	StartEffectTimer("outbreak", EffectSeconds(60.0));
+	DonorSay("OUTBREAK: A KNIFE KILL TURNS YOU");
+}
+
+public EffectChaosPlague()
+{
+	BeginEvent("chaos_plague");
+
+	// Everything at once: the boss, the infection and the chaos mod. The two systems do not share state
+	// (the hero is one bot, the infection is a flag per bot), so they compose instead of fighting.
+	if (!StartHero("chaos_plague", "weapon_knife"))
+	{
+		log_amx("chaos_plague: no bots are connected");
+		return;
+	}
+
+	// A field with nobody left to infect still has its boss, so the failure here is not fatal.
+	StartOutbreak("chaos_plague");
+	server_cmd("amx_chaos force");
+
+	StartEffectTimer("chaos_plague", EffectSeconds(60.0));
+	DonorSay("CHAOS PLAGUE: EVERYTHING AT ONCE");
+}
+
 stock bool:StartHero(const code[], const weapon[])
 {
 	g_heroBot = PickRandomBot();
@@ -1580,11 +1699,20 @@ stock bool:StartHero(const code[], const weapon[])
 	if (g_heroHealth < 100)
 		g_heroHealth = 100;
 
-	g_heroKnife = equal(code, "nemesis") ? ParamInt("knife", 250) : 0;
+	g_heroKnife = ParamInt("knife", 0);
 
 	g_heroSpeed = ParamFloat("speed", 1.3);
 	if (g_heroSpeed < 1.0)
 		g_heroSpeed = 1.0;
+
+	g_heroAlpha = ParamInt("alpha", 0);
+	if (g_heroAlpha < 0)
+		g_heroAlpha = 0;
+	if (g_heroAlpha > 255)
+		g_heroAlpha = 255;
+
+	g_heroToKiller = ParamInt("transfer", 0) == 1;
+	g_heroNext = 0;
 
 	ParamCopy("weapon", g_heroWeapon, charsmax(g_heroWeapon), weapon);
 	if (g_heroWeapon[0] == '^0')
@@ -1633,7 +1761,12 @@ stock ArmHero(id)
 		speed = 320.0;
 	set_user_maxspeed(id, speed * g_heroSpeed);
 
-	set_user_rendering(id, kRenderFxGlowShell, 255, 0, 0, kRenderNormal, 20);
+	// Semi-transparent instead of a glow: the assassin is a silhouette in the frame, which reads as
+	// "somebody is hunting" without hiding the bot from the viewer the way full invisibility would.
+	if (g_heroAlpha > 0)
+		set_user_rendering(id, kRenderFxNone, 0, 0, 0, kRenderTransAlpha, g_heroAlpha);
+	else
+		set_user_rendering(id, kRenderFxGlowShell, 255, 0, 0, kRenderNormal, 20);
 
 	LockCameraOn(id);
 }
@@ -1670,13 +1803,19 @@ public TaskHeroGuard()
 	if (IsBotAlive(g_heroBot))
 		return;
 
-	g_heroBot = PickRandomBot();
+	// The killer takes the role when the mode says so (`juggernaut`); otherwise the next hero is random.
+	new next = 0;
+	if (g_heroToKiller && g_heroNext > 0 && IsBotAlive(g_heroNext))
+		next = g_heroNext;
+
+	g_heroNext = 0;
+	g_heroBot = next > 0 ? next : PickRandomBot();
 	if (!g_heroBot)
 		return;
 
 	// The same numbers as the bot that died: a replacement hero must not be a cheaper fight.
 	ArmHero(g_heroBot);
-	Announce("THE HERO MOVED TO ANOTHER BOT");
+	Announce(next > 0 ? "THE KILLER IS THE NEW JUGGERNAUT" : "THE HERO MOVED TO ANOTHER BOT");
 }
 
 /* Ends a hero mode. Only the effect that still owns the field puts the hero back: a newer hero event
@@ -1711,18 +1850,182 @@ stock EndHero(const code[])
 	g_heroCode[0] = '^0';
 }
 
-/* The nemesis knife: a 250 damage swipe is what the viewer paid for, and a stock knife does 55 in the
-   back. Only the hero's knife is rewritten - every other hit keeps its own damage. */
+/* ---------- outbreak: a knife kill converts the victim (S1) ---------- */
+
+stock bool:StartOutbreak(const code[])
+{
+	new alive[MAX_SLOTS];
+	new count;
+
+	for (new id = 1; id <= get_maxplayers() && count < MAX_SLOTS - 1; id++)
+	{
+		if (IsBotAlive(id))
+			alive[count++] = id;
+	}
+
+	if (count == 0)
+		return false;
+
+	g_infectHealth = ParamInt("health", 1500);
+	g_infectKnife = ParamInt("infectKnife", 150);
+	g_infectSpeed = ParamFloat("speed", 1.15);
+	if (g_infectSpeed < 1.0)
+		g_infectSpeed = 1.0;
+
+	new share = ParamInt("share", 33);
+	if (share < 1)
+		share = 1;
+	if (share > 90)
+		share = 90;
+
+	// At least one infected, and never the whole field: a round where everybody is infected has no
+	// fight in it, and the first knife kill is what the viewer paid to see.
+	new seeds = count * share / 100;
+	if (seeds < 1)
+		seeds = 1;
+	if (seeds >= count)
+		seeds = count - 1;
+
+	for (new i = 0; i < MAX_SLOTS; i++)
+		g_infected[i] = 0;
+
+	new taken;
+	while (taken < seeds)
+	{
+		new pick = alive[random(count)];
+		if (pick <= 0 || g_infected[pick])
+			continue;
+
+		InfectBot(pick);
+		taken++;
+	}
+
+	g_outbreakActive = true;
+
+	new owner = FindEffect(code);
+	ClaimTake(CLAIM_HEALTH, owner, g_infectHealth);
+	ClaimTake(CLAIM_SPEED, owner, floatround(g_infectSpeed * 100.0));
+	ClaimTake(CLAIM_WEAPONS, owner, 1);
+	ClaimTake(CLAIM_GLOW, owner, 1);
+
+	log_amx("%s: %d infected of %d bots", code, seeds, count);
+	return true;
+}
+
+stock bool:IsInfected(id)
+{
+	return id > 0 && id < MAX_SLOTS && g_infected[id] != 0;
+}
+
+stock InfectBot(id)
+{
+	if (id <= 0 || id >= MAX_SLOTS)
+		return;
+
+	g_infected[id] = 1;
+
+	// The conversion is the clip: say it, the stream is watched without commentary.
+	if (is_user_connected(id))
+	{
+		new name[NICK_LEN];
+		get_user_name(id, name, charsmax(name));
+		Announce("%s IS INFECTED", name);
+	}
+
+	log_amx("outbreak: bot %d is infected", id);
+}
+
+/* The infected shape: knife only, the infection health and speed, a green glow. */
+stock ArmInfected(id)
+{
+	StripWeapons(id);
+	give_item(id, "weapon_knife");
+	set_user_health(id, g_infectHealth);
+
+	new Float:speed = get_cvar_float("sv_maxspeed");
+	if (speed <= 0.0)
+		speed = 320.0;
+	set_user_maxspeed(id, speed * g_infectSpeed);
+
+	set_user_rendering(id, kRenderFxGlowShell, 0, 200, 40, kRenderNormal, 16);
+}
+
+stock EndOutbreak(const code[])
+{
+	new owner = FindEffect(code);
+
+	for (new id = 1; id < MAX_SLOTS; id++)
+	{
+		if (g_infected[id] && is_user_connected(id))
+			ClearGlow(id);
+		g_infected[id] = 0;
+	}
+
+	g_outbreakActive = false;
+
+	// The speed only goes back if this event still owns it: a duel or a hero mode has its own numbers.
+	if (ClaimRelease(CLAIM_SPEED, owner))
+	{
+		new Float:speed = get_cvar_float("sv_maxspeed");
+		if (speed <= 0.0)
+			speed = 320.0;
+
+		for (new id = 1; id <= get_maxplayers(); id++)
+		{
+			if (IsBotAlive(id))
+				set_user_maxspeed(id, speed);
+		}
+	}
+
+	ClaimRelease(CLAIM_HEALTH, owner);
+	ClaimRelease(CLAIM_WEAPONS, owner);
+	ClaimRelease(CLAIM_GLOW, owner);
+}
+
+/* The kill feed is the mode's controller: the juggernaut role moves to its killer and an infected knife
+   converts the victim. Damage is not touched here - that is OnTakeDamage. */
+public OnDeathMsg()
+{
+	new killer = read_data(1);
+	new victim = read_data(2);
+
+	if (killer <= 0 || victim <= 0 || killer == victim)
+		return;
+
+	if (g_heroActive && g_heroToKiller && victim == g_heroBot)
+		g_heroNext = IsBotAlive(killer) ? killer : 0;
+
+	if (!g_outbreakActive || !IsInfected(killer) || IsInfected(victim))
+		return;
+
+	// Only a knife carries the infection: the viewer has to see the rule, not guess it.
+	if (get_user_weapon(killer) == CSW_KNIFE)
+		InfectBot(victim);
+}
+
+/* Paid knife damage: the hero's swipe and the infected knife are what the viewer paid for, everything
+   else keeps its own damage. One hook, two rules, no interference between them. */
 public OnTakeDamage(victim, inflictor, attacker, Float:damage, damagebits)
 {
-	if (!g_heroActive || g_heroKnife <= 0 || attacker != g_heroBot)
+	if (attacker <= 0 || !IsBotAlive(attacker))
 		return HAM_IGNORED;
 
-	if (!IsBotAlive(attacker) || get_user_weapon(attacker) != CSW_KNIFE)
+	if (get_user_weapon(attacker) != CSW_KNIFE)
 		return HAM_IGNORED;
 
-	SetHamParamFloat(4, float(g_heroKnife));
-	return HAM_HANDLED;
+	if (g_heroActive && g_heroKnife > 0 && attacker == g_heroBot)
+	{
+		SetHamParamFloat(4, float(g_heroKnife));
+		return HAM_HANDLED;
+	}
+
+	if (g_outbreakActive && g_infectKnife > 0 && IsInfected(attacker))
+	{
+		SetHamParamFloat(4, float(g_infectKnife));
+		return HAM_HANDLED;
+	}
+
+	return HAM_IGNORED;
 }
 
 /* Removes the glow a bless/curse put on a bot. Health and weapons do not need this: the next

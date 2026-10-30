@@ -29,6 +29,17 @@ function donation(overrides: Partial<StoredDonation> = {}): StoredDonation {
   };
 }
 
+/** The menu is the two cheapest codes, ordered by price then code: derived here, so adding an event
+ *  alphabetically earlier does not break a test about the line format. */
+function cheapestMenu(count = 2): string {
+  return catalog.activities
+    .filter((activity) => activity.enabled)
+    .sort((left, right) => left.price - right.price || left.code.localeCompare(right.code))
+    .slice(0, count)
+    .map((activity) => `${activity.price} ${activity.title.toUpperCase()}`)
+    .join(" | ");
+}
+
 test("without donations the overlay invites the first one and lists the cheapest options", () => {
   const overlay = buildOverlay({ recent: [], catalog, now: NOW });
 
@@ -36,7 +47,7 @@ test("without donations the overlay invites the first one and lists the cheapest
   assert.equal(overlay.lines[0], HEADER);
   assert.equal(overlay.lines[1], "NO DONATIONS YET - BE THE FIRST");
   assert.equal(overlay.lines[2], "");
-  assert.match(overlay.lines[3] ?? "", /^NEXT: 50 1000 HP CANNON \\| 50 LIGHTSABER DUEL$/);
+  assert.equal(overlay.lines[3], `NEXT: ${cheapestMenu()}`);
   assert.equal(overlay.text, overlay.lines.join("\n"));
 });
 
@@ -73,7 +84,7 @@ test("the queue depth replaces the menu headline", () => {
     now: NOW,
   });
 
-  assert.match(overlay.lines[3] ?? "", /^QUEUE: 1 \| 50 1000 HP CANNON/);
+  assert.equal(overlay.lines[3], `QUEUE: 1 | ${cheapestMenu()}`);
 });
 
 test("an activity that left the catalogue falls back to a generic label", () => {

@@ -25,9 +25,8 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
 
   assert.equal(config.currency, "RUB");
   assert.equal(config.minAmount, 50);
-  // Eight survivors of the 2026-10 reset: the five 2025-10 events, `he_party` (kept off sale) and the
-  // two hero modes of S1. The rest of the plan is in docs/activities/catalogue.md.
-  assert.equal(config.activities.length, 8, "five 2025-10 events, he_party and the two hero modes");
+  // Twelve codes: the five 2025-10 events, `he_party` (kept off sale) and the six round modes of S1.
+  assert.equal(config.activities.length, 12, "five events, he_party and six round modes");
 
   const codes = config.activities.map((activity) => activity.code);
   assert.equal(new Set(codes).size, codes.length, "codes are unique");
@@ -40,20 +39,32 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
   // event's whole soundtrack, so the clock is 30 seconds and the track is cut by it. The hero modes are
   // the second exception: a round needs a minute to have a story, and 15 seconds of Nemesis is the
   // "nothing happened" the old `terminator_one` was rejected for.
-  const longer: Record<string, number> = { lightsaber_duel: 30, nemesis: 60, survivor: 60 };
+  const longer: Record<string, number> = {
+    lightsaber_duel: 30,
+    nemesis: 60,
+    survivor: 60,
+    juggernaut: 60,
+    assassin: 45,
+    outbreak: 60,
+    chaos_plague: 60,
+  };
   const onSale = config.activities.filter((activity) => activity.enabled);
   assert.deepEqual(
     onSale.map((activity) => activity.code).sort(),
     [
+      "assassin",
+      "chaos_plague",
       "glass_cannon",
+      "juggernaut",
       "lightsaber_duel",
       "meteor_shower",
       "nemesis",
       "one_bullet",
+      "outbreak",
       "red_light",
       "survivor",
     ],
-    "seven events on sale",
+    "eleven events on sale",
   );
   for (const activity of onSale) {
     const seconds = longer[activity.code] ?? 15;
@@ -82,7 +93,7 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
 test("every effect on a clock carries that clock in its params as well", () => {
   const config = loadActivities(shippedConfig);
   const timed = config.activities.filter((activity) => activity.duration === "seconds");
-  assert.equal(timed.length, 8, "every shipped code is a clock");
+  assert.equal(timed.length, 12, "every shipped code is a clock");
 
   for (const activity of timed) {
     // The plugin reads the length from the command the control API builds, so both places must agree.
@@ -109,17 +120,21 @@ test("the HE party is the whole shop: one step, sixty seconds, no cooldown", () 
   assert.equal(party.params.maxNameLength, 16);
 });
 
-test("the catalogue is exactly the eight codes the plugin still registers", () => {
+test("the catalogue is exactly the twelve codes the plugin still registers", () => {
   const config = loadActivities(shippedConfig);
   assert.deepEqual(
     config.activities.map((activity) => activity.code).sort(),
     [
+      "assassin",
+      "chaos_plague",
       "glass_cannon",
       "he_party",
+      "juggernaut",
       "lightsaber_duel",
       "meteor_shower",
       "nemesis",
       "one_bullet",
+      "outbreak",
       "red_light",
       "survivor",
     ],
@@ -150,6 +165,28 @@ test("the catalogue is exactly the eight codes the plugin still registers", () =
   assert.ok(survivor);
   assert.equal(survivor.params.weapon, "weapon_m249");
   assert.equal(survivor.params.baseHealth, 1200);
+
+  // The other four round modes: the role transfer for the juggernaut, the silhouette for the assassin,
+  // and the two numbers the infection reads (`health` and `infectKnife`, not `knife` - the chaos plague
+  // carries both a hero knife and an infection knife in the same command).
+  const juggernaut = byCode.get("juggernaut");
+  assert.ok(juggernaut);
+  assert.equal(juggernaut.params.transfer, 1, "the juggernaut role must go to its killer");
+  assert.equal(juggernaut.params.weapon, "weapon_knife");
+
+  const assassin = byCode.get("assassin");
+  assert.ok(assassin);
+  assert.equal(assassin.params.alpha, 140, "the assassin is a silhouette, not an invisible bot");
+
+  const outbreak = byCode.get("outbreak");
+  assert.ok(outbreak);
+  assert.equal(outbreak.params.share, 33);
+  assert.equal(outbreak.params.infectKnife, 150);
+
+  const plague = byCode.get("chaos_plague");
+  assert.ok(plague);
+  assert.equal(plague.params.knife, 250, "the boss knife");
+  assert.equal(plague.params.infectKnife, 150, "the infection knife");
 });
 
 test("price below the minimum donation is rejected", () => {

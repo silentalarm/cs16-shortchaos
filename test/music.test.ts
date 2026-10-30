@@ -53,18 +53,19 @@ test("every event on sale has a bed of its own", () => {
   }
 });
 
-test("a hero mode gets a bed as long as its round", () => {
-  // The player cuts playback on the event clock, so a 60 second mode needs a 60 second bed: a 15 second
-  // loop leaves 45 seconds of silence, and silence is what the viewer remembers.
-  for (const code of ["nemesis", "survivor"]) {
-    const wav = renderTrack(code);
-    const samples = wav.readUInt32LE(40) / 2;
-    assert.equal(samples, MUSIC_SAMPLE_RATE * 60, `${code} has a bed that does not cover its round`);
-  }
+test("every bed is exactly as long as the event it belongs to", () => {
+  // The player cuts playback on the event clock, so a bed shorter than its event leaves silence and a
+  // longer one is cut mid-phrase. Checked against the catalogue, not against a constant. An event that
+  // brings its own game-side track (`params.music`, like the lightsaber opera) has no generated bed to
+  // measure: the file in the game's sound folder is the whole soundtrack.
+  for (const activity of onSale) {
+    if (activity.params.music !== undefined) continue;
 
-  // Everything else keeps the 15 second default.
-  const short = renderTrack("glass_cannon");
-  assert.equal(short.readUInt32LE(40) / 2, MUSIC_SAMPLE_RATE * MUSIC_SECONDS);
+    const declared = activity.seconds ?? MUSIC_SECONDS;
+    const wav = renderTrack(activity.code);
+    const samples = wav.readUInt32LE(40) / 2;
+    assert.equal(samples, MUSIC_SAMPLE_RATE * declared, `${activity.code} has a bed of another length`);
+  }
 });
 
 test("an unknown code falls back instead of throwing", () => {

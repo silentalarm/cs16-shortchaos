@@ -173,6 +173,105 @@
         "short": "ВЫЖИВШИЙ",
         "say": "ОДИН ВЫЖИВШИЙ ПРОТИВ ВСЕХ"
       }
+    },
+    {
+      "code": "juggernaut",
+      "title": "Juggernaut",
+      "announce": "KILL THE JUGGERNAUT AND YOU BECOME HIM!",
+      "price": 50,
+      "priority": 5,
+      "duration": "seconds",
+      "seconds": 60,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 30,
+      "enabled": true,
+      "params": {
+        "seconds": 60,
+        "baseHealth": 5000,
+        "perBot": 0,
+        "knife": 200,
+        "speed": 1.2,
+        "transfer": 1,
+        "weapon": "weapon_knife",
+        "maxNameLength": 16,
+        "short": "ДЖАГГЕРНАУТ",
+        "say": "УБЕЙ ЕГО И СТАНЬ ИМ"
+      }
+    },
+    {
+      "code": "assassin",
+      "title": "Assassin",
+      "announce": "AN ASSASSIN IS HUNTING!",
+      "price": 50,
+      "priority": 5,
+      "duration": "seconds",
+      "seconds": 45,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 30,
+      "enabled": true,
+      "params": {
+        "seconds": 45,
+        "baseHealth": 250,
+        "perBot": 0,
+        "knife": 200,
+        "speed": 1.25,
+        "alpha": 140,
+        "weapon": "weapon_knife",
+        "maxNameLength": 16,
+        "short": "АССАСИН",
+        "say": "АССАСИН ОХОТИТСЯ"
+      }
+    },
+    {
+      "code": "outbreak",
+      "title": "Outbreak",
+      "announce": "OUTBREAK! A KNIFE KILL TURNS YOU!",
+      "price": 50,
+      "priority": 5,
+      "duration": "seconds",
+      "seconds": 60,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 30,
+      "enabled": true,
+      "params": {
+        "seconds": 60,
+        "share": 33,
+        "health": 1500,
+        "infectKnife": 150,
+        "speed": 1.15,
+        "maxNameLength": 16,
+        "short": "ЗАРАЗА",
+        "say": "ЗАРАЖЕНИЕ, НОЖ ЗАРАЖАЕТ"
+      }
+    },
+    {
+      "code": "chaos_plague",
+      "title": "Chaos plague",
+      "announce": "CHAOS PLAGUE: EVERYTHING AT ONCE!",
+      "price": 50,
+      "priority": 5,
+      "duration": "seconds",
+      "seconds": 60,
+      "rounds": null,
+      "cooldownSec": 120,
+      "globalCooldownSec": 60,
+      "enabled": true,
+      "params": {
+        "seconds": 60,
+        "baseHealth": 1500,
+        "perBot": 300,
+        "knife": 250,
+        "speed": 1.3,
+        "share": 25,
+        "health": 1500,
+        "infectKnife": 150,
+        "maxNameLength": 16,
+        "short": "ЧУМА",
+        "say": "ЧУМА ХАОСА, ВСЁ СРАЗУ"
+      }
     }
   ]
 }

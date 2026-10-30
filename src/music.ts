@@ -119,6 +119,43 @@ export const TRACKS: Record<string, TrackSpec> = {
     bass: "A2 A2 F2 F2 C3 C3 G2 G2 A2 A2 F2 F2 G2 G2 E2 E2".split(" "),
     drums: 0.85,
   },
+  juggernaut: {
+    // A slow, heavy march: the mode is about one bot walking through a field of rifles.
+    bpm: 104,
+    wave: "saw",
+    seconds: 60,
+    lead: "E3 - E3 - G3 - E3 - A3 - G3 - E3 - D3 - E3 - - - E3 - E3 - G3 - B3 - A3 - G3 - F3 - E3 - - -".split(" "),
+    bass: "E2 E2 E2 E2 C2 C2 C2 C2 D2 D2 D2 D2 B1 B1 B1 B1".split(" "),
+    drums: 1,
+  },
+  assassin: {
+    // Faster and thinner: somebody is running behind the leader, and the round is shorter.
+    bpm: 164,
+    wave: "square",
+    duty: 0.125,
+    seconds: 45,
+    lead: "A4 - C5 - E5 - D5 - C5 - A4 - G4 - A4 - C5 - E5 - G5 - E5 - D5 - - -".split(" "),
+    bass: "A2 - A2 - F2 - F2 - G2 - G2 - A2 - A2".split(" "),
+    drums: 0.7,
+  },
+  outbreak: {
+    // A rising figure that never resolves: the infection is the story, and it spreads.
+    bpm: 140,
+    wave: "tri",
+    seconds: 60,
+    lead: "E4 F4 G4 A4 B4 C5 D5 E5 D5 C5 B4 A4 G4 F4 E4 F4 G4 A4 B4 C5 B4 A4 G4 F4 E4 D4 E4 F4 G4 A4 B4".split(" "),
+    bass: "E2 E2 E2 E2 F2 F2 F2 F2 G2 G2 G2 G2 A1 A1 A1 A1".split(" "),
+    drums: 0.8,
+  },
+  chaos_plague: {
+    // Everything at once, so the bed is deliberately unstable: a tritone and a wandering bass.
+    bpm: 172,
+    wave: "saw",
+    seconds: 60,
+    lead: "D4 Ab4 D4 F4 C4 Gb4 C4 E4 Bb3 E4 Bb3 D4 A3 Eb4 A3 A3 Eb4 A3 C4 G3 Db4 G3 Bb3 F3 B3 F3 A3".split(" "),
+    bass: "D2 Ab1 D2 F1 C2 Gb1 C2 E1 Bb1 E1 Bb1 D2 A1 Eb2 A1 D2".split(" "),
+    drums: 1,
+  },
 };
 
 export const MUSIC_CODES: readonly string[] = Object.keys(TRACKS).sort();

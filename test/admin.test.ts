@@ -183,11 +183,15 @@ test("a simulated foreign donation is converted with the same table the poller u
     const body = (await response.json()) as { outcome: { status: string; activityCode: string; command: string } };
     assert.equal(body.outcome.status, "applied");
     const onSale = [
+      "assassin",
+      "chaos_plague",
       "glass_cannon",
+      "juggernaut",
       "lightsaber_duel",
       "meteor_shower",
       "nemesis",
       "one_bullet",
+      "outbreak",
       "red_light",
       "survivor",
     ];

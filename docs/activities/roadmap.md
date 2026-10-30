@@ -54,12 +54,16 @@ leaves the other intact.
       under a minute of round is 45 seconds of silence);
 - [x] `EndHero` releases health/speed/glow/weapons/camera through the claim layer, `ResetEventState`
       drops the guard task and unlocks the camera on a full reset;
-- [ ] `outbreak` (a third of the field infected, knife kills convert), `juggernaut`, `assassin`,
-      `chaos_plague` — the other four codes of the system;
-- [ ] the zombie model pack: every hero mode currently reads by glow and name, not by model (S7).
+- [x] the four other codes of the system: `outbreak` (a third of the field infected, a knife kill
+      converts and the respawn hook re-arms the victim), `juggernaut` (the role goes to its killer),
+      `assassin` (semi-transparent hero - it has no target, see the note in `catalogue.md`) and
+      `chaos_plague` (boss + infection + `amx_chaos force`);
+- [x] the infection is a per-slot flag, not a health value: csdm_lite gives the bot a rifle half a
+      second after it dies, so only a flag survives the death the conversion depends on;
+- [ ] the zombie model pack: every hero mode currently reads by glow or silhouette, not by model (S7).
 
 **Done when:** a boss round ends on its clock in front of the camera, twice in a row, with no stuck bot.
-Partially built: the mechanism and two codes are in the plugin, and the live round is the thing to watch.
+All six codes are in the plugin and on sale; what is left is the live round and the models.
 
 ## Stage 3 — S2 classes (5 codes)
 
