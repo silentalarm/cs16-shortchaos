@@ -176,6 +176,33 @@ export class Store {
     return row?.at ?? null;
   }
 
+  /**
+   * Applied donations after the cursor `(at, id)`, oldest first.
+   *
+   * The chaos meter is rebuilt from these rows instead of being fed by the poller: a row is written
+   * exactly when a donation is applied, a queue drain writes it the same way, and a restart between
+   * applying an effect and counting the money cannot lose it. The cursor is a pair because simulated
+   * donations carry negative ids (`-Date.now()`), so an id alone would either skip them or re-read the
+   * whole history, and `received_at` alone can repeat within the same second.
+   */
+  appliedAfter(at: string, id: number): { id: number; amount: number; receivedAt: string }[] {
+    return this.#db
+      .prepare(`
+        SELECT id, amount, received_at AS receivedAt FROM donations
+        WHERE status = 'applied' AND (received_at > ? OR (received_at = ? AND id > ?))
+        ORDER BY received_at ASC, id ASC
+      `)
+      .all(at, at, id) as unknown as { id: number; amount: number; receivedAt: string }[];
+  }
+
+  /** Where the chaos meter starts on a database it has never seen: the newest applied row. */
+  lastAppliedCursor(): { at: string; id: number } {
+    const row = this.#db
+      .prepare("SELECT received_at AS at, id FROM donations WHERE status = 'applied' ORDER BY received_at DESC, id DESC LIMIT 1")
+      .get() as { at: string; id: number } | undefined;
+    return row ?? { at: "", id: 0 };
+  }
+
   recent(limit = 20): StoredDonation[] {
     const rows = this.#db
       .prepare(`

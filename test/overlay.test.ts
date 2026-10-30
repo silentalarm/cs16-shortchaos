@@ -32,23 +32,35 @@ function donation(overrides: Partial<StoredDonation> = {}): StoredDonation {
 test("without donations the overlay invites the first one and lists the cheapest options", () => {
   const overlay = buildOverlay({ recent: [], catalog, now: NOW });
 
-  assert.equal(overlay.lines.length, 3);
+  assert.equal(overlay.lines.length, 4);
   assert.equal(overlay.lines[0], HEADER);
   assert.equal(overlay.lines[1], "NO DONATIONS YET - BE THE FIRST");
-  assert.match(overlay.lines[2] ?? "", /^NEXT: 50 HE PARTY$/);
+  assert.equal(overlay.lines[2], "");
+  assert.match(overlay.lines[3] ?? "", /^NEXT: 50 1000 HP CANNON \\| 50 LIGHTSABER DUEL$/);
   assert.equal(overlay.text, overlay.lines.join("\n"));
 });
 
-test("the last donation is shown with its amount and what it bought", () => {
+test("the last donation is shown with its amount, and what it bought on its own line", () => {
   const overlay = buildOverlay({ recent: [donation()], catalog, now: NOW });
 
-  assert.equal(overlay.lines[1], "LAST: Vasya 130 RUB - BOT RAIN");
+  assert.equal(overlay.lines[1], "LAST: Vasya 130 RUB");
+  assert.equal(overlay.lines[2], "ВЫПАЛО: BOT RAIN");
+});
+
+test("a batch keeps every name: one strip could hold only the first one", () => {
+  const overlay = buildOverlay({
+    recent: [donation({ activityCode: "bot_nick+he_party" })],
+    catalog,
+    now: NOW,
+  });
+  assert.equal(overlay.lines[2], "ВЫПАЛО: BOT NICKNAME, HE PARTY");
 });
 
 test("a queued donation is marked as waiting, not as applied", () => {
   const overlay = buildOverlay({ recent: [donation({ status: "queued", activityCode: "map_change" })], catalog, now: NOW });
 
-  assert.equal(overlay.lines[1], "LAST: WAITING Vasya 130 RUB - MAP CHANGE");
+  assert.equal(overlay.lines[1], "LAST: WAITING Vasya 130 RUB");
+  assert.equal(overlay.lines[2], "ВЫПАЛО: MAP CHANGE");
 });
 
 test("the queue depth replaces the menu headline", () => {
@@ -61,12 +73,13 @@ test("the queue depth replaces the menu headline", () => {
     now: NOW,
   });
 
-  assert.match(overlay.lines[2] ?? "", /^QUEUE: 1 \| 50 HE PARTY/);
+  assert.match(overlay.lines[3] ?? "", /^QUEUE: 1 \| 50 1000 HP CANNON/);
 });
 
 test("an activity that left the catalogue falls back to a generic label", () => {
   const overlay = buildOverlay({ recent: [donation({ activityCode: "removed" })], catalog, now: NOW });
-  assert.equal(overlay.lines[1], "LAST: Vasya 130 RUB - QUEUED");
+  assert.equal(overlay.lines[1], "LAST: Vasya 130 RUB");
+  assert.equal(overlay.lines[2], "ВЫПАЛО: QUEUED");
 });
 
 test("long names are clipped so the line fits the frame", () => {

@@ -111,6 +111,28 @@ drawn at random from the enabled entries:
 The donation row keeps the original amount and currency; the applied log line carries `chargedRub`
 next to them, so a conversion can be explained afterwards.
 
+## The 2025-10 event set: 50 RUB, 15 seconds, one in the frame
+
+`docs/events.md` is the record of the deal; this section is the part that touches the code.
+
+- **Five events, one price, one length.** `glass_cannon`, `meteor_shower`, `red_light`, `lightsaber_duel`
+  and `one_bullet` are all `price: 50`, `seconds: 15`, and
+  every one of them passes the same clock in `params.seconds`. `he_party` is retired to
+  `enabled: false`, as are the other legacy handlers - the panel can still fire them by hand.
+- **One event in the frame.** Each new handler opens with `BeginEvent()`, which calls
+  `ResetEventState()`, `StopAllEffectTimers()` and `CleanupActive()`. `ResetEventState()` is also
+  called from `CleanupActive()`, so Round_End, `amx_de clear`, `plugin_end` and every effect clock end
+  the same way. Nothing in the set can leak a cvar or leave a bot frozen.
+- **The event is chosen by chat.** Every event costs the same, so `resolveDonation` reads the donation
+  message as a hint (`EVENT_KEYWORDS` in `src/mapping.ts`) and falls back to the roll. The words are
+  listed in `docs/events.md`; a word that names a retired event is ignored, not rejected, because the
+  money is already paid.
+- **Tests pin a fixture, not the catalogue.** `test/fixture.ts` (`onSaleCatalogue()`) is the
+  single-effect catalogue that the poller/queue/mapping tests assert exact RCON lines against; the
+  shipped catalogue is covered by `test/activities.test.ts` and `test/plugin-contract.test.ts`.
+- **Two pieces are not built yet:** `amx_stcam lock <#userid> <seconds>` in `plugins/stream_cam`
+  (without it `sniper_moment` cannot cut the camera) and the `boss_finale` accumulation bar.
+
 ## The respawn mode: csdm_lite, no CSDM
 
 There is **no CSDM in the image any more**. Its plugins need the `csdm_amxx` C++ module (HLSDK
@@ -990,6 +1012,18 @@ Measured on a 12-thread desktop: `xash3d` holds ~1.6 cores on its own, `ffmpeg` 
 PulseAudio 0.2 together, the game server 0.05. The client is expensive because it renders through
 llvmpipe (software OpenGL) at 720x2134 and no encoder setting changes that: dropping to 540x960@24
 with `-preset ultrafast` took the encoder from 0.7 to 0.4 core and the client from 1.6 to 1.55.
+
+Two things that were **waste** rather than cost, fixed and measured on the same host (whole container
+357% → 244% CPU, `ffmpeg` 70% → 50%, `voice.sh` 28.6% → 0%):
+
+- `voice.sh` spun at 30% of a core forever: a played request keeps its file (the overlay volume is not
+  writable for the container's uid) and only the marker in `/tmp/voice-seen` says so, but the loop
+  counted **any** leftover file as work and therefore never slept. "Work" is now "an unmarked request
+  was handled".
+- `x11grab` pulled the whole 720x2134 canvas while the encoder kept only the middle 720x1282 rows and
+  threw 40% of the pixels away in a `crop` immediately after the grab. The grab window is now
+  `720x1282+0,426` and the crop filter is gone; the rows are identical (`YAVG` matches to 0.001, and
+  the neighbouring band reads 104 against 137, which is how the offset was checked).
 
 So for development, leave the client off: `dev` stops it and keeps `hlds` + `control-api` (the panel,
 the RCON effects, the donation flow all work; only the picture is missing). Start the stream only

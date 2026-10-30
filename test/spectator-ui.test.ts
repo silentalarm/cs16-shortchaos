@@ -3,13 +3,15 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 
 /**
- * The two translucent spectator bands are cut out of the frame by the encoder. The bands are not a
- * resource file and not a cvar: CS16Client paints them in CHudSpectatorGui::Draw(), where each strip
- * is INT_YPOS(2) tall and YPOS(y) = y/10, so exactly 20% of the render height is lost at the top and
- * at the bottom - measured on frames as 144 rows of the 960x720 capture. Both FillRGBABlend calls are
- * unconditional; the client cvars only empty the strips. The cut happens before the scale and the
- * picture is not stretched back to the canvas, so the gameplay keeps its pixel size: a band crop, not
- * a zoom.
+ * The two translucent spectator bands are cut out of the frame before the encoder spends anything on
+ * them. The bands are not a resource file and not a cvar: CS16Client paints them in
+ * CHudSpectatorGui::Draw(), where each strip is INT_YPOS(2) tall and YPOS(y) = y/10, so exactly 20%
+ * of the render height is lost at the top and at the bottom - measured on frames as 144 rows of the
+ * 960x720 capture. Both FillRGBABlend calls are unconditional; the client cvars only empty the
+ * strips. The cut is the **capture window** (`x11grab` reads `CAP_W x GRAB_H` at `+0,BAND_PX`), not a
+ * crop filter: grabbing the whole canvas and cropping it away cost 40% of the pixels ffmpeg pulled
+ * from X every frame, and the rows are identical either way. The picture is not stretched back to the
+ * canvas, so the gameplay keeps its pixel size: a band cut, not a zoom.
  *
  * All of that lives in infra/stream/entrypoint.sh, so it can be checked without Docker or a game
  * server. The line endings are part of the contract too: the build context is the working tree, and a
@@ -21,9 +23,16 @@ test("the spectator bands are cut before the scale, so the picture is not zoomed
   assert.match(entrypoint, /BAND_PCT="\$\{STREAM_BAND_PERCENT:-20\}"/, "the bands are 20% by default");
   assert.match(
     entrypoint,
-    /^VF="crop=\$\{CAP_W\}:\$\{VIEW_H\}:0:\$\{BAND_PX\},scale=\$\{GAME_W\}:\$\{GAME_H\}:flags=bicubic"$/m,
-    "the bands must be cut before the scale",
+    /-video_size "\$\{CAP_W\}x\$\{GRAB_H\}" -i ":99\.0\+0,\$\{BAND_PX\}"/,
+    "the bands must be cut at capture: the grab reads only the game band",
   );
+  assert.match(entrypoint, /^GRAB_H=\$VIEW_H$/m, "the grabbed height is the visible height");
+  assert.match(
+    entrypoint,
+    /^VF="scale=\$\{GAME_W\}:\$\{GAME_H\}:flags=bicubic"$/m,
+    "the visible part must be scaled, not cropped",
+  );
+  assert.doesNotMatch(entrypoint, /VF="crop=/, "a crop filter is back: the bands are cut in the grab");
   assert.doesNotMatch(entrypoint, /STREAM_CROP/, "the legacy crop knobs are back");
   // Scaling the visible part up to the canvas height is what made the earlier attempt look zoomed.
   assert.doesNotMatch(entrypoint, /scale=\$\{OUT_W\}:\$\{OUT_H\}/, "the picture is stretched to the canvas");

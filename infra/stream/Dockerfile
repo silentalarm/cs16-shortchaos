@@ -25,6 +25,15 @@
 # pointed at PulseAudio in /etc/asound.conf: SDL -> libasound -> pcm_pulse -> the null sink.
 ARG BASE_IMAGE=debian:trixie-slim
 
+# Event music, rendered at build time from note tables in src/music.ts. A separate stage keeps the
+# audio out of the repository while every image still ships it; the player prefers a real file
+# dropped into the overlay volume, so a bed can be replaced without a rebuild.
+FROM node:24-bookworm-slim AS music
+WORKDIR /m
+COPY src/music.ts /m/src/music.ts
+COPY infra/music/generate.ts /m/infra/music/generate.ts
+RUN node infra/music/generate.ts /music
+
 FROM ${BASE_IMAGE} AS runtime
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive
@@ -40,6 +49,7 @@ RUN dpkg --add-architecture i386 \
       libgl1:i386 libglx-mesa0:i386 libgl1-mesa-dri:i386 \
       pulseaudio pulseaudio-utils \
       fonts-dejavu-core \
+      espeak-ng \
       ffmpeg procps tini \
  && rm -rf /var/lib/apt/lists/* \
  && printf 'pcm.!default {\n    type pulse\n}\nctl.!default {\n    type pulse\n}\n' > /etc/asound.conf
@@ -65,6 +75,31 @@ RUN : "${XASH_URL:?XASH_URL missing - run infra/update-checksums.ps1 and pass --
 
 COPY infra/stream/entrypoint.sh /usr/local/bin/stream-entrypoint.sh
 COPY infra/stream/watchdog.sh /usr/local/bin/watchdog.sh
+COPY infra/stream/voice.sh /usr/local/bin/voice.sh
+# The synthesised event beds. Path inside the container is the fallback the player uses when the
+# overlay volume has no `<code>.wav` of its own.
+COPY --from=music /music /usr/share/cs16/music
+# The Squid Game phase cues (`red_light`): two MP3s from infra/sounds, converted here instead of
+# shipped raw, because `paplay` only plays what libsndfile decodes - a WAV at the null sink's rate
+# always plays. Each file is normalised to the same peak (-0.9 dBFS): they arrive at different levels,
+# the game mix they play over is loud, and "the green one is not heard" is exactly what a cue 3 dB
+# under its pair sounds like. The catalogue points `soundRed`/`soundGreen` at these paths, so
+# replacing a cue is a file swap and a rebuild of this image.
+COPY infra/sounds/ /tmp/sounds/
+RUN mkdir -p /usr/share/cs16/sounds \
+ && for cue in red green; do \
+      peak=$(ffmpeg -hide_banner -i "/tmp/sounds/$cue.mp3" -af volumedetect -f null - 2>&1 \
+             | awk '/max_volume/ {print $(NF-1)}'); \
+      case "$peak" in \
+        ''|*[!0-9.-]*) echo "no peak for $cue (volumedetect failed)" >&2; exit 1 ;; \
+      esac; \
+      gain=$(awk -v p="$peak" 'BEGIN { printf "%.2f", -0.9 - p }'); \
+      echo "cue $cue: peak ${peak} dBFS, gain ${gain} dB"; \
+      ffmpeg -hide_banner -loglevel error -y -i "/tmp/sounds/$cue.mp3" \
+             -af "volume=${gain}dB,alimiter=limit=0.95:level=false" \
+             -ac 1 -ar 48000 -c:a pcm_s16le "/usr/share/cs16/sounds/$cue.wav" || exit 1; \
+    done \
+ && rm -rf /tmp/sounds
 # /game is a named volume in compose. Creating it here with the right owner means Docker
 # populates a fresh volume with that ownership, so the non-root user can write to it.
 # The setuid bits that Debian ships (su, mount, passwd, ...) are useless here: the container runs

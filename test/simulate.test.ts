@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadActivities } from "../src/activities.ts";
+import { onSaleCatalogue } from "./fixture.ts";
 import { Store } from "../src/db.ts";
 import type { DonationRow } from "../src/db.ts";
 import { processDonation } from "../src/poller.ts";
@@ -10,7 +10,7 @@ import { processDonation } from "../src/poller.ts";
  * properties that make that safe — the verdict is the real one, the poll cursor never moves, and
  * the rows are marked so they can be deleted without touching real history.
  */
-const catalog = loadActivities(new URL("../config/activities.json", import.meta.url));
+const catalog = onSaleCatalogue();
 const START = Date.parse("2026-01-01T12:00:00.000Z");
 
 function simDonation(overrides: Partial<DonationRow> = {}): DonationRow {

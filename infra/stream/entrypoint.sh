@@ -120,7 +120,11 @@ PAD_Y=$(( (OUT_H - GAME_H) / 2 ))
 (( PAD_Y % 2 )) && PAD_Y=$(( PAD_Y - 1 ))
 (( PAD_Y < 0 )) && PAD_Y=0
 
-VF="crop=${CAP_W}:${VIEW_H}:0:${BAND_PX},scale=${GAME_W}:${GAME_H}:flags=bicubic"
+# The encoder is told to grab only the game band (`+0,${BAND_PX}` below), so the crop that used to run
+# here is gone: it threw away 40% of the pixels ffmpeg pulled from X every frame. GRAB_H is what the
+# input reads; the scaling to the canvas stays.
+GRAB_H=$VIEW_H
+VF="scale=${GAME_W}:${GAME_H}:flags=bicubic"
 if [ "$GAME_H" -ne "$OUT_H" ] || [ "$GAME_W" -ne "$OUT_W" ]; then
   VF="${VF},pad=${OUT_W}:${OUT_H}:0:${PAD_Y}:color=0x101014"
 fi
@@ -195,8 +199,9 @@ UI_SIZE_BAR="${STREAM_UI_SIZE_BAR:-40}"
 UI_SIZE_SCORE="${STREAM_UI_SIZE_SCORE:-28}"
 UI_SIZE_TOP="${STREAM_UI_SIZE_TOP:-30}"
 UI_SIZE_TARGET="${STREAM_UI_SIZE_TARGET:-36}"
-UI_SIZE_LAST="${STREAM_UI_SIZE_LAST:-30}"
+UI_SIZE_LAST="${STREAM_UI_SIZE_LAST:-26}"
 UI_SIZE_MENU="${STREAM_UI_SIZE_MENU:-24}"
+UI_SIZE_CHAOS="${STREAM_UI_SIZE_CHAOS:-26}"
 UI_MARGIN="${STREAM_UI_MARGIN:-52}"
 UI_TOP="${STREAM_UI_TOP:-36}"
 UI_BOTTOM="${STREAM_UI_BOTTOM:-186}"
@@ -204,6 +209,7 @@ UI_COLOR_T="${STREAM_UI_COLOR_T:-0xDD3333}"
 UI_COLOR_CT="${STREAM_UI_COLOR_CT:-0x3366DD}"
 UI_COLOR_TEXT="${STREAM_UI_COLOR_TEXT:-white}"
 UI_COLOR_MUTED="${STREAM_UI_COLOR_MUTED:-0xB9C2CF}"
+UI_COLOR_CHAOS="${STREAM_UI_COLOR_CHAOS:-0xE0A856}"
 UI_READY="ui.json"
 # The two bottom lines (the last donation and how to buy the next activity) can be switched off on
 # their own: the panel then keeps the race and the bot on camera and leaves the Shorts strip clean.
@@ -234,7 +240,11 @@ panel_setup() {
   local row_top=$((UI_TOP + 72))
   local row_target=$((UI_TOP + 124))
   local row_notice=$((UI_TOP + 174))
-  local row_last=$((UI_BOTTOM + 52))
+  local row_last=$((UI_BOTTOM + 60))
+  # "ВЫПАЛО:" under the donation line: one row per donation is not enough for a batch of five.
+  local row_won=$((UI_BOTTOM + 32))
+  # Above the donation line: the meter is a reason to donate, the last donation is the receipt.
+  local row_chaos=$((UI_BOTTOM + 96))
 
   # The bar first: the red run anchored to the left margin, the blue one to the right margin, so
   # both outer edges are fixed and only the meeting point moves. The colours are the ones the game
@@ -254,7 +264,9 @@ panel_setup() {
   panel_add target.txt "$UI_SIZE_TARGET" "$UI_COLOR_TEXT" "(w-text_w)/2" "$row_target" "$box"
   panel_add notice.txt "$UI_SIZE_TOP" "$UI_COLOR_MUTED" "(w-text_w)/2" "$row_notice" "$box"
   if [ "$UI_DONATE" = 1 ]; then
+    panel_add chaos.txt "$UI_SIZE_CHAOS" "$UI_COLOR_CHAOS" "(w-text_w)/2" "h-$row_chaos" "$box"
     panel_add last.txt "$UI_SIZE_LAST" "$UI_COLOR_TEXT" "(w-text_w)/2" "h-$row_last" "$box"
+    panel_add won.txt "$UI_SIZE_MENU" "$UI_COLOR_TEXT" "(w-text_w)/2" "h-$row_won" "$box"
     panel_add menu.txt "$UI_SIZE_MENU" "$UI_COLOR_MUTED" "(w-text_w)/2" "h-${UI_BOTTOM}" "$box"
   fi
   log "ui: $UI_DIR, ${PANEL_LAYERS} drawtext layers, bar ${UI_SIZE_BAR}px at ${UI_MARGIN}px margin,"\
@@ -514,7 +526,7 @@ run_encoder() {
     # seconds of probing delay the first packet past MediaMTX's 10 s publisher read timeout, and
     # the push dies with "Broken pipe" before a single frame is sent.
     -thread_queue_size 512 -analyzeduration 0 -probesize 32
-    -f x11grab -draw_mouse 0 -framerate "$FPS" -video_size "${CAP_W}x${CAP_H}" -i ":99.0"
+    -f x11grab -draw_mouse 0 -framerate "$FPS" -video_size "${CAP_W}x${GRAB_H}" -i ":99.0+0,${BAND_PX}"
   )
   local audio_filter=""
   if [ "${AUDIO_OK:-0}" = 1 ]; then
@@ -547,7 +559,7 @@ run_encoder() {
   # A TCP receiver connects to us, so ffmpeg has to listen; anything else dials the peer.
   case "$TARGET" in tcp://*) args+=(-listen 1) ;; esac
   args+=(-f "$TARGET_FORMAT" "$TARGET")
-  log "ffmpeg <- ${OUT_W}x${OUT_H}@${FPS}, capture ${CAP_W}x${CAP_H}, game ${GAME_W}x${GAME_H} at y=${PAD_Y}, panel=${PANEL_LAYERS} layers, ${BITRATE}k -> $TARGET_LABEL"
+  log "ffmpeg <- ${OUT_W}x${OUT_H}@${FPS}, grab ${CAP_W}x${GRAB_H}+0,${BAND_PX} of ${CAP_W}x${CAP_H}, game ${GAME_W}x${GAME_H} at y=${PAD_Y}, panel=${PANEL_LAYERS} layers, ${BITRATE}k -> $TARGET_LABEL"
   # The command itself is logged without the last two arguments: for RTMP they hold the stream key.
   log "ffmpeg args: ${args[*]:0:${#args[@]}-2}"
   # ffmpeg writes its stderr to a file, never into a pipe: with a process substitution (or any pipe
@@ -734,6 +746,10 @@ run_encoder_forever &
 # The watchdog needs the layout to sample the same framebuffer ffmpeg grabs, and STATUS_DIR to write
 # its heartbeat next to status.json.
 STATUS_DIR="$STATUS_DIR" CAP_W="$CAP_W" CAP_H="$CAP_H" DISPLAY="$DISPLAY" /usr/local/bin/watchdog.sh &
+
+# Announcement voice: the control API drops request files into <overlay>/voice and this loop speaks them
+# into the same null sink ffmpeg records, so the broadcast carries the speech with no game-side asset.
+VOICE_DIR="${STREAM_VOICE_DIR:-/overlay/voice}" SINK="${PULSE_SINK:-cs}" /usr/local/bin/voice.sh &
 
 # tini forwards SIGTERM; keep the container alive while either loop is running.
 wait -n

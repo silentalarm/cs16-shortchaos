@@ -33,6 +33,11 @@ export interface DonationDeps {
   rates?: Record<string, number>;
   /** Which effect one 50 RUB step buys; a test pins it, production leaves it random. */
   random?: () => number;
+  /**
+   * Called once per applied activity with the catalogue entry: this is where the announcement voice
+   * lives (`src/voice.ts`). Optional and never fatal - a stream must survive a missing audio channel.
+   */
+  voice?: (activities: readonly Activity[], donation: DonationRow) => void;
 }
 
 export interface PollSummary {
@@ -86,7 +91,7 @@ export async function processDonation(
   }
 
   const resolution = resolveDonation(
-    { amount: donation.amount, currency: donation.currency },
+    { amount: donation.amount, currency: donation.currency, message: donation.message ?? null },
     deps.catalog,
     {
       ...(deps.rates === undefined ? {} : { rates: deps.rates }),
@@ -168,6 +173,19 @@ export async function processDonation(
       log("donation.failed", { id: donation.id, activity: item.activity.code, error: reason, source });
       if (advanceCursor) deps.store.setLastSeenId(donation.id);
       return { status: "failed", activityCode, reason, command: line, reply: null };
+    }
+  }
+
+  // One announcement per donation, not per activity: a big sum buys a batch, and six beds and six
+  // spoken lines inside one second talk over each other instead of crediting anybody.
+  if (deps.voice !== undefined && runnable.length > 0) {
+    try {
+      deps.voice(runnable.map((item) => item.activity), donation);
+    } catch (error) {
+      log("voice.failed", {
+        activities: runnable.map((item) => item.activity.code).join("+"),
+        error: (error as Error).message,
+      });
     }
   }
 

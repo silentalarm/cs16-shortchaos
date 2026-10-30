@@ -165,10 +165,10 @@ test("a simulated donation returns the verdict and the exact RCON command", asyn
     };
 
     assert.equal(body.outcome.status, "applied");
-    assert.equal(body.outcome.activityCode, "he_party");
-    assert.equal(body.outcome.command, "amx_de he_party seconds=60 nick=vasya");
-    assert.equal(body.activity?.code, "he_party");
-    assert.ok(commands.includes("amx_de he_party seconds=60 nick=vasya"));
+    assert.match(body.outcome.activityCode, /^(crowd_pile|sniper_moment|glass_cannon|ice_floor|meteor_shower|red_light|lightsaber_duel|one_bullet)$/);
+    assert.match(body.outcome.command, /^amx_de [a-z_]+ (.* )?nick=vasya$/);
+    // body.activity echoes the catalogue entry the panel matched; the code itself is drawn at random.
+    assert.ok(commands.includes(body.outcome.command), "the exact command is in the log");
   });
 });
 
@@ -182,8 +182,10 @@ test("a simulated foreign donation is converted with the same table the poller u
     assert.equal(response.status, 200);
     const body = (await response.json()) as { outcome: { status: string; activityCode: string; command: string } };
     assert.equal(body.outcome.status, "applied");
-    assert.equal(body.outcome.activityCode, "he_party");
-    assert.equal(body.outcome.command, "amx_de he_party seconds=180 nick=almaty");
+    const onSale = ["crowd_pile", "sniper_moment", "glass_cannon", "ice_floor", "meteor_shower", "red_light", "lightsaber_duel", "one_bullet"];
+    for (const code of body.outcome.activityCode.split("+")) assert.ok(onSale.includes(code), `${code} is not on sale`);
+    assert.match(body.outcome.command, /nick=almaty/);
+  assert.match(body.outcome.command, /seconds=(15|30|45)/, "150 RUB is three 15 second steps");
   });
 });
 

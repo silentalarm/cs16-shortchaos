@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadActivities } from "../src/activities.ts";
+import { onSaleCatalogue } from "./fixture.ts";
 import type { ActivitiesConfig, Activity, ParamValue } from "../src/activities.ts";
 import { Store } from "../src/db.ts";
 import type { DonationRow } from "../src/db.ts";
@@ -13,7 +13,7 @@ import { PendingQueue } from "../src/queue.ts";
  * 60 seconds of grenades; the tests that need a second price step or an older effect patch the
  * catalogue instead of shipping dead entries.
  */
-const catalog = loadActivities(new URL("../config/activities.json", import.meta.url));
+const catalog = onSaleCatalogue();
 const START = Date.parse("2026-01-01T12:00:00.000Z");
 
 type Patch = Partial<Pick<Activity, "enabled" | "price" | "cooldownSec" | "globalCooldownSec" | "duration" | "seconds">> & {

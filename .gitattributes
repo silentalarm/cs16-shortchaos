@@ -1,2 +1,4 @@
 # Shell scripts must keep LF: CRLF breaks the shebang inside the Linux image.
 *.sh text eol=lf
+# Same for Dockerfiles: CRLF after a backslash continuation breaks the build.
+Dockerfile text eol=lf

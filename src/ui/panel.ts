@@ -1,4 +1,5 @@
 import type { UiState, UiScore } from "./state.ts";
+import { CHAOS_THRESHOLD, chaosFill } from "../chaos-meter.ts";
 import { clean } from "../overlay.ts";
 
 /**
@@ -37,7 +38,11 @@ export const PANEL_FILES = {
   target: "target.txt",
   notice: "notice.txt",
   last: "last.txt",
+  /** What the last donation bought: every name of the batch on its own line. */
+  won: "won.txt",
   menu: "menu.txt",
+  /** The chaos meter: money collected toward the next forced effect. */
+  chaos: "chaos.txt",
 } as const;
 
 /**
@@ -51,8 +56,10 @@ export const PANEL_LAYOUT = {
   scoreSize: 28,
   topSize: 30,
   targetSize: 36,
-  lastSize: 30,
+  lastSize: 26,
   menuSize: 24,
+  /** The chaos meter: smaller than the score bar, it only ever fills. */
+  chaosSize: 26,
   margin: 52,
   top: 36,
   bottom: 186,
@@ -117,9 +124,30 @@ export const PANEL_LIMITS = {
   top: 20,
   target: 30,
   notice: 24,
-  last: 36,
+  last: 41,
+  won: 41,
   menu: 44,
+  chaos: 30,
 } as const;
+
+/** Ten blocks: the chaos bar is half the score bar's width and has no counts on its ends. */
+export const CHAOS_SEGMENTS = 10;
+
+/**
+ * `ХАОС ██████░░░░ 600/1000 RUB`.
+ *
+ * Its own line, not a third run on the score bar: that bar is a fight for the middle, this one only
+ * ever fills, and one row made both read as a score. The empty half is U+2591 LIGHT SHADE - it is a
+ * few pixels narrower than a full block, so the line shifts by ~2 px across the whole meter, which is
+ * invisible at 26 px and much cheaper than a second drawbox.
+ */
+function chaosFor(state: UiState): string {
+  const threshold = state.chaos.threshold > 0 ? state.chaos.threshold : CHAOS_THRESHOLD;
+  const total = state.chaos.total > 0 ? state.chaos.total : 0;
+  const filled = chaosFill(total, CHAOS_SEGMENTS, threshold);
+  const bar = BAR_BLOCK.repeat(filled) + "\u2591".repeat(CHAOS_SEGMENTS - filled);
+  return clean(`ХАОС ${bar} ${Math.round(total)}/${Math.round(threshold)} RUB`, PANEL_LIMITS.chaos);
+}
 
 /**
  * The line that says what the map is doing; empty when everything is fine.
@@ -189,6 +217,8 @@ export function panelLayers(state: UiState, segments = PANEL_DEFAULT_SEGMENTS): 
     },
     { file: PANEL_FILES.notice, text: noticeFor(state) },
     { file: PANEL_FILES.last, text: clean(state.donation, PANEL_LIMITS.last) },
+    { file: PANEL_FILES.won, text: clean(state.won, PANEL_LIMITS.won) },
     { file: PANEL_FILES.menu, text: clean(state.menu, PANEL_LIMITS.menu) },
+    { file: PANEL_FILES.chaos, text: chaosFor(state) },
   ];
 }

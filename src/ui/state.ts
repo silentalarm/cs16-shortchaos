@@ -1,4 +1,5 @@
 import type { ActivitiesConfig } from "../activities.ts";
+import { CHAOS_THRESHOLD } from "../chaos-meter.ts";
 import type { StoredDonation } from "../db.ts";
 import { buildOverlay } from "../overlay.ts";
 import type { PendingActivity } from "../queue.ts";
@@ -33,12 +34,23 @@ export interface UiTarget {
  */
 export type UiTheme = "default" | "chaos" | "fight" | "event";
 
+/**
+ * The chaos meter, as the panel draws it: money collected toward the next forced effect.
+ * `threshold` travels with the value so the bar and the trigger always agree on what "full" means.
+ */
+export interface UiChaos {
+  total: number;
+  threshold: number;
+}
+
 export interface UiState {
   /** null until the first successful RCON answer; the template says "no data" instead of lying. */
   score: UiScore | null;
   target: UiTarget | null;
   /** Last donation line, already cleaned for display. */
   donation: string;
+  /** What that donation bought: every effect of the batch, not just the first one. */
+  won: string;
   /** What the next cheapest activities cost, or how many are waiting. */
   menu: string;
   /** Winner of the end-of-map duel; empty except for the seconds between the duel and the map change. */
@@ -46,6 +58,8 @@ export interface UiState {
   queueSize: number;
   theme: UiTheme;
   activityCode: string | null;
+  /** Donations collected toward the next chaos burst (`CHAOS_THRESHOLD` roubles). */
+  chaos: UiChaos;
   /** true when the score is older than a few polls: the panel dims instead of showing stale numbers as fresh. */
   stale: boolean;
   updatedAt: string;
@@ -58,6 +72,7 @@ export interface UiStateInput {
   recent: readonly StoredDonation[];
   catalog: ActivitiesConfig;
   pending?: readonly PendingActivity[];
+  chaos?: UiChaos;
   now?: number;
   stale?: boolean;
 }
@@ -103,10 +118,12 @@ export function buildUiState(input: UiStateInput): UiState {
     target: input.target ?? null,
     winner: input.winner ?? "",
     donation: overlay.lines[1] ?? "",
-    menu: overlay.lines[2] ?? "",
+    won: overlay.lines[2] ?? "",
+    menu: overlay.lines[3] ?? "",
     queueSize: pending.length,
     theme: themeFor(activityCode),
     activityCode,
+    chaos: input.chaos ?? { total: 0, threshold: CHAOS_THRESHOLD },
     stale: input.stale ?? false,
     updatedAt: new Date(now).toISOString(),
   };
@@ -124,9 +141,11 @@ export function uiSignature(state: UiState): string {
     target: state.target,
     winner: state.winner,
     donation: state.donation,
+    won: state.won,
     menu: state.menu,
     queueSize: state.queueSize,
     theme: state.theme,
+    chaos: state.chaos,
     stale: state.stale,
   });
 }

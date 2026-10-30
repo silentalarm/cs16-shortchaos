@@ -1,7 +1,9 @@
 import { readFileSync } from "node:fs";
 import { loadActivities } from "./activities.ts";
+import type { Activity } from "./activities.ts";
 import { applyOverrides, OverrideStore } from "./activities-override.ts";
 import { createAdminServer } from "./admin/server.ts";
+import { addToChaos, CHAOS_THRESHOLD } from "./chaos-meter.ts";
 import { CODES_PROBE } from "./command.ts";
 import type { DonationRow } from "./db.ts";
 import { openStore } from "./db.ts";
@@ -10,12 +12,14 @@ import { loadEnv } from "./env.ts";
 import { GamePoller } from "./game-poller.ts";
 import { buildOverlay, writeOverlay } from "./overlay.ts";
 import { drainQueue, pollOnce, restoreQueue } from "./poller.ts";
+import { announcementFor, chaosRequest, donationAnnouncement, phaseCues, silenceRequest, writeVoiceRequest } from "./voice.ts";
 import { PendingQueue } from "./queue.ts";
 import { RconClient } from "./rcon.ts";
-import { parsePluginCodes } from "./stream-status.ts";
+import { parsePluginCodes, parsePluginStatus } from "./stream-status.ts";
 import { TokenStore } from "./token-store.ts";
 import { UiLoop } from "./ui/loop.ts";
 import { buildUiState, type UiState } from "./ui/state.ts";
+import { STATUS_COMMAND } from "./admin/state.ts";
 
 const env = loadEnv();
 const baseCatalog = loadActivities(env.activitiesPath);
@@ -34,6 +38,61 @@ const queue = new PendingQueue();
 function log(event: string, details: Record<string, unknown> = {}): void {
   console.log(JSON.stringify({ at: new Date().toISOString(), event, ...details }));
 }
+
+/**
+ * The announcement voice: a request file the capture container speaks into the broadcast
+ * (`infra/stream/voice.sh`). Text never goes to the game - RCON cannot carry spaces or Cyrillic.
+ */
+const voice = (
+  activities: readonly Activity[],
+  donation?: { username: string; amount: number; currency: string },
+): void => {
+  const first = activities[0];
+  if (first === undefined) return;
+
+  // An event whose sound belongs to a phase (`red_light`) gets one request per phase, mirroring the
+  // plugin's timing, and no bed of its own: the cues are its soundtrack. The previous bed is cut
+  // first, otherwise the duel's music plays on underneath the Squid Game cues.
+  const phaseOnly = activities.every((activity) => phaseCues(activity).length > 0);
+  if (phaseOnly) {
+    try {
+      writeVoiceRequest(env.overlayDir, { musicStop: true });
+    } catch (error) {
+      log("voice.failed", { error: (error as Error).message });
+    }
+  }
+
+  for (const activity of activities) {
+    for (const cue of phaseCues(activity)) {
+      setTimeout(() => {
+        try {
+          writeVoiceRequest(env.overlayDir, cue.request);
+        } catch (error) {
+          log("voice.failed", { error: (error as Error).message });
+        }
+      }, Math.max(0, cue.at - Date.now())).unref();
+    }
+  }
+
+  if (phaseOnly) return;
+
+  // The donor's name and sum go on top: "Петя, 900 рублей. Выпало: ОДНА ПУЛЯ, ДУЭЛЬ" is the credit the
+  // viewer paid for, and one line for the whole batch keeps six announcements from talking over each
+  // other. A panel run has no donor, so it announces the activity itself.
+  writeVoiceRequest(
+    env.overlayDir,
+    donation === undefined ? announcementFor(first) : donationAnnouncement(activities, donation),
+  );
+};
+
+/** The Stop button: kill the bed so the board and the mix are cleared together. */
+const silence = (): void => {
+  try {
+    writeVoiceRequest(env.overlayDir, silenceRequest());
+  } catch (error) {
+    log("voice.failed", { error: (error as Error).message });
+  }
+};
 
 /** Reads donations written by `npm run fake-donation`; no network, no tokens. */
 function mockSource(): (cursor: number) => Promise<DonationRow[]> {
@@ -140,6 +199,99 @@ function refreshUiInputs(): void {
   uiPending = queue.snapshot();
 }
 
+/**
+ * The chaos meter: donated money collected toward the next forced effect.
+ *
+ * The state lives in SQLite, not in memory: `chaos.total` (roubles on the bar) and the cursor
+ * `(chaos.last_at, chaos.last_id)` - the last applied row that was counted. The meter is topped up
+ * from the rows themselves, so a crash between applying an effect and counting the money is repaired
+ * by the next tick, and a queue drain - which writes an `applied` row too - is counted exactly once.
+ */
+let chaosTotal = Number.parseFloat(store.getState("chaos.total") ?? "0");
+if (!Number.isFinite(chaosTotal) || chaosTotal < 0) chaosTotal = 0;
+
+let chaosCursor = {
+  at: store.getState("chaos.last_at") ?? "",
+  id: Number.parseInt(store.getState("chaos.last_id") ?? "0", 10) || 0,
+};
+
+// A fresh database (or the first run of this feature) must not swallow the whole donation history at
+// once: the meter starts at the newest applied row, so only money given from now on fills it.
+if (store.getState("chaos.last_at") === null) {
+  chaosCursor = store.lastAppliedCursor();
+  store.setState("chaos.last_at", chaosCursor.at);
+  store.setState("chaos.last_id", String(chaosCursor.id));
+  log("chaos.meter_start", { after: chaosCursor });
+}
+
+async function collectChaos(): Promise<void> {
+  const rows = store.appliedAfter(chaosCursor.at, chaosCursor.id);
+  if (rows.length === 0) return;
+
+  let total = chaosTotal;
+  let bursts = 0;
+  for (const row of rows) {
+    const step = addToChaos(total, row.amount, CHAOS_THRESHOLD);
+    total = step.total;
+    bursts += step.bursts;
+  }
+
+  chaosTotal = total;
+  const last = rows[rows.length - 1];
+  if (last !== undefined) chaosCursor = { at: last.receivedAt, id: last.id };
+  store.setState("chaos.total", String(chaosTotal));
+  store.setState("chaos.last_at", chaosCursor.at);
+  store.setState("chaos.last_id", String(chaosCursor.id));
+  if (bursts === 0) return;
+
+  log("chaos.meter_full", { bursts, total: chaosTotal, threshold: CHAOS_THRESHOLD });
+  // One burst per full thousand: a 2500 RUB donation buys two effects and leaves 500 on the bar.
+  for (let index = 0; index < bursts; index += 1) {
+    try {
+      const reply = await apply("amx_chaos force");
+      log("chaos.fired", { reply: reply.slice(0, 120) });
+    } catch (error) {
+      log("chaos.failed", { error: (error as Error).message });
+    }
+  }
+  try {
+    writeVoiceRequest(env.overlayDir, chaosRequest());
+  } catch (error) {
+    log("voice.failed", { error: (error as Error).message });
+  }
+}
+
+/**
+ * The bed must not outlive the effects.
+ *
+ * The plugin ends its effects at the round boundary (`OnRoundEnd`), which no clock of ours knows
+ * about: the music then keeps playing over a board that has already been cleared - that is the
+ * "music stayed after the donation" report. `amx_de status` is the cheapest source of truth (the panel
+ * parses the same line), so it is polled here and the bed is cut the moment the game reports nothing.
+ */
+let lastActiveCode: string | null = null;
+
+async function followGameClock(): Promise<void> {
+  let active: string | null;
+  try {
+    active = parsePluginStatus(await readConsole(STATUS_COMMAND)).active;
+  } catch {
+    return;
+  }
+
+  // Only a real transition counts: an unreachable server (dry run, restart) also answers `none`, and
+  // cutting the music for that would silence a donation that is still running.
+  if (lastActiveCode !== null && active === null) {
+    try {
+      writeVoiceRequest(env.overlayDir, { musicStop: true });
+      log("voice.bed_cut", { after: lastActiveCode });
+    } catch (error) {
+      log("voice.failed", { error: (error as Error).message });
+    }
+  }
+  lastActiveCode = active;
+}
+
 function currentUiState(): UiState {
   const snapshot = gamePoller.snapshot();
   return buildUiState({
@@ -149,6 +301,7 @@ function currentUiState(): UiState {
     recent: uiRecent,
     catalog,
     pending: uiPending,
+    chaos: { total: chaosTotal, threshold: CHAOS_THRESHOLD },
     stale: snapshot.stale,
   });
 }
@@ -214,7 +367,10 @@ async function checkPluginContract(): Promise<void> {
     if (missing.length > 0) {
       log("plugin.contract_mismatch", { missing, hint: "activities exist in the catalogue but not in the Pawn plugin" });
     } else {
-      log("plugin.contract_ok", { activities: supported.size });
+      // Counted against the catalogue, not against the parsed set: the reply is printed in chunks and
+      // the plugin's own log line also carries a `codes:` prefix, so the parse can pick up a word or
+      // two that is not a code. The number that matters is how many catalogue entries are supported.
+      log("plugin.contract_ok", { activities: catalog.activities.length - missing.length });
     }
   } catch (error) {
     log("plugin.contract_failed", { error: (error as Error).message });
@@ -244,6 +400,8 @@ function startAdmin(): import("node:http").Server | null {
     playback: { port: env.admin.hlsPort, path: env.admin.hlsPath },
     mode: { mock: env.mock, dryRun: env.rcon.dryRun, simAllowed: env.admin.simAllowed },
     rates: env.currencyRates,
+    voice,
+    silence,
     log,
   });
 
@@ -271,7 +429,7 @@ async function main(): Promise<void> {
 
   // Paid donations that were waiting for their cooldown when the process died are still `queued` in
   // SQLite. They go back into the queue before the first tick, so a restart does not swallow them.
-  const restored = restoreQueue({ store, catalog, apply, log, queue });
+  const restored = restoreQueue({ store, catalog, apply, log, queue, voice });
   if (restored > 0) log("queue.restored", { entries: restored, pending: queue.size });
 
   let running = false;
@@ -280,13 +438,16 @@ async function main(): Promise<void> {
     running = true;
     try {
       // The queue goes first: a viewer who paid a minute ago must not wait behind a fresh poll.
-      const drained = await drainQueue({ store, catalog, apply, log, queue });
+      const drained = await drainQueue({ store, catalog, apply, log, queue, voice });
       if (drained.applied + drained.requeued + drained.failed + drained.expired > 0) {
         log("queue.drained", { ...drained, pending: queue.size });
       }
 
-      const summary = await pollOnce({ store, catalog, fetchDonations: source, apply, log, queue, rates: env.currencyRates });
+      const summary = await pollOnce({ store, catalog, fetchDonations: source, apply, log, queue, rates: env.currencyRates, voice });
       if (summary.seen > 0) log("poll.done", { ...summary });
+      // The meter is topped up from the rows the poll just wrote, so a burst fires in the same tick
+      // that filled it.
+      await collectChaos();
     } catch (error) {
       log("poll.error", { error: (error as Error).message });
     } finally {
@@ -312,9 +473,12 @@ async function main(): Promise<void> {
   admin = startAdmin();
 
   const timer = setInterval(() => void tick(), env.pollSec * 1000);
+  // Two seconds is enough for a round boundary and costs one RCON line per poll.
+  const clock = setInterval(() => void followGameClock(), 2_000);
 
   const shutdown = (): void => {
     clearInterval(timer);
+    clearInterval(clock);
     admin?.close();
     gamePoller.stop();
     uiLoop?.stop();

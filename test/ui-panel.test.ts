@@ -39,6 +39,20 @@ function layer(overrides: Partial<UiState>, file: string): string {
   return found.text;
 }
 
+test("the chaos meter is a bar of its own, above the donation line", () => {
+  const empty = layer({ chaos: { total: 0, threshold: 1000 } }, PANEL_FILES.chaos);
+  assert.match(empty, /^ХАОС /u);
+  assert.match(empty, /0\/1000 RUB$/u);
+
+  const half = layer({ chaos: { total: 500, threshold: 1000 } }, PANEL_FILES.chaos);
+  assert.ok(half.includes(BAR_BLOCK.repeat(5)), `half a meter is five blocks: ${half}`);
+  assert.match(half, /500\/1000 RUB$/u);
+
+  // One rouble before the burst is nine blocks: a full run would promise an effect that is not paid.
+  const almost = layer({ chaos: { total: 999, threshold: 1000 } }, PANEL_FILES.chaos);
+  assert.equal(almost.includes(BAR_BLOCK.repeat(10)), false, almost);
+});
+
 test("the bar splits into a fixed number of blocks", () => {
   assert.deepEqual(barSplit(10, 10), { t: 10, ct: 10 });
   assert.deepEqual(barSplit(20, 0), { t: 20, ct: 0 });

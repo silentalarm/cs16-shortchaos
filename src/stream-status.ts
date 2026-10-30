@@ -291,12 +291,14 @@ export function parsePluginStatus(reply: string): PluginStatus {
  * the list after the label counts here, and only tokens shaped like a code survive.
  */
 export function parsePluginCodes(reply: string): string[] {
-  const label = /codes:/iu.exec(reply);
-  if (label === null) return [];
-
-  const list = reply.slice(label.index + label[0].length);
-  const codes = list
-    .split(/[\s,]+/u)
-    .filter((token) => /^[a-z][a-z0-9_]{2,31}$/u.test(token));
+  // The plugin prints the list in chunks of ~100 characters, one line each, because a single long
+  // line arrives truncated (the tail of the registry used to disappear and the panel then reported
+  // events as missing from a plugin that had them). Every `codes:` segment counts, not just the first.
+  const codes: string[] = [];
+  for (const segment of reply.matchAll(/codes:([^\r\n]*)/giu)) {
+    for (const token of (segment[1] ?? "").split(/[\s,]+/u)) {
+      if (/^[a-z][a-z0-9_]{2,31}$/u.test(token)) codes.push(token);
+    }
+  }
   return [...new Set(codes)];
 }

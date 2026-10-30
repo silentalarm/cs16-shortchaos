@@ -22,6 +22,9 @@
 #include <fun>
 // Weapon ids and user_has_weapon: the HE party below has to tell a knife from a rifle.
 #include <cstrike>
+// ExecuteHamB (Ham_TraceAttack, Ham_TakeDamage) lives here; without it amxxpc aborts with SIGABRT
+// and no diagnostics at all, which is the trap docs/runbook.md warns about.
+#include <hamsandwich>
 
 #define PLUGIN_NAME "Donation Events"
 #define PLUGIN_VERSION "0.6.0"
@@ -37,9 +40,14 @@
 // How long a blessed or cursed bot keeps its glow. Health and weapons reset on the next spawn.
 #define GLOW_SECONDS 20.0
 
-/* The registry only has to hold the codes the catalogue sells (18 today). It used to be 32, which
-   costs 2 KB of static data for nothing - and static data is what amxxpc runs out of on this file. */
-#define MAX_EFFECTS 20
+/* The registry only has to hold the codes the catalogue sells: the 18 legacy handlers plus the eight
+   2025-10 events is 26, so the table is 30. It used to be 32, which costs 2 KB of static data for
+   nothing - and static data is what amxxpc runs out of on this file, so it is not padded further. */
+#define MAX_EFFECTS 30
+/* m_pActiveItem is not defined by the CS include set of this AMXX build. 373 with the linux player
+   offset (5) is the field the active weapon entity is read from; it has not moved since CS 1.6, and
+   the alternative is a version-specific include. */
+#define OFFSET_ACTIVE_ITEM 373
 #define MAX_PARAMS 12
 #define CODE_LEN 32
 #define KEY_LEN 24
@@ -82,6 +90,12 @@ new bool:g_quotaSaved;
    from rewriting every bot's speed on a round end that never changed it. */
 new bool:g_speedBoosted;
 
+/* lightsaber_duel holds the whole field on knives for its clock. The flag is read by the respawn and
+   weapon-switch hooks, and the health is captured at event start because the parameter table is gone
+   by the time a bot respawns. */
+new bool:g_duelActive;
+new g_duelHealth;
+
 /* Round fights. All three are one-round effects that follow the kill feed, so their state lives
    next to the round state and is dropped in CleanupActive() together with the cvars we touched. */
 #define MAX_BOSSES 4
@@ -118,6 +132,43 @@ new bool:g_hePartyActive;
 #define TASK_EFFECT_BASE 4500
 #define DEFAULT_EFFECT_SECONDS 45.0
 
+/* ---------- the 2025-10 event set: 50 RUB, 15 seconds, one event in the frame ---------- */
+
+/* Every event of this set is a 15 second show and none of them may overlap: ice under a time stop, a
+   freeze during a meteor shower, two handlers fighting over the same bots - the viewer sees none of
+   it. Each handler calls BeginEvent() first, which ends whatever was running. */
+#define EVENT_SECONDS 15.0
+
+#define TASK_CANNON_AMMO 4701
+#define TASK_METEOR 4702
+#define TASK_RED_STOP 4703
+#define TASK_RED_GO 4704
+
+/* The explosion temp entity is a protocol constant; some include sets define the name, others do
+   not, and a redefinition is a compile error, so it is guarded. */
+#if !defined TE_EXPLOSION
+#define TE_EXPLOSION 3
+#endif
+
+new g_cannonBot;
+new bool:g_cannonActive;
+/* The health the cannon bot had before it was buffed: "restore what it was" is part of what the
+   viewer buys, and a 1000 HP bot that keeps the number after the clock is a bug you can see. */
+new g_cannonSavedHealth;
+
+new bool:g_meteorActive;
+new g_meteorSprite;
+
+new bool:g_redLightActive;
+new bool:g_redFrozen;
+/* `stock` has to be captured when the event starts: g_param* is cleared as soon as the command handler
+   returns (`RunHandler` in HandleActivity), and the phase timers fire 1.5 s and 3.5 s later. Read the
+   parameter there and the fallback 1 answers instead - which is exactly how the stock chime and the
+   alarm came back after the first cue. */
+new bool:g_redStockCues;
+
+
+
 public plugin_init()
 {
 	register_plugin(PLUGIN_NAME, PLUGIN_VERSION, "cs16-youtube");
@@ -130,6 +181,10 @@ public plugin_init()
 	register_event("DeathMsg", "OnDeathMsg", "a");
 	// ResetHUD is delivered to the player who just spawned: a boss has to come back as a boss.
 	register_event("ResetHUD", "OnPlayerSpawn", "be");
+	// CurWeapon fires on every weapon switch: lightsaber_duel turns one back into a knife.
+	register_event("CurWeapon", "OnCurWeapon", "be", "1=1");
+	// A dropped weapon is a pickup away from breaking the duel; the touch hook refuses it.
+	RegisterHam(Ham_Touch, "weaponbox", "OnWeaponBoxTouch");
 
 	RegisterDonationEffect("bot_nick", "EffectBotNick");
 	RegisterDonationEffect("meat_round", "EffectMeatRound");
@@ -150,7 +205,36 @@ public plugin_init()
 	RegisterDonationEffect("bot_phrase", "EffectBotPhrase");
 	RegisterDonationEffect("chaos_burst", "EffectChaosBurst");
 
+	// The 2025-10 event set: 50 RUB each, 15 seconds each, one in the frame at a time.
+	RegisterDonationEffect("glass_cannon", "EffectGlassCannon");
+	RegisterDonationEffect("meteor_shower", "EffectMeteorShower");
+	RegisterDonationEffect("red_light", "EffectRedLight");
+	RegisterDonationEffect("lightsaber_duel", "EffectLightsaberDuel");
+	RegisterDonationEffect("one_bullet", "EffectOneBullet");
+
 	log_amx("loaded, API %d, %d activities", API_VERSION, g_effectCount);
+}
+
+/* The meteor is the only model this set needs; the sounds are stock CS files, precached so
+   emit_sound cannot be dropped for an uncached sample. Custom sounds and models go here later.
+   Precaching is not playback: a file listed here is only loaded into the client's cache, so removing
+   a line here silences nothing - it only makes the corresponding emit_sound a no-op. `stock=0` is what
+   turns those sounds off, and the red_light timers read it from a global, see g_redStockCues. */
+public plugin_precache()
+{
+	g_meteorSprite = precache_model("sprites/zerogxplode.spr");
+	precache_sound("weapons/awp1.wav");
+	precache_sound("weapons/knife_slash1.wav");
+	// red_light cues: the alarm for RED, the positive chime for GREEN. Both ship with CS 1.6, and both
+	// are muted at runtime by `stock=0`; the files stay precached because the catalogue may set stock=1.
+	precache_sound("ambience/alarm1.wav");
+	precache_sound("events/task_complete.wav");
+	// The per-event announcement sounds (AnnounceEventSound). A file missing here is a silent event.
+	precache_sound("ambience/thunder_clap.wav");
+	precache_sound("ambience/lv_jubilee.wav");
+	precache_sound("ambience/lv_neon.wav");
+	precache_sound("ambience/Opera.wav");
+	precache_sound("events/enemy_died.wav");
 }
 
 stock RegisterDonationEffect(const code[], const handler[])
@@ -184,14 +268,34 @@ public CmdDonationEvent(id, level, cid)
 
 	if (equal(code, "codes"))
 	{
-		new list[512];
+		// One line per ~100 characters, each with the same label. A single 300 character line comes
+		// back to the control API truncated - measured: the tail of the registry was silently missing
+		// and the panel reported six events as "not in the Pawn plugin" while the plugin had them.
+		new list[128];
+		new printed;
+
 		for (new i = 0; i < g_effectCount; i++)
 		{
-			if (i > 0)
+			new needed = strlen(g_codes[i]) + (list[0] ? 1 : 0);
+			if (list[0] && strlen(list) + needed > 100)
+			{
+				server_print("donation_events codes: %s", list);
+				list[0] = '^0';
+				printed++;
+			}
+
+			if (list[0])
 				add(list, charsmax(list), ",");
 			add(list, charsmax(list), g_codes[i]);
 		}
-		server_print("donation_events codes: %s", list);
+
+		if (list[0])
+		{
+			server_print("donation_events codes: %s", list);
+			printed++;
+		}
+
+		log_amx("codes: %d activities in %d lines", g_effectCount, printed);
 		return PLUGIN_HANDLED;
 	}
 
@@ -363,18 +467,94 @@ public TaskEffectFinished(taskid)
 	FinishEffect(code);
 }
 
-/* Ends one effect by its own clock: the same reset Round_End does, so an effect that outlived the
-   round (the normal case on a respawning server) still leaves nothing behind. */
+/* Ends one effect by its own clock: it gives back what *this* effect took, and leaves its neighbours
+   running. The full reset (`CleanupActive`) stays for the round end, `amx_de clear` and plugin_end,
+   where everything is supposed to stop. */
 stock FinishEffect(const code[])
 {
 	StopEffectTimer(code);
-	CleanupActive();
+	EndEffectState(code);
 
 	if (g_activeCode[0] && equali(g_activeCode, code))
+	{
+		// Another effect of the same batch may still be armed: report that one, otherwise the stream
+		// reads `active=none` and cuts the music while the game is still showing something.
 		g_activeCode[0] = '^0';
+		LiveEffectCode(g_activeCode, CODE_LEN - 1, code);
+	}
 
 	log_amx("activity '%s' finished on its timer", code);
 	server_print("donation_events finished %s", code);
+}
+
+/* The first effect whose clock is still armed, skipping `skip`: what the status line reports while a
+   batch is winding down. */
+stock LiveEffectCode(dest[], len, const skip[])
+{
+	for (new i = 0; i < g_effectCount; i++)
+	{
+		if (!task_exists(TASK_EFFECT_BASE + i))
+			continue;
+
+		if (skip[0] && equali(skip, g_codes[i]))
+			continue;
+
+		copy(dest, len - 1, g_codes[i]);
+		return 1;
+	}
+	return 0;
+}
+
+/* One effect's own undo. Codes handled here keep a batch alive: a meteor that ends must not restore the
+   cannon bot's health, and a duel that ends must not drop a zombie's speed. Anything else (the older
+   fight effects) keeps the global reset it has always had - their state is not split per effect yet. */
+stock EndEffectState(const code[])
+{
+	if (equal(code, "glass_cannon"))
+	{
+		remove_task(TASK_CANNON_AMMO);
+		if (g_cannonBot > 0 && g_cannonSavedHealth > 0 && is_user_alive(g_cannonBot))
+			set_user_health(g_cannonBot, g_cannonSavedHealth);
+		g_cannonActive = false;
+		g_cannonBot = 0;
+		g_cannonSavedHealth = 0;
+		return;
+	}
+
+	if (equal(code, "meteor_shower"))
+	{
+		remove_task(TASK_METEOR);
+		g_meteorActive = false;
+		return;
+	}
+
+	if (equal(code, "red_light"))
+	{
+		remove_task(TASK_RED_STOP);
+		remove_task(TASK_RED_GO);
+		// Unconditional: a freeze whose task was dropped would leave the server frozen for good.
+		ThawAll();
+		g_redStockCues = false;
+		return;
+	}
+
+	if (equal(code, "lightsaber_duel"))
+	{
+		g_duelActive = false;
+		ResetBotSpeed();
+		// The duel glows the whole field, and a glow is render state on the entity: it survives respawn.
+		for (new id = 1; id <= get_maxplayers(); id++)
+			ClearGlow(id);
+		return;
+	}
+
+	if (equal(code, "one_bullet"))
+	{
+		// One round in the clip and nothing in reserve: the next spawn hands the normal kit back.
+		return;
+	}
+
+	CleanupActive();
 }
 
 /* ---------- round lifecycle ---------- */
@@ -459,6 +639,8 @@ stock CleanupActive()
 	ClearFightState();
 	ClearDonorName();
 	ResetBotSpeed();
+	// The 2025-10 events keep their own tasks and cvars; one entry point for every reset path.
+	ResetEventState();
 }
 
 /* Puts every bot back on the server's own run speed. Needed because set_user_maxspeed survives both
@@ -576,6 +758,9 @@ public client_disconnected(id, bool:drop, message[], maxlen)
 		g_donorApplied[0] = '^0';
 		remove_task(TASK_DONOR_TAG);
 	}
+
+	// The cannon re-arms a role on a player id; the next occupant of the slot must not inherit it.
+	// The ticking task picks a fresh bot on its next pass.
 
 	log_amx("client %d left, its effect state is dropped", id);
 }
@@ -1274,16 +1459,17 @@ stock ReportBossDown(killer, victim)
 
 /* csdm_lite re-arms every respawn with a random weapon, so without this a boss would be an ordinary
    bot again after its first death and the raid would last one kill. The short delay is what puts
-   this after csdm_lite's own arming, which runs in the same respawn. */
+   this after csdm_lite's own arming, which runs in the same respawn. The duel uses the same hook for
+   the same reason: a bot that respawns with a rifle mid-duel would end the "knives only" rule. */
 public OnPlayerSpawn(id)
 {
-	if (!g_bossRaidActive && !g_potatoActive)
+	if (!g_bossRaidActive && !g_potatoActive && !g_duelActive)
 		return;
 
 	if (!is_user_connected(id) || !is_user_bot(id))
 		return;
 
-	if (IsBoss(id) || (g_potatoActive && id == g_potatoHolder))
+	if (IsBoss(id) || (g_potatoActive && id == g_potatoHolder) || g_duelActive)
 		set_task(0.3, "RebuffOnSpawn", id);
 }
 
@@ -1296,6 +1482,8 @@ public RebuffOnSpawn(id)
 		BossArm(id);
 	else if (g_potatoActive && id == g_potatoHolder)
 		PotatoArm(id);
+	else if (g_duelActive)
+		DuelArm(id);
 }
 
 /* ---------- helpers ---------- */
@@ -1406,6 +1594,481 @@ public EffectChaosBurst()
 	log_amx("chaos_burst: forced a chaos effect");
 }
 
+/* ---------- the 2025-10 events: shared state ---------- */
+
+/* `stock=0` in the catalogue mutes the built-in cues: the stream then plays its own files for the
+   phases (src/voice.ts schedules them), and two sound sources on top of each other is noise. */
+stock bool:HasStockCues()
+{
+	return ParamInt("stock", 1) != 0;
+}
+
+/* Every event opens with its own sound. Without an audio cue a frozen picture or a sudden freeze reads
+   as a broken stream; stock CS 1.6 files only, because the capture client already has them. The
+   catalogue can override nothing here on purpose: an arbitrary path from RCON would have to be
+   precached first, and a missing sample is a silent event, not an error.
+   `stock=0` silences the whole stock channel of that event, this opener included: `red_light` opens
+   on `ambience/lv_neon.wav`, a neon hum that sat right on top of the stream's own RED cue. */
+stock AnnounceEventSound(const code[])
+{
+	new sound[64];
+
+	if (!HasStockCues())
+	{
+		log_amx("event '%s' opens without a stock sound (stock=0)", code);
+		return;
+	}
+
+	if (equal(code, "meteor_shower"))
+		copy(sound, charsmax(sound), "ambience/thunder_clap.wav");
+	else if (equal(code, "glass_cannon"))
+		copy(sound, charsmax(sound), "ambience/lv_jubilee.wav");
+	else if (equal(code, "lightsaber_duel"))
+		copy(sound, charsmax(sound), "ambience/Opera.wav");
+	else if (equal(code, "one_bullet"))
+		copy(sound, charsmax(sound), "weapons/awp1.wav");
+	else if (equal(code, "red_light"))
+		copy(sound, charsmax(sound), "ambience/lv_neon.wav");
+	else
+		copy(sound, charsmax(sound), "events/task_complete.wav");
+
+	emit_sound(0, CHAN_AUTO, sound, VOL_NORM, ATTN_NORM, 0, PITCH_NORM);
+	log_amx("event '%s' announces itself with %s", code, sound);
+}
+
+/* Several paid activities run at once - one donation can buy a whole batch - so starting one must not
+   cancel the others. Nothing is reset here: each effect owns its own state and its own clock, and
+   `FinishEffect` gives back only what the effect that ended had taken. */
+public BeginEvent(const code[])
+{
+	AnnounceEventSound(code);
+	log_amx("event '%s' starts", code);
+}
+
+/* Drops every task and every cvar this set touched. CleanupActive calls it, so Round_End,
+   `amx_de clear`, plugin_end and every effect clock inherit the same reset. */
+public ResetEventState()
+{
+	remove_task(TASK_CANNON_AMMO);
+	remove_task(TASK_METEOR);
+	remove_task(TASK_RED_STOP);
+	remove_task(TASK_RED_GO);
+
+	if (g_cannonBot > 0 && g_cannonSavedHealth > 0 && is_user_alive(g_cannonBot))
+		set_user_health(g_cannonBot, g_cannonSavedHealth);
+
+	// Every glow goes, not only the two the handlers remember by id: `lightsaber_duel` glows the whole
+	// field, and a glow is a render mode on the entity, so it survives respawn and stays for the rest of
+	// the map - that is the "glow never goes away" a viewer reported.
+	for (new id = 1; id <= get_maxplayers(); id++)
+		ClearGlow(id);
+
+
+	// Unconditional: a red light or a time stop whose task was dropped would otherwise leave the
+	// whole server frozen with nothing left to undo it.
+	ThawAll();
+
+	g_cannonActive = false;
+	g_cannonBot = 0;
+	g_cannonSavedHealth = 0;
+	g_meteorActive = false;
+	g_redLightActive = false;
+	g_redFrozen = false;
+	g_redStockCues = false;
+	g_duelActive = false;
+}
+
+stock FreezeBot(id)
+{
+	set_pev(id, pev_flags, pev(id, pev_flags) | FL_FROZEN);
+}
+
+stock ThawBot(id)
+{
+	if (id > 0 && id <= get_maxplayers() && is_user_connected(id))
+		set_pev(id, pev_flags, pev(id, pev_flags) & ~FL_FROZEN);
+}
+
+stock FreezeAll()
+{
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (IsBotAlive(id))
+			FreezeBot(id);
+	}
+}
+
+stock ThawAll()
+{
+	for (new id = 1; id <= get_maxplayers(); id++)
+		ThawBot(id);
+}
+
+/* The nearest other bot, or 0. The time stop aims its shots server-side instead of trusting a frozen
+   bot's aim, because the three shots are the thing the viewer paid for. */
+stock FindNearestBot(id)
+{
+	new Float:origin[3];
+	new Float:candidate[3];
+	pev(id, pev_origin, origin);
+
+	new best;
+	new Float:bestDistance = 99999.0;
+
+	for (new other = 1; other <= get_maxplayers(); other++)
+	{
+		if (other == id || !IsBotAlive(other))
+			continue;
+
+		pev(other, pev_origin, candidate);
+		new Float:distance = get_distance_f(origin, candidate);
+		if (distance < bestDistance)
+		{
+			bestDistance = distance;
+			best = other;
+		}
+	}
+
+	return best;
+}
+
+/* ---------- the 2025-10 events: handlers ---------- */
+
+
+
+
+
+/* A big gun and one hit point: the viewer pays to watch a glass cannon either farm or die. The role
+   moves to another bot when it dies, otherwise 1 HP would end the show in two seconds. */
+public EffectGlassCannon()
+{
+	BeginEvent("glass_cannon");
+
+	g_cannonBot = PickRandomBot();
+	if (!g_cannonBot)
+	{
+		log_amx("glass_cannon: no bots are connected");
+		return;
+	}
+
+	g_cannonActive = true;
+	ArmGlassCannon(g_cannonBot);
+	set_task(0.2, "TaskCannonAmmo", TASK_CANNON_AMMO, "", 0, "b");
+
+	StartEffectTimer("glass_cannon", EffectSeconds(EVENT_SECONDS));
+	DonorSay("1 HP, AN M249 AND NO RELOAD");
+}
+
+stock ArmGlassCannon(id)
+{
+	// The old health is remembered so the clock can put it back: 1000 HP that stays after the event is
+	// not "a buff", it is a broken bot the viewer keeps seeing.
+	g_cannonSavedHealth = get_user_health(id);
+	if (g_cannonSavedHealth < 1)
+		g_cannonSavedHealth = 100;
+
+	StripWeapons(id);
+	give_item(id, "weapon_m249");
+	give_item(id, "weapon_knife");
+	set_user_health(id, ParamInt("health", 1000));
+	set_user_rendering(id, kRenderFxGlowShell, 255, 0, 0, kRenderNormal, 22);
+
+	log_amx("glass_cannon: bot %d armed with %d hp (was %d)", id, ParamInt("health", 1000), g_cannonSavedHealth);
+}
+
+public TaskCannonAmmo()
+{
+	if (!g_cannonActive)
+	{
+		remove_task(TASK_CANNON_AMMO);
+		return;
+	}
+
+	if (!IsBotAlive(g_cannonBot))
+	{
+		g_cannonBot = PickRandomBot();
+		if (!g_cannonBot)
+			return;
+
+		ArmGlassCannon(g_cannonBot);
+		return;
+	}
+
+	// Refilling the clip five times a second is what removes the reload: the bot never runs dry long
+	// enough for the animation to start, so the M249 simply never stops.
+	new weapon = get_pdata_cbase(g_cannonBot, OFFSET_ACTIVE_ITEM, 5);
+	if (weapon > 0)
+		cs_set_weapon_ammo(weapon, 100);
+	cs_set_user_bpammo(g_cannonBot, CSW_M249, 200);
+}
+
+
+
+/* Meteors: explosions and damage spheres on a timer, aimed near a random bot so the strike lands
+   where the camera already is. The sprite is precached in plugin_precache().
+   Ten times more often than the first version and a fraction of the damage: the field is under
+   constant fire, but a meteor tickles - 43 strikes a second at 2 damage is 86 damage per second in
+   the blast, against 1200 before, which killed a bot before the viewer saw the shower. */
+#define METEOR_INTERVAL 0.07
+#define METEOR_STRIKES 3
+
+public EffectMeteorShower()
+{
+	BeginEvent("meteor_shower");
+
+	if (!PickRandomBot())
+	{
+		log_amx("meteor_shower: no bots are connected");
+		return;
+	}
+
+	g_meteorActive = true;
+	MeteorVolley();
+	set_task(METEOR_INTERVAL, "TaskMeteor", TASK_METEOR, "", 0, "b");
+
+	StartEffectTimer("meteor_shower", EffectSeconds(EVENT_SECONDS));
+	log_amx("meteor_shower: %d strikes every %.2f s, %d damage a strike",
+		METEOR_STRIKES, METEOR_INTERVAL, ParamInt("damage", 2));
+	DonorSay("METEOR SHOWER");
+}
+
+public TaskMeteor()
+{
+	if (!g_meteorActive)
+	{
+		remove_task(TASK_METEOR);
+		return;
+	}
+
+	MeteorVolley();
+}
+
+/* Three strikes per tick, every METEOR_INTERVAL. The first version dropped one explosion per 1.5 s,
+   which read as weather rather than as an event; the interval is what makes the barrage. */
+stock MeteorVolley()
+{
+	for (new i = 0; i < METEOR_STRIKES; i++)
+		MeteorStrike();
+}
+
+stock MeteorStrike()
+{
+	new pivot = PickRandomBot();
+	if (!pivot)
+		return;
+
+	new Float:center[3];
+	pev(pivot, pev_origin, center);
+	center[0] += random_float(-220.0, 220.0);
+	center[1] += random_float(-220.0, 220.0);
+
+	message_begin(MSG_BROADCAST, SVC_TEMPENTITY);
+	write_byte(TE_EXPLOSION);
+	write_coord(floatround(center[0]));
+	write_coord(floatround(center[1]));
+	write_coord(floatround(center[2]));
+	write_short(g_meteorSprite);
+	write_byte(30);
+	write_byte(15);
+	write_byte(0);
+	message_end();
+
+	new radius = ParamInt("radius", 320);
+	new damage = ParamInt("damage", 2);
+
+	// No per-strike log line: at 43 strikes a second it would write 640 lines per event and format a
+	// string inside the hot loop. The setup line in EffectMeteorShower carries the numbers instead.
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (!IsBotAlive(id))
+			continue;
+
+		new Float:where[3];
+		pev(id, pev_origin, where);
+		if (get_distance_f(center, where) > float(radius))
+			continue;
+
+		ExecuteHamB(Ham_TakeDamage, id, 0, 0, float(damage), DMG_BLAST);
+	}
+}
+
+/* Squid game: the picture alternates between everybody running and everybody frozen. It opens on RED,
+   because that is the frame that reads without any explanation. */
+public EffectRedLight()
+{
+	BeginEvent("red_light");
+
+	g_redLightActive = true;
+	FreezeAll();
+	g_redFrozen = true;
+	DonorSay("RED LIGHT");
+	// The alarm is the whole point of the game: the picture freezes, so the sound has to tell the
+	// viewer whether that freeze is the game or a broken stream. Stock CS files, so no new assets;
+	// stock=0 mutes them when the stream plays its own cues for the phases instead.
+	// Captured here, not read again in the timers: the parameter table is gone by then.
+	g_redStockCues = HasStockCues();
+	if (g_redStockCues)
+		emit_sound(0, CHAN_AUTO, "ambience/alarm1.wav", VOL_NORM, ATTN_NORM, 0, PITCH_NORM);
+	log_amx("red_light: RED, stock cues %s", g_redStockCues ? "on" : "off");
+
+	set_task(1.5, "TaskRedLightGo", TASK_RED_GO);
+	StartEffectTimer("red_light", EffectSeconds(EVENT_SECONDS));
+}
+
+public TaskRedLightGo()
+{
+	if (!g_redLightActive)
+		return;
+
+	ThawAll();
+	g_redFrozen = false;
+	DonorSay("GREEN LIGHT");
+	if (g_redStockCues)
+		emit_sound(0, CHAN_AUTO, "events/task_complete.wav", VOL_NORM, ATTN_NORM, 0, PITCH_NORM);
+	log_amx("red_light: GREEN, stock cues %s", g_redStockCues ? "on" : "off");
+	set_task(2.0, "TaskRedLightStop", TASK_RED_STOP);
+}
+
+public TaskRedLightStop()
+{
+	if (!g_redLightActive)
+		return;
+
+	FreezeAll();
+	g_redFrozen = true;
+	DonorSay("RED LIGHT");
+	if (g_redStockCues)
+		emit_sound(0, CHAN_AUTO, "ambience/alarm1.wav", VOL_NORM, ATTN_NORM, 0, PITCH_NORM);
+	log_amx("red_light: RED again, stock cues %s", g_redStockCues ? "on" : "off");
+	set_task(1.5, "TaskRedLightGo", TASK_RED_GO);
+}
+
+/* Knives with a team glow and 25 HP: the duel is over in one swing, so the extra run speed is what
+   makes it watchable. The speeds go back through ResetBotSpeed, the glow through ClearGlow.
+   The duel owns the field until its clock runs out: DuelArm is re-applied on every respawn, a weapon
+   switch back to a rifle is undone (OnCurWeapon) and a dropped weapon cannot be picked up
+   (OnWeaponBoxTouch), so "knives only" holds for the whole event and not just for the bots that
+   happened to be alive when it started. */
+public EffectLightsaberDuel()
+{
+	BeginEvent("lightsaber_duel");
+
+	new health = ParamInt("health", 25);
+	if (health < 1)
+		health = 1;
+
+	g_duelHealth = health;
+	g_duelActive = true;
+
+	new bots;
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (!IsBotAlive(id))
+			continue;
+
+		DuelArm(id);
+		bots++;
+	}
+
+	// ResetBotSpeed (called from CleanupActive) is what puts the speeds back on the clock.
+	g_speedBoosted = true;
+
+	// `stock=0` leaves the soundtrack to the stream, and the swing cue is a stock sound too: the stream
+	// plays the opera bed instead of it.
+	if (HasStockCues())
+		emit_sound(0, CHAN_ITEM, "weapons/knife_slash1.wav", VOL_NORM, ATTN_NORM, 0, PITCH_NORM);
+
+	StartEffectTimer("lightsaber_duel", EffectSeconds(EVENT_SECONDS));
+	log_amx("lightsaber_duel: %d bots on knives, %d hp, other weapons blocked", bots, health);
+	DonorSay("KNIVES ARE LIGHTSABERS");
+}
+
+/* One bot into duel shape: knife in hand, the duel health, the extra run speed and the team glow. */
+stock DuelArm(id)
+{
+	StripWeapons(id);
+	give_item(id, "weapon_knife");
+	set_user_health(id, g_duelHealth > 0 ? g_duelHealth : 25);
+	set_user_maxspeed(id, DuelSpeed());
+
+	if (get_user_team(id) == 1)
+		set_user_rendering(id, kRenderFxGlowShell, 255, 40, 0, kRenderNormal, 18);
+	else
+		set_user_rendering(id, kRenderFxGlowShell, 0, 120, 255, kRenderNormal, 18);
+}
+
+stock Float:DuelSpeed()
+{
+	new Float:speed = get_cvar_float("sv_maxspeed");
+	if (speed <= 0.0)
+		speed = 320.0;
+	return speed * 1.4;
+}
+
+/* A weapon switch that is not the knife: the duel is knives, so the weapon goes and the knife comes
+   back. Bots pick weapons up from the ground and csdm_lite re-arms on respawn; both end here. */
+public OnCurWeapon(id)
+{
+	if (!g_duelActive || !is_user_alive(id))
+		return;
+
+	new weapon = read_data(2);
+	if (weapon == CSW_KNIFE || weapon == 0)
+		return;
+
+	StripWeapons(id);
+	give_item(id, "weapon_knife");
+	engclient_cmd(id, "weapon_knife");
+	log_amx("lightsaber_duel: weapon %d taken from bot %d", weapon, id);
+}
+
+/* `weaponbox` is a dropped weapon. During the duel it is not picked up: HAM_SUPERCEDE leaves it on
+   the ground untouched. Players (the spectator camera) are not affected. */
+public OnWeaponBoxTouch(ent, id)
+{
+	if (!g_duelActive || id <= 0 || id > get_maxplayers())
+		return HAM_IGNORED;
+	if (!is_user_bot(id) || !is_user_alive(id))
+		return HAM_IGNORED;
+
+	return HAM_SUPERCEDE;
+}
+
+/* One round in the clip, none in reserve: the first shot is the event, everything after it is a knife
+   fight. The clock exists so the effect has the same length as the rest of the set. */
+public EffectOneBullet()
+{
+	BeginEvent("one_bullet");
+
+	new bots;
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (!IsBotAlive(id))
+			continue;
+
+		new weapons[32];
+		new count;
+		get_user_weapons(id, weapons, count);
+
+		for (new i = 0; i < count; i++)
+		{
+			if (weapons[i] == CSW_KNIFE)
+				continue;
+			cs_set_user_bpammo(id, weapons[i], 0);
+		}
+
+		new active = get_pdata_cbase(id, OFFSET_ACTIVE_ITEM, 5);
+		if (active > 0)
+			cs_set_weapon_ammo(active, 1);
+
+		bots++;
+	}
+
+	StartEffectTimer("one_bullet", EffectSeconds(EVENT_SECONDS));
+	log_amx("one_bullet: %d bots down to one round", bots);
+	DonorSay("ONE BULLET EACH");
+}
+
 /* Removes the glow a bless/curse put on a bot. Health and weapons do not need this: the next
    spawn resets them, the glow would otherwise stay for the rest of the map. */
 public ClearGlow(id)
@@ -1423,6 +2086,20 @@ stock Announce(const format[], any:...)
 	new text[192];
 	vformat(text, charsmax(text), format, 2);
 	client_print(0, print_chat, "[DONATE] %s", text);
+}
+
+/* The buyer's name in the chat line of an event. Every 2025-10 event accepts `nick=`, so the money
+   leaves a trace a viewer can see; without it the chat says what happened but not who paid for it. */
+stock DonorSay(const text[])
+{
+	new nick[VALUE_LEN];
+	if (!ParamCopy("nick", nick, charsmax(nick), ""))
+	{
+		Announce("%s", text);
+		return;
+	}
+
+	Announce("%s: %s", nick, text);
 }
 
 stock PickRandomBot()

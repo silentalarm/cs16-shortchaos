@@ -48,7 +48,8 @@ test("the panel repeats the donation lines the text fallback already owns", () =
   const state = buildUiState({ score: null, recent, catalog, pending: pending(2), now: NOW });
 
   assert.equal(state.donation, overlay.lines[1]);
-  assert.equal(state.menu, overlay.lines[2]);
+  assert.equal(state.won, overlay.lines[2]);
+  assert.equal(state.menu, overlay.lines[3]);
   assert.equal(state.queueSize, 2);
 });
 

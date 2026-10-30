@@ -29,18 +29,37 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
   // has to show a different picture. bless_bot/curse_leader/bot_phrase are cheap instant ones,
   // chaos_burst only triggers plugins/chaos_core, he_party is the one effect on a clock of its own,
   // bounty/hot_potato/boss_raid follow the round.
-  assert.equal(config.activities.length, 18, "18 activities after the zone activities were dropped");
+  assert.equal(config.activities.length, 23, "18 legacy codes plus five 2025-10 events");
 
   const codes = config.activities.map((activity) => activity.code);
   assert.equal(new Set(codes).size, codes.length, "codes are unique");
   assert.equal(codes.includes("zone_start"), false, "the zone activities are gone for good");
 
-  // One effect is on sale: a 50 RUB step rolls a random enabled activity, so an entry that is not
-  // enabled can never be drawn and the old price ladder is gone until the replacement effects land.
+  // The 2025-10 deal: eight events, one price, one length. A 50 RUB step rolls one of them at random,
+  // so an entry that is not enabled can never be drawn and every enabled entry has to cost exactly
+  // one step and last exactly 15 seconds - otherwise the same money buys a longer or a cheaper show.
+  // `lightsaber_duel` is the one agreed exception: the opera bed is the event's whole soundtrack, so the
+  // clock is 30 seconds and the track is cut by it instead of ending mid-phrase.
+  const longer: Record<string, number> = { lightsaber_duel: 30 };
   const onSale = config.activities.filter((activity) => activity.enabled);
-  assert.deepEqual(onSale.map((activity) => activity.code), ["he_party"], "only the grenade party is on sale");
+  assert.deepEqual(
+    onSale.map((activity) => activity.code).sort(),
+    [
+      "glass_cannon",
+      "lightsaber_duel",
+      "meteor_shower",
+      "one_bullet",
+      "red_light",
+    ],
+    "five events on sale",
+  );
   for (const activity of onSale) {
+    const seconds = longer[activity.code] ?? 15;
     assert.equal(activity.price, config.minAmount, `${activity.code} must cost exactly one 50 RUB step`);
+    assert.equal(activity.duration, "seconds", `${activity.code} must be a clock, not a round`);
+    assert.equal(activity.seconds, seconds, `${activity.code} must last the agreed ${seconds} seconds`);
+    assert.equal(activity.params.seconds, seconds, `${activity.code} must pass its clock to the plugin`);
+    assert.equal(activity.params.maxNameLength, 16, `${activity.code} must accept a nickname`);
   }
 
   const prices = config.activities.map((activity) => activity.price);
@@ -66,7 +85,7 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
 test("every effect on a clock carries that clock in its params as well", () => {
   const config = loadActivities(shippedConfig);
   const timed = config.activities.filter((activity) => activity.duration === "seconds");
-  assert.equal(timed.length, 10, "he_party plus the nine effects that used to wait for Round_End");
+  assert.equal(timed.length, 15, "the five 2025-10 events plus the ten effects that used to wait for Round_End");
 
   for (const activity of timed) {
     // The plugin reads the length from the command the control API builds, so both places must agree.

@@ -139,6 +139,19 @@ export function buildActivityCommand(activity: Activity, options: CommandOptions
     if (key === "maxNameLength" && options.nick !== undefined) continue;
     // not a game parameter: it only tells this module that a viewer phrase is welcome
     if (key === "maxPhraseLength") continue;
+    // spoken by the announcement voice, never sent to the game: RCON cannot carry spaces or Cyrillic
+    if (key === "say") continue;
+    // a ready-made audio file for the announcement voice, also not a game parameter
+    if (key === "sound") continue;
+    // the music bed of an activity: a file name for the player in the capture container, not a game
+    // parameter either (the game would echo it as an unknown argument)
+    if (key === "music") continue;
+    if (key === "soundRed") continue;
+    if (key === "soundGreen") continue;
+    // a playback instruction for the stream player (music without a spoken line), not a game parameter
+    if (key === "onlyMusic") continue;
+    // the short label the panel prints when a donation buys several events, not a game parameter
+    if (key === "short") continue;
     parts.push(`${key}=${formatValue(key, value)}`);
   }
 

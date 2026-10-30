@@ -49,6 +49,60 @@ function cheapest(catalog: ActivitiesConfig, count: number): string[] {
     .map((activity) => `${activity.price} ${activity.title.toUpperCase()}`);
 }
 
+/**
+ * The donation line is drawn at fontsize 26 in a 720 px frame: 41 characters is the measured fit, and
+ * the same number is the panel's `PANEL_LIMITS.last`, so neither side has to cut what the other wrote.
+ */
+export const LAST_LINE_CHARS = 41;
+
+/**
+ * `LAST: Vasya 50 RUB`, with the viewer's message when it fits.
+ *
+ * The event name moved to its own line (`wonLine`): a big donation buys several effects, and a single
+ * strip had room for exactly one of them, so the rest of what the money bought was simply cut off.
+ */
+function donationLine(row: StoredDonation, catalog: ActivitiesConfig): string {
+  const state = row.status === "queued" ? "WAITING " : "";
+  const head = `LAST: ${state}${row.username} ${Math.round(row.amount)} ${catalog.currency}`;
+  const message = typeof row.message === "string" ? clean(row.message, LAST_LINE_CHARS).trim() : "";
+
+  if (message !== "") {
+    const withMessage = `${head}: "${message}"`;
+    if (withMessage.length <= LAST_LINE_CHARS) return clean(withMessage, LAST_LINE_CHARS);
+  }
+  return clean(head, LAST_LINE_CHARS);
+}
+
+/**
+ * `ВЫПАЛО: ДУЭЛЬ, ПУШКА, ОДНА ПУЛЯ` - every effect the donation bought, in the order they started.
+ *
+ * Its own line so a batch of five keeps all five names; when even that is too long the tail is cut
+ * with an ellipsis instead of silently dropping whole events.
+ */
+export function wonLine(row: StoredDonation | undefined, catalog: ActivitiesConfig): string {
+  if (row === undefined) return "";
+  const codes = typeof row.activityCode === "string" && row.activityCode !== "" ? row.activityCode.split("+") : [];
+  const names = codes.map((code) => {
+    const activity = catalog.activities.find((item) => item.code === code);
+    if (activity === undefined) return "QUEUED";
+    // `params.short` is the label that fits five names on one row ("ПУШКА", "МЕТЕОР"); the spoken line
+    // and the catalogue stay in full.
+    const short = activity.params["short"];
+    if (typeof short === "string" && short.trim() !== "") return short.trim();
+    const spoken = activity.params["say"];
+    return typeof spoken === "string" && spoken.trim() !== "" ? spoken.trim() : activity.title.toUpperCase();
+  });
+  if (names.length === 0) return "";
+
+  const labelled = `ВЫПАЛО: ${names.join(", ")}`;
+  if (labelled.length <= LAST_LINE_CHARS) return clean(labelled, LAST_LINE_CHARS);
+
+  // The bare list under "LAST: ..." still reads as "what that donation bought", and it is what makes a
+  // batch of five fit: the prefix costs eight characters, a whole event name costs ten.
+  const bare = names.join(", ");
+  return bare.length <= LAST_LINE_CHARS ? clean(bare, LAST_LINE_CHARS) : clean(labelled, LAST_LINE_CHARS);
+}
+
 export function buildOverlay(input: OverlayInput): Overlay {
   const { recent, catalog } = input;
   const pending = input.pending ?? [];
@@ -60,14 +114,10 @@ export function buildOverlay(input: OverlayInput): Overlay {
 
   if (last === undefined) {
     lines.push("NO DONATIONS YET - BE THE FIRST");
+    lines.push("");
   } else {
-    // A row may list several codes ("he_party+bounty") when one donation bought more than one
-    // effect; the banner names the first one, which is the one the viewer saw first.
-    const code = typeof last.activityCode === "string" ? last.activityCode.split("+")[0] ?? null : null;
-    const activity = catalog.activities.find((item) => item.code === code);
-    const what = activity === undefined ? "QUEUED" : activity.title.toUpperCase();
-    const state = last.status === "queued" ? "WAITING " : "";
-    lines.push(clean(`LAST: ${state}${last.username} ${Math.round(last.amount)} ${catalog.currency} - ${what}`));
+    lines.push(donationLine(last, catalog));
+    lines.push(wonLine(last, catalog));
   }
 
   // Two options, not three: the line has to stay inside MAX_LINE_CHARS to be readable at 720 px.

@@ -20,6 +20,27 @@
       }
     },
     {
+      "code": "glass_cannon",
+      "title": "1000 HP cannon",
+      "announce": "1000 HP, AN M249 AND NO RELOAD!",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 15,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": true,
+      "params": {
+        "seconds": 15,
+        "health": 1000,
+        "maxNameLength": 16,
+        "stock": 0,
+        "short": "ПУШКА",
+        "say": "СТЕКЛЯННАЯ ПУШКА, ТЫСЯЧА ХИТОВ"
+      }
+    },
+    {
       "code": "he_party",
       "title": "HE party",
       "announce": "ALL WEAPONS GONE, HE GRENADES ONLY!",
@@ -30,10 +51,96 @@
       "rounds": null,
       "cooldownSec": 0,
       "globalCooldownSec": 0,
-      "enabled": true,
+      "enabled": false,
       "params": {
         "seconds": 60,
         "maxNameLength": 16
+      }
+    },
+    {
+      "code": "lightsaber_duel",
+      "title": "Lightsaber duel",
+      "announce": "KNIVES ARE LIGHTSABERS!",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 30,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": true,
+      "params": {
+        "seconds": 30,
+        "health": 25,
+        "maxNameLength": 16,
+        "stock": 0,
+        "short": "ДУЭЛЬ",
+        "music": "/game/cstrike/sound/ambience/Opera.wav",
+        "onlyMusic": true
+      }
+    },
+    {
+      "code": "meteor_shower",
+      "title": "Meteor shower",
+      "announce": "METEOR SHOWER!",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 15,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": true,
+      "params": {
+        "seconds": 15,
+        "damage": 2,
+        "radius": 320,
+        "maxNameLength": 16,
+        "stock": 0,
+        "short": "МЕТЕОР",
+        "say": "МЕТЕОРИТНЫЙ ДОЖДЬ"
+      }
+    },
+    {
+      "code": "one_bullet",
+      "title": "One bullet",
+      "announce": "ONE BULLET EACH!",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 15,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": true,
+      "params": {
+        "seconds": 15,
+        "maxNameLength": 16,
+        "stock": 0,
+        "short": "1 ПУЛЯ",
+        "say": "ОДНА ПУЛЯ НА ВСЕХ"
+      }
+    },
+    {
+      "code": "red_light",
+      "title": "Red light green light",
+      "announce": "RED LIGHT!",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 15,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": true,
+      "params": {
+        "seconds": 15,
+        "maxNameLength": 16,
+        "short": "СВЕТОФОР",
+        "say": "КРАСНЫЙ СВЕТ, ЗЕЛЁНЫЙ СВЕТ",
+        "soundRed": "/usr/share/cs16/sounds/red.wav",
+        "soundGreen": "/usr/share/cs16/sounds/green.wav",
+        "stock": 0
       }
     },
     {

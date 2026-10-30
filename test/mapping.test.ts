@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadActivities, parseActivities } from "../src/activities.ts";
+import { parseActivities } from "../src/activities.ts";
+import { onSaleCatalogue } from "./fixture.ts";
 import {
   DEFAULT_CURRENCY_RATES,
   MAX_UNITS,
@@ -9,7 +10,7 @@ import {
   resolveDonation,
 } from "../src/mapping.ts";
 
-const config = loadActivities(new URL("../config/activities.json", import.meta.url));
+const config = onSaleCatalogue();
 /** The only effect on sale in the shipped catalogue: every 50 RUB step buys one of it. */
 const ON_SALE = "he_party";
 

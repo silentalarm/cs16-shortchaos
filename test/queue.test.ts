@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadActivities } from "../src/activities.ts";
+import { onSaleCatalogue } from "./fixture.ts";
 import type { ActivitiesConfig, Activity } from "../src/activities.ts";
 import { Store } from "../src/db.ts";
 import type { DonationRow } from "../src/db.ts";
@@ -15,7 +15,7 @@ import { PendingQueue } from "../src/queue.ts";
  * The shipped catalogue sells HE party with no cooldown (a 50 RUB step must always run at once), so
  * these tests switch a cooldown on for it instead of relying on an effect that is off sale.
  */
-const catalog = loadActivities(new URL("../config/activities.json", import.meta.url));
+const catalog = onSaleCatalogue();
 const START = Date.parse("2026-01-01T12:00:00.000Z");
 const COMMAND = "amx_de he_party seconds=60 nick=vasya";
 

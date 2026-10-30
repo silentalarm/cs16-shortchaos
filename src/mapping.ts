@@ -24,6 +24,40 @@ export type RejectReason =
 export interface DonationInput {
   amount: number | string;
   currency: string;
+  /** Raw donor message; only read as an event hint, never printed from here. */
+  message?: string | null;
+}
+
+/**
+ * Viewer-chosen events.
+ *
+ * Every event in the 2025-10 catalogue costs the same 50 RUB, so the price cannot tell them apart and
+ * a pure roll would sell a show the viewer did not ask for. The donation message is read as a hint:
+ * the first word that names an event buys that one, anything else falls back to the roll. That keeps
+ * the cheapest tier a small gamble for viewers who write nothing, and needs no extra UI - chat is the
+ * price list. Unknown words are deliberately ignored rather than rejected: the money is already paid.
+ */
+export const EVENT_KEYWORDS: Readonly<Record<string, string>> = {
+  cannon: "glass_cannon",
+  glass: "glass_cannon",
+  meteor: "meteor_shower",
+  redlight: "red_light",
+  light: "red_light",
+  saber: "lightsaber_duel",
+  jedi: "lightsaber_duel",
+  bullet: "one_bullet",
+};
+
+/** The event the message asks for, or null when it names nothing that is on sale. */
+function requestedActivity(message: string, pool: readonly Activity[]): Activity | null {
+  const words = message.toLowerCase().split(/[^a-z]+/u).filter((word) => word !== "");
+  for (const word of words) {
+    const code = EVENT_KEYWORDS[word];
+    if (code === undefined) continue;
+    const activity = pool.find((item) => item.code === code);
+    if (activity !== undefined) return activity;
+  }
+  return null;
 }
 
 export type Resolution =
@@ -196,9 +230,12 @@ export function resolveDonation(donation: DonationInput, config: ActivitiesConfi
   const paid = Math.floor(rub / unitPrice);
   const units = Math.min(paid, MAX_UNITS);
   const random = options.random ?? Math.random;
+  // A message that names an event buys that event for every step it paid for; the steps then merge
+  // into one longer run of the same show, which is what the viewer asked for in the first place.
+  const requested = typeof donation.message === "string" ? requestedActivity(donation.message, pool) : null;
 
   const rolled: Activity[] = [];
-  for (let step = 0; step < units; step += 1) rolled.push(draw(pool, random));
+  for (let step = 0; step < units; step += 1) rolled.push(requested ?? draw(pool, random));
 
   return {
     kind: "activate",

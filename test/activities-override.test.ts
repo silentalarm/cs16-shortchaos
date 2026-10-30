@@ -36,8 +36,13 @@ test("params are merged over the defaults instead of replacing them", () => {
   assert.deepEqual(rain?.params, { extraBots: 10, maxBots: 22, seconds: 90 });
 });
 
-test("disabling the only effect on sale leaves nothing to sell", () => {
-  const document = parseOverrides({ version: 1, activities: { he_party: { enabled: false } } });
+test("disabling every effect on sale leaves nothing to sell", () => {
+  // The catalogue sells eight events at 50 RUB, so retiring "the" effect means retiring the whole
+  // enabled set - the point of the test is the empty pool, not a particular code.
+  const allOff = Object.fromEntries(
+    base.activities.filter((activity) => activity.enabled).map((activity) => [activity.code, { enabled: false }]),
+  );
+  const document = parseOverrides({ version: 1, activities: allOff });
   const merged = applyOverrides(base, document);
   const resolution = resolveDonation({ amount: 100, currency: "RUB" }, merged);
 
@@ -46,9 +51,12 @@ test("disabling the only effect on sale leaves nothing to sell", () => {
 });
 
 test("an override can put a retired effect back on sale for the same 50 RUB step", () => {
+  const allOff = Object.fromEntries(
+    base.activities.filter((activity) => activity.enabled).map((activity) => [activity.code, { enabled: false }]),
+  );
   const document = parseOverrides({
     version: 1,
-    activities: { he_party: { enabled: false }, knives_only: { enabled: true, price: 50 } },
+    activities: { ...allOff, knives_only: { enabled: true, price: 50 } },
   });
   const merged = applyOverrides(base, document);
   const resolution = resolveDonation({ amount: 250, currency: "RUB" }, merged);

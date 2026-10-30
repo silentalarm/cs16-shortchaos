@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { join } from "node:path";
-import type { ActivitiesConfig } from "../activities.ts";
+import type { ActivitiesConfig, Activity } from "../activities.ts";
 import { applyOverrides, OverrideError, parseOverrides } from "../activities-override.ts";
 import type { ActivityPatch, OverrideDocument, OverrideStore } from "../activities-override.ts";
 import { buildActivityCommand } from "../command.ts";
@@ -168,6 +168,10 @@ export interface AdminDeps {
   rateLimit?: RateLimitOptions;
   /** Currency table for simulated foreign donations; the poller uses the same one. */
   rates?: Record<string, number>;
+  /** Announcement voice (`src/voice.ts`): called once per donation with everything it bought. */
+  voice?: (activities: readonly Activity[]) => void;
+  /** Silence the bed and any cue; the Stop button must not leave music playing over a cleared board. */
+  silence?: () => void;
 }
 
 async function serveStatic(deps: AdminDeps, path: string, response: ServerResponse): Promise<void> {
@@ -209,8 +213,11 @@ async function handleSimulate(deps: AdminDeps, request: IncomingMessage, respons
   const rawMessage = body["message"];
   const message = typeof rawMessage === "string" ? rawMessage.slice(0, 200) : null;
 
+  // The simulator goes through the same path as a real donation: one call, the whole batch.
+  const voiceForSim = deps.voice;
+
   const outcome = await processDonation(
-    { store: deps.store, catalog: deps.getCatalog(), apply: deps.apply, log: deps.log, now: deps.now, rates: deps.rates },
+    { store: deps.store, catalog: deps.getCatalog(), apply: deps.apply, log: deps.log, now: deps.now, rates: deps.rates, voice: voiceForSim },
     { id: nextSimId(deps), username, amount, currency, message, createdAt: new Date(deps.now?.() ?? Date.now()).toISOString() },
     { advanceCursor: false, bypassCooldown: body["bypassCooldown"] === true, source: "sim" },
   );
@@ -373,6 +380,13 @@ async function handleTrigger(deps: AdminDeps, request: IncomingMessage, response
     reply,
   });
   deps.log("admin.triggered", { code, command, reply });
+  // The panel run is a rehearsal of the paid flow, audio included: without this the operator would
+  // test a silent event and never hear the bed or the announcement before a donation pays for them.
+  try {
+    deps.voice?.([activity]);
+  } catch (error) {
+    deps.log("voice.failed", { activity: activity.code, error: (error as Error).message });
+  }
   sendJson(response, 200, { command, reply });
 }
 
@@ -433,6 +447,13 @@ async function route(
 
   if (path === "/api/clear") {
     const reply = await deps.apply(CLEAR_COMMAND);
+    // The game stopped the effect, so the music has to stop with it: a bed playing over a cleared
+    // board would look like the event is still running.
+    try {
+      deps.silence?.();
+    } catch (error) {
+      deps.log("admin.silence_failed", { error: (error as Error).message });
+    }
     deps.store.recordAdminAction({
       at: new Date(deps.now?.() ?? Date.now()).toISOString(),
       kind: "clear",
