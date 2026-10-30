@@ -272,6 +272,114 @@
         "short": "ЧУМА",
         "say": "ЧУМА ХАОСА, ВСЁ СРАЗУ"
       }
+    },
+    {
+      "code": "raptors",
+      "title": "Raptors",
+      "announce": "FIVE RAPTORS: FAST AND THROWN FAR!",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 45,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": true,
+      "params": {
+        "seconds": 45,
+        "count": 5,
+        "health": 3000,
+        "speed": 1.2,
+        "knockback": 160,
+        "maxNameLength": 16,
+        "short": "РАПТОРЫ",
+        "say": "ПЯТЬ РАПТОРОВ НА ПОЛЕ"
+      }
+    },
+    {
+      "code": "brutes",
+      "title": "Brutes",
+      "announce": "FOUR BRUTES: SLOW AND HARD TO PUSH!",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 45,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": true,
+      "params": {
+        "seconds": 45,
+        "count": 4,
+        "health": 7000,
+        "speed": 0.9,
+        "knockback": 55,
+        "maxNameLength": 16,
+        "short": "БРУТЫ",
+        "say": "ЧЕТЫРЕ БРУТА, ИХ НЕ СДВИНУТЬ"
+      }
+    },
+    {
+      "code": "runners",
+      "title": "Runners",
+      "announce": "EVERYBODY RUNS: 75 HP AND FASTER!",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 45,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": true,
+      "params": {
+        "seconds": 45,
+        "health": 75,
+        "speed": 1.15,
+        "maxNameLength": 16,
+        "short": "БЕГУНЫ",
+        "say": "ВСЕ БЕГУТ, 75 ХИТОВ"
+      }
+    },
+    {
+      "code": "jumpers",
+      "title": "Jumpers",
+      "announce": "LOW GRAVITY, EVERYBODY JUMPS!",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 30,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": true,
+      "params": {
+        "seconds": 30,
+        "gravity": 0.58,
+        "maxNameLength": 16,
+        "short": "ПРЫГУНЫ",
+        "say": "НИЗКАЯ ГРАВИТАЦИЯ"
+      }
+    },
+    {
+      "code": "regenerators",
+      "title": "Regenerators",
+      "announce": "FOUR REGENERATORS: 35 HP A SECOND!",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 45,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": true,
+      "params": {
+        "seconds": 45,
+        "count": 4,
+        "regen": 35,
+        "maxNameLength": 16,
+        "short": "РЕГЕНЕРАЦИЯ",
+        "say": "ЧЕТЫРЕ РЕГЕНЕРАТОРА"
+      }
     }
   ]
 }

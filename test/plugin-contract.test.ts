@@ -247,6 +247,91 @@ test("chaos_core resets a slot the engine hands to the next bot", () => {
   assert.match(chaos, /public plugin_end\(\)\s*\{\s*StopAll\(\);/, "plugin_end no longer reverts the cvars");
 });
 
+test("the five classes are one applier and a table, not five handlers", () => {
+  const classes = ["raptors", "brutes", "runners", "jumpers", "regenerators"];
+
+  // One applier: a second copy of it is a second place for the same bug.
+  assert.equal([...source.matchAll(/stock bool:StartClass\(/g)].length, 1, "StartClass is defined twice");
+
+  for (const code of classes) {
+    const handlerName = registered().get(code);
+    assert.ok(handlerName, `${code} is not registered`);
+    const handler = new RegExp(`public ${handlerName}\\(\\)\\s*\\{[\\s\\S]*?\\n\\}`).exec(source)?.[0] ?? "";
+    assert.match(handler, new RegExp(`StartClass\\("${code}"`), `${code} does not use the shared applier`);
+  }
+
+  // Every parameter of the system is read from the command, so the panel retunes a preset without a
+  // recompile: count, health, speed, gravity, regen, knockback.
+  const applier = /stock bool:StartClass\([^)]*\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(applier, "", "StartClass is missing");
+  for (const key of ["count", "health", "speed", "gravity", "regen", "knockback"]) {
+    assert.match(applier, new RegExp(`Param(?:Int|Float)\\("${key}"`), `${key}= is never read from the command`);
+  }
+
+  // Health, speed and gravity are per-spawn values and csdm_lite re-arms every respawn: without the
+  // re-arm a raptor comes back as a plain bot halfway through the event.
+  const spawn = /public OnPlayerSpawn\(id\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(spawn, /IsClassed\(id\)/, "a class bot respawns as a plain bot");
+  const rearm = /public ReArmOnSpawn\(id\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(rearm, /ArmClass\(id, false\)/, "the re-arm loses the class shape, and `false` keeps the saved health");
+
+  // The undo releases each claim once, outside the slot loop: ClaimRelease pops the entry, so a release
+  // per bot answers "not the owner" from the second slot on and leaves the field shaped like a class.
+  const undo = /stock EndClass\(const code\[\]\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(undo, "", "EndClass is missing");
+  assert.match(undo, /new bool:healthOwned = ClaimRelease\(CLAIM_HEALTH, owner\)/, "the health claim is released per slot");
+  assert.match(undo, /remove_task\(TASK_CLASS_REGEN\)/, "regeneration keeps ticking after the clock");
+  assert.match(undo, /g_classPicked\[id\] = 0/, "the per-slot flag outlives the event");
+
+  // Two class events overlap by design - a 45 s clock and a 20 s global cooldown - so the newer one has
+  // to end the running one, and the ended run's clock has to be a no-op when it fires later. Otherwise
+  // the earlier clock clears the flags and the regeneration task of the run that is on screen.
+  assert.match(applier, /if \(g_classActive\)\s*\n\s*EndClass\(g_classCode\)/, "a second class event stacks on the running one");
+  assert.match(applier, /copy\(g_classCode, CODE_LEN - 1, code\)/, "the running class is not recorded");
+  assert.match(undo, /if \(!equali\(g_classCode, code\)\)/, "a stale class clock tears the newer run down");
+  const reset = /public ResetEventState\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(reset, /g_classCode\[0\] = '\^0'/, "the class owner outlives a full reset");
+
+  // Knockback is an impulse with a ceiling: a bot thrown into a wall or off the map is not a class, it is
+  // a missing player. The damage hook is where it has to live, because a class bot is pushed by every
+  // hit and not only by a knife.
+  const push = /stock PushBot\(victim, attacker, Float:damage\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(push, "", "PushBot is missing");
+  assert.match(push, /if \(push > KNOCKBACK_CAP\)/, "the knockback has no ceiling");
+  const damage = /public OnTakeDamage\([^)]*\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(damage, /PushBot\(victim, attacker, damage\)/, "knockback is never applied");
+});
+
+test("a replaced hero or infection cannot tear down the run that replaced it", () => {
+  // Same rule as the five classes, on the two systems of stage 2: the newer event ends the running one,
+  // and the ended run's clock is a no-op when it fires later. Without it `nemesis` bought while
+  // `survivor` is on ends the survivor's health claim where nobody can see it, and `outbreak` bought
+  // on top of `chaos_plague` clears the infected flags of the newer run.
+  const startHero = /stock bool:StartHero\([^)]*\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(startHero, "", "StartHero is missing");
+  assert.match(startHero, /if \(g_heroActive\)\s*\n\s*EndHero\(g_heroCode\)/, "a second hero event stacks on the running one");
+  assert.match(startHero, /copy\(g_heroCode, CODE_LEN - 1, code\)/, "the running hero is not recorded");
+
+  const endHero = /stock EndHero\(const code\[\]\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(endHero, "", "EndHero is missing");
+  assert.match(endHero, /if \(!equali\(g_heroCode, code\)\)/, "a stale hero clock cuts the camera off the newer hero");
+
+  const startOutbreak = /stock bool:StartOutbreak\(const code\[\]\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(startOutbreak, "", "StartOutbreak is missing");
+  assert.match(startOutbreak, /if \(g_outbreakActive\)\s*\n\s*EndOutbreak\(g_outbreakCode\)/, "a second infection stacks on the running one");
+  assert.match(startOutbreak, /copy\(g_outbreakCode, CODE_LEN - 1, code\)/, "the running infection is not recorded");
+
+  const endOutbreak = /stock EndOutbreak\(const code\[\]\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(endOutbreak, "", "EndOutbreak is missing");
+  assert.match(endOutbreak, /if \(!equali\(g_outbreakCode, code\)\)/, "a stale infection clock clears the flags of the newer run");
+  assert.match(endOutbreak, /g_infected\[id\] = 0/, "the flags are never cleared");
+
+  // A full reset drops both owners, or the next map inherits a run that believes it is still in charge.
+  const reset = /public ResetEventState\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(reset, /g_heroCode\[0\] = '\^0'/, "the hero owner outlives a full reset");
+  assert.match(reset, /g_outbreakCode\[0\] = '\^0'/, "the infection owner outlives a full reset");
+});
+
 test("no unfinished markers left in the plugin source", () => {
   assert.equal(/\/\/\s*PART[0-9]/.test(source), false, "the file still contains a PART marker");
 });

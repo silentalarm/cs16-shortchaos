@@ -35,11 +35,11 @@ until `test/activities.test.ts` is relaxed to allow an instant entry on sale).
 
 | # | code | What the viewer sees | sec | params | status |
 |---|---|---|---|---|---|
-| 13 | `raptors` | 5 bots: 3000 HP, ×1.2 speed, knife only, thrown further by damage | 45 | `count=5 health=3000 speed=1.2 knockback=1.6` | planned |
-| 14 | `brutes` | 4 bots: 7000 HP, ×0.9 speed, hard to push | 45 | `count=4 health=7000 speed=0.9 knockback=0.55` | planned |
-| 15 | `runners` | the whole field at 75 HP and ×1.15 speed | 45 | `health=75 speed=1.15` | planned |
-| 16 | `jumpers` | the whole field at 58 % gravity, light jumps | 30 | `gravity=0.58` | planned |
-| 17 | `regenerators` | 4 bots recover 35 HP a second | 45 | `count=4 regen=35` | planned |
+| 13 | `raptors` | 5 bots: 3000 HP, ×1.2 speed, knife only, thrown further by damage | 45 | `count=5 health=3000 speed=1.2 knockback=160` | on sale |
+| 14 | `brutes` | 4 bots: 7000 HP, ×0.9 speed, hard to push | 45 | `count=4 health=7000 speed=0.9 knockback=55` | on sale |
+| 15 | `runners` | the whole field at 75 HP and ×1.15 speed | 45 | `health=75 speed=1.15` | on sale |
+| 16 | `jumpers` | the whole field at 58 % gravity, light jumps | 30 | `gravity=0.58` | on sale |
+| 17 | `regenerators` | 4 bots recover 35 HP a second | 45 | `count=4 regen=35` | on sale |
 
 ## S3 — items (Zombie Plague extras)
 

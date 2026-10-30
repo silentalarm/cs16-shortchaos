@@ -51,6 +51,18 @@ export const EVENT_KEYWORDS: Readonly<Record<string, string>> = {
   boss: "nemesis",
   survivor: "survivor",
   hero: "survivor",
+  // The S2 classes: the words a viewer types for a field-wide re-spec.
+  raptor: "raptors",
+  raptors: "raptors",
+  brute: "brutes",
+  brutes: "brutes",
+  runner: "runners",
+  runners: "runners",
+  jumper: "jumpers",
+  jumpers: "jumpers",
+  regen: "regenerators",
+  regenerator: "regenerators",
+  regenerators: "regenerators",
 };
 
 /** The event the message asks for, or null when it names nothing that is on sale. */

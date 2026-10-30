@@ -61,17 +61,38 @@ leaves the other intact.
 - [x] the infection is a per-slot flag, not a health value: csdm_lite gives the bot a rifle half a
       second after it dies, so only a flag survives the death the conversion depends on;
 - [ ] the zombie model pack: every hero mode currently reads by glow or silhouette, not by model (S7).
+- [x] the newer run replaces the older one here too: `StartHero`/`StartOutbreak` end the running code
+      before taking over, and `EndHero`/`EndOutbreak` ignore a code that is not the one on screen - a
+      `nemesis` bought over a `survivor` used to lose its camera lock and its health claim to the
+      survivor's clock, and a second `outbreak` lost its infected flags to the previous run's clock.
+      Verified on the test server: `nemesis` -> `survivor` 21 s later logged `hero 'nemesis' is not the
+      running one, nothing to undo` and the survivor ran to its own timer; `outbreak` -> `chaos_plague`
+      logged the same for the infection while the plague kept converting bots;
 
 **Done when:** a boss round ends on its clock in front of the camera, twice in a row, with no stuck bot.
 All six codes are in the plugin and on sale; what is left is the live round and the models.
 
 ## Stage 3 — S2 classes (5 codes)
 
-- [ ] one parameterised applier (`count`, `health`, `speed`, `gravity`, `regen`, `knockback`);
-- [ ] respawn re-application (health and gravity do not survive death on their own);
+- [x] one parameterised applier (`count`, `health`, `speed`, `gravity`, `regen`, `knockback`): `StartClass`
+      / `ArmClass` / `EndClass` in `donation_events`, five thin handlers that pass their numbers;
+- [x] respawn re-application (health and gravity do not survive death on their own): the per-slot flag is
+      read by `OnPlayerSpawn` and the class shape is re-applied by `ReArmOnSpawn` through `ArmClass`;
+- [x] the five codes on sale at 50 RUB with their own music beds (`src/music.ts`, 45 s and 30 s);
+- [x] the newer run replaces the older one: `StartClass` ends the running class before it takes over, and
+      `EndClass` ignores a code that is not the one shaping the field - without that guard the replaced
+      run's clock cleared the flags and the regeneration task of the run on screen. Verified on the test
+      server: `raptors` -> `runners` 22 s later logged `class 'raptors' is not the running one` and the
+      runners ran to their own clock, with no error in the AMXX log;
+- [~] `knockback` as a capped impulse (`PushBot`) instead of a damage multiplier - the parameter exists,
+      is wired, and `amx_de raptors knockback=400 count=4` was accepted live (20 bots, no AMXX error),
+      but nobody has watched a bot fly yet: the throw needs the picture, not the log;
 - [ ] smoke test on all seven maps.
 
-**Done when:** the five codes are one function and a table, not five handlers.
+**Done when:** the five codes are one function and a table, not five handlers. Built: one applier, five
+rows, `npm test` green, plugin recompiled (27 263 B). The live pass - does YaPB still jump sanely at
+58 % gravity, does a respawned raptor come back with its shape, does a thrown bot stay on the map - is
+what the smoke test on the seven maps is for.
 
 ## Stage 4 — S4 skills (5 codes)
 

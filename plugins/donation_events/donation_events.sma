@@ -198,6 +198,9 @@ new g_heroNext;
 #define MAX_SLOTS 33
 new g_infected[MAX_SLOTS];
 new bool:g_outbreakActive;
+/* Like `g_heroCode`: which code runs the infection right now. A newer outbreak ends the running one, and
+   the ended run's clock still fires later - it must not clear the infected flags of the newer run. */
+new g_outbreakCode[CODE_LEN];
 new g_infectHealth;
 new g_infectKnife;
 new Float:g_infectSpeed;
@@ -216,6 +219,48 @@ new bool:g_redFrozen;
    parameter there and the fallback 1 answers instead - which is exactly how the stock chime and the
    alarm came back after the first cue. */
 new bool:g_redStockCues;
+/* ---------- S2 classes: one applier, five presets ----------
+   A class re-speccs a part of the field instead of picking a hero: N bots get a health pool, a run
+   speed multiplier, a gravity, a regeneration rate and a knockback. The five catalogue codes are five
+   rows of numbers on one function, because five handlers with the same body are five places for the
+   same bug (docs/activities/systems.md, S2).
+
+   The state is shared by all five codes the way the hero state is shared by the four round modes: a
+   newer class event replaces the older one for the bots it picks, and the claim layer decides who owns
+   health, speed and gravity. */
+#define TASK_CLASS_REGEN 4802
+/* `count` is a parameter, so the picked list needs a ceiling of its own; the catalogue stays far below
+   it (5 raptors, 4 brutes, 4 regenerators). */
+#define MAX_CLASS_BOTS 16
+/* Regeneration without a health ceiling turns a 45 second event into a bot that leaves the round with
+   1500 HP nobody paid for; `regenerators` is the code that carries no explicit health. */
+#define REGEN_CEIL 1000
+/* Extra push per point of damage from the class's knockback, and the ceiling on the resulting speed: an
+   uncapped impulse puts a bot inside geometry, and a bot outside the map is not a class, it is a
+   missing player. */
+#define KNOCKBACK_SCALE 2.0
+#define KNOCKBACK_CAP 400.0
+
+new g_classBots[MAX_CLASS_BOTS];
+new g_classBotCount;
+new bool:g_classActive;
+/* Which of the five codes shapes the field right now. A newer class event ends the running one before it
+   takes over, and the ended run's clock still fires later: without this code that stale clock would
+   reset the flags and the regeneration task of the run that is on screen. */
+new g_classCode[CODE_LEN];
+new g_classHealth;
+new g_classRegen;
+new Float:g_classSpeed = 1.0;
+/* Knockback and gravity as integer percents: both are multipliers of a whole resource, and comparing a
+   float with 1.0 in a damage hook is a comparison that silently fails. */
+new g_classKnockback = 100;
+new g_classGravity = 100;
+/* Per slot, like the infection flag: a class bot has to come back with the class shape after the
+   csdm_lite respawn, and the health it had before the buff is what the clock puts back. */
+new g_classPicked[MAX_SLOTS];
+new g_classSavedHealth[MAX_SLOTS];
+
+
 
 
 
@@ -245,6 +290,14 @@ public plugin_init()
 	RegisterDonationEffect("assassin", "EffectAssassin");
 	RegisterDonationEffect("outbreak", "EffectOutbreak");
 	RegisterDonationEffect("chaos_plague", "EffectChaosPlague");
+
+	// S2 classes: the same field with different numbers instead of one hero - no models, the movement
+	// is what reads on the stream (docs/activities/systems.md, S2).
+	RegisterDonationEffect("raptors", "EffectRaptors");
+	RegisterDonationEffect("brutes", "EffectBrutes");
+	RegisterDonationEffect("runners", "EffectRunners");
+	RegisterDonationEffect("jumpers", "EffectJumpers");
+	RegisterDonationEffect("regenerators", "EffectRegenerators");
 
 	RegisterDonationEffect("he_party", "EffectHeParty");
 
@@ -764,6 +817,14 @@ stock EndEffectState(const code[])
 		return;
 	}
 
+	if (equal(code, "raptors") || equal(code, "brutes") || equal(code, "runners") || equal(code, "jumpers") || equal(code, "regenerators"))
+	{
+		// The five presets share one applier and one undo; EndClass asks the claim layer whether this
+		// event still owns the numbers it wrote.
+		EndClass(code);
+		return;
+	}
+
 	if (equal(code, "he_party"))
 	{
 		// The party owns its own repeating task instead of a generic clock, so its undo is explicit.
@@ -1040,15 +1101,16 @@ stock bool:HasGun(id)
    drop it with the same `remove_task(id)`. */
 public OnPlayerSpawn(id)
 {
-	if (!g_duelActive && !g_outbreakActive)
+	if (!g_duelActive && !g_outbreakActive && !g_classActive)
 		return;
 
 	if (!is_user_connected(id) || !is_user_bot(id))
 		return;
 
 	// The infection is the reason this hook now fires on every respawn: csdm_lite hands the bot a rifle
-	// half a second after it died, and an infected bot has to come back with a knife.
-	if (g_duelActive || IsInfected(id))
+	// half a second after it died, and an infected bot has to come back with a knife. A class bot has
+	// the same problem on another axis: health, speed and gravity are per-spawn values.
+	if (g_duelActive || IsInfected(id) || IsClassed(id))
 		set_task(0.3, "ReArmOnSpawn", id);
 }
 
@@ -1057,11 +1119,18 @@ public ReArmOnSpawn(id)
 	if (!IsBotAlive(id))
 		return;
 
-	// The infection outranks the duel: an infected bot keeps its knife and its health even mid-duel,
+	// The infection outranks everything: an infected bot keeps its knife and its health even mid-duel,
 	// and the claim layer decides whose numbers win when both events are running.
 	if (g_outbreakActive && IsInfected(id))
 	{
 		ArmInfected(id);
+		return;
+	}
+
+	// The class comes next: it is the field-wide rule of the running event.
+	if (IsClassed(id))
+	{
+		ArmClass(id, false);
 		return;
 	}
 
@@ -1143,9 +1212,23 @@ public ResetEventState()
 	// The infection is a flag per bot, so a reset has to walk the slots or an infected bot comes back
 	// as one on the next respawn without any event running.
 	g_outbreakActive = false;
+	g_outbreakCode[0] = '^0';
 	for (new id = 0; id < MAX_SLOTS; id++)
 		g_infected[id] = 0;
 	g_heroNext = 0;
+
+	// The classes write per-bot gravity and run speed and keep a flag per slot; a full reset drops both,
+	// or the next map inherits a 0.58 gravity on slots the plugin no longer owns.
+	remove_task(TASK_CLASS_REGEN);
+	g_classActive = false;
+	g_classBotCount = 0;
+	g_classCode[0] = '^0';
+	for (new id = 0; id < MAX_SLOTS; id++)
+	{
+		g_classPicked[id] = 0;
+		g_classSavedHealth[id] = 0;
+	}
+	ResetBotGravity();
 
 	if (g_cannonBot > 0 && g_cannonSavedHealth > 0 && is_user_alive(g_cannonBot))
 		set_user_health(g_cannonBot, g_cannonSavedHealth);
@@ -1682,6 +1765,11 @@ public EffectChaosPlague()
 
 stock bool:StartHero(const code[], const weapon[])
 {
+	// A newer hero event replaces the running one: the older hero gives its health, its glow and the
+	// camera back here, instead of leaving a 13 500 HP bot on the field until its own clock is ignored.
+	if (g_heroActive)
+		EndHero(g_heroCode);
+
 	g_heroBot = PickRandomBot();
 	if (!g_heroBot)
 		return false;
@@ -1823,6 +1911,15 @@ public TaskHeroGuard()
 stock EndHero(const code[])
 {
 	new owner = FindEffect(code);
+
+	// A clock of a run a newer hero event already ended: the `g_hero*` state and the claim stack belong to
+	// the hero on screen now, and an unlock here would cut the camera off that bot.
+	if (!equali(g_heroCode, code))
+	{
+		log_amx("hero '%s' is not the running one, nothing to undo", code);
+		return;
+	}
+
 	remove_task(TASK_HERO_GUARD);
 
 	if (ClaimRelease(CLAIM_HEALTH, owner) && g_heroBot > 0 && g_heroSavedHealth > 0 && is_user_alive(g_heroBot))
@@ -1854,6 +1951,11 @@ stock EndHero(const code[])
 
 stock bool:StartOutbreak(const code[])
 {
+	// Same rule as the heroes and the classes: the newer infection ends the running one, so its flags,
+	// its glow and its speed claim are given back here and not by a clock that no longer owns them.
+	if (g_outbreakActive)
+		EndOutbreak(g_outbreakCode);
+
 	new alive[MAX_SLOTS];
 	new count;
 
@@ -1901,6 +2003,7 @@ stock bool:StartOutbreak(const code[])
 	}
 
 	g_outbreakActive = true;
+	copy(g_outbreakCode, CODE_LEN - 1, code);
 
 	new owner = FindEffect(code);
 	ClaimTake(CLAIM_HEALTH, owner, g_infectHealth);
@@ -1954,6 +2057,14 @@ stock EndOutbreak(const code[])
 {
 	new owner = FindEffect(code);
 
+	// A clock of an infection a newer run already ended: the flags and the glow under them are the new
+	// run's, and clearing them here would end the infection a viewer just paid for.
+	if (!equali(g_outbreakCode, code))
+	{
+		log_amx("outbreak '%s' is not the running one, nothing to undo", code);
+		return;
+	}
+
 	for (new id = 1; id < MAX_SLOTS; id++)
 	{
 		if (g_infected[id] && is_user_connected(id))
@@ -1962,6 +2073,7 @@ stock EndOutbreak(const code[])
 	}
 
 	g_outbreakActive = false;
+	g_outbreakCode[0] = '^0';
 
 	// The speed only goes back if this event still owns it: a duel or a hero mode has its own numbers.
 	if (ClaimRelease(CLAIM_SPEED, owner))
@@ -1980,6 +2092,341 @@ stock EndOutbreak(const code[])
 	ClaimRelease(CLAIM_HEALTH, owner);
 	ClaimRelease(CLAIM_WEAPONS, owner);
 	ClaimRelease(CLAIM_GLOW, owner);
+}
+
+/* ---------- S2 classes: five presets, one applier (docs/activities/systems.md) ---------- */
+/*
+ * A class changes the field instead of picking a hero: N random bots - or everybody, when `count` is 0 -
+ * get a health pool, a run speed multiplier, a gravity, a regeneration rate and a knockback. The five
+ * catalogue codes differ in their numbers and not in their code, which is the point: five handlers with
+ * the same body are five places for the same bug.
+ */
+
+public EffectRaptors()
+{
+	BeginEvent("raptors");
+
+	if (!StartClass("raptors", 5, 3000, 1.2, 1.0, 0, 160))
+	{
+		log_amx("raptors: no bots are connected");
+		return;
+	}
+
+	StartEffectTimer("raptors", EffectSeconds(45.0));
+	DonorSay("FIVE RAPTORS: FAST AND THROWN FAR");
+}
+
+public EffectBrutes()
+{
+	BeginEvent("brutes");
+
+	if (!StartClass("brutes", 4, 7000, 0.9, 1.0, 0, 55))
+	{
+		log_amx("brutes: no bots are connected");
+		return;
+	}
+
+	StartEffectTimer("brutes", EffectSeconds(45.0));
+	DonorSay("FOUR BRUTES: SLOW AND HARD TO PUSH");
+}
+
+public EffectRunners()
+{
+	BeginEvent("runners");
+
+	if (!StartClass("runners", 0, 75, 1.15, 1.0, 0, 100))
+	{
+		log_amx("runners: no bots are connected");
+		return;
+	}
+
+	StartEffectTimer("runners", EffectSeconds(45.0));
+	DonorSay("EVERYBODY RUNS: 75 HP AND FASTER");
+}
+
+public EffectJumpers()
+{
+	BeginEvent("jumpers");
+
+	if (!StartClass("jumpers", 0, 0, 1.0, 0.58, 0, 100))
+	{
+		log_amx("jumpers: no bots are connected");
+		return;
+	}
+
+	StartEffectTimer("jumpers", EffectSeconds(30.0));
+	DonorSay("LOW GRAVITY, EVERYBODY JUMPS");
+}
+
+public EffectRegenerators()
+{
+	BeginEvent("regenerators");
+
+	if (!StartClass("regenerators", 4, 0, 1.0, 1.0, 35, 100))
+	{
+		log_amx("regenerators: no bots are connected");
+		return;
+	}
+
+	StartEffectTimer("regenerators", EffectSeconds(45.0));
+	DonorSay("FOUR REGENERATORS: 35 HP A SECOND");
+}
+
+/* The applier. The six arguments are the defaults of the preset that called it, and every one of them
+   can be overridden by the command: the panel retunes a code without a recompile. `count` 0 means the
+   whole field, which is what `runners` and `jumpers` sell. */
+stock bool:StartClass(const code[], count, health, Float:speed, Float:gravity, regen, knockback)
+{
+	// A newer class event replaces the one that is still running: the older run is undone here, with its
+	// claims released and its bots put back, instead of being left for its own clock to undo underneath
+	// this one. A second donation of the same code is a re-roll and goes through the same path, or the
+	// bots would keep the class health as the value to restore at the end.
+	if (g_classActive)
+		EndClass(g_classCode);
+
+	new alive[MAX_SLOTS];
+	new total;
+
+	for (new id = 1; id <= get_maxplayers() && total < MAX_SLOTS - 1; id++)
+	{
+		if (IsBotAlive(id))
+			alive[total++] = id;
+	}
+
+	if (total == 0)
+		return false;
+
+	g_classHealth = ParamInt("health", health);
+	g_classRegen = ParamInt("regen", regen);
+
+	g_classKnockback = ParamInt("knockback", knockback);
+	if (g_classKnockback < 0)
+		g_classKnockback = 0;
+	if (g_classKnockback > 400)
+		g_classKnockback = 400;
+
+	g_classSpeed = ParamFloat("speed", speed);
+	if (g_classSpeed < 0.1)
+		g_classSpeed = 0.1;
+	if (g_classSpeed > 4.0)
+		g_classSpeed = 4.0;
+
+	new Float:gravityValue = ParamFloat("gravity", gravity);
+	if (gravityValue < 0.1)
+		gravityValue = 0.1;
+	if (gravityValue > 2.0)
+		gravityValue = 2.0;
+	g_classGravity = floatround(gravityValue * 100.0);
+
+	// `count` above the size of the field is the field: a viewer who paid for five raptors on a server of
+	// three bots gets three, and nobody gets the same bot twice.
+	new wanted = ParamInt("count", count);
+	if (wanted <= 0 || wanted > total)
+		wanted = total;
+	if (wanted > MAX_CLASS_BOTS)
+		wanted = MAX_CLASS_BOTS;
+
+	// A newer class event replaces the older one for the bots it picks: the flags of the previous run go
+	// first, or a slot that is no longer picked keeps re-arming itself after every respawn.
+	for (new id = 0; id < MAX_SLOTS; id++)
+	{
+		g_classPicked[id] = 0;
+		g_classSavedHealth[id] = 0;
+	}
+
+	g_classActive = true;
+	g_classBotCount = 0;
+	copy(g_classCode, CODE_LEN - 1, code);
+
+	while (g_classBotCount < wanted)
+	{
+		new pick = alive[random(total)];
+		if (pick <= 0 || g_classPicked[pick])
+			continue;
+
+		g_classPicked[pick] = 1;
+		g_classBots[g_classBotCount++] = pick;
+	}
+
+	new owner = FindEffect(code);
+	if (g_classHealth > 0)
+		ClaimTake(CLAIM_HEALTH, owner, g_classHealth);
+
+	if (g_classSpeed != 1.0)
+	{
+		ClaimTake(CLAIM_SPEED, owner, floatround(g_classSpeed * 100.0));
+		// The shared "speed was touched" flag is what ResetBotSpeed reads on a full reset: a run speed is
+		// a per-bot field here, and it survives both death and respawn.
+		g_speedBoosted = true;
+	}
+
+	// Only a preset that actually changes gravity claims it; otherwise the claim would sit on top of a
+	// value an effect that does own gravity never wrote.
+	if (g_classGravity != 100)
+		ClaimTake(CLAIM_GRAVITY, owner, g_classGravity);
+
+	for (new i = 0; i < g_classBotCount; i++)
+		ArmClass(g_classBots[i], true);
+
+	remove_task(TASK_CLASS_REGEN);
+	if (g_classRegen > 0)
+		set_task(1.0, "TaskClassRegen", TASK_CLASS_REGEN, "", 0, "b");
+
+	log_amx("%s: %d of %d bots, %d hp, x%.2f speed, %d%% gravity, %d hp/s, knockback %d",
+		code, g_classBotCount, total, g_classHealth, g_classSpeed, g_classGravity, g_classRegen, g_classKnockback);
+	return true;
+}
+
+stock bool:IsClassed(id)
+{
+	return g_classActive && id > 0 && id < MAX_SLOTS && g_classPicked[id] != 0;
+}
+
+/* Puts the class shape on one bot. `first` marks the moment the event starts: only then is the health
+   the bot had before the buff worth keeping, because a re-arm after a respawn would record the class
+   health as the value to put back. */
+stock ArmClass(id, bool:first)
+{
+	if (id <= 0 || id >= MAX_SLOTS || !IsBotAlive(id))
+		return;
+
+	if (first)
+	{
+		g_classSavedHealth[id] = get_user_health(id);
+		if (g_classSavedHealth[id] < 1)
+			g_classSavedHealth[id] = 100;
+	}
+
+	if (g_classHealth > 0)
+		set_user_health(id, g_classHealth);
+
+	new Float:speed = get_cvar_float("sv_maxspeed");
+	if (speed <= 0.0)
+		speed = 320.0;
+	set_user_maxspeed(id, speed * g_classSpeed);
+
+	// A per-bot gravity, not `sv_gravity`: the field keeps its own physics and the cvar stays the
+	// server's. `jumpers` is the only preset that changes it.
+	set_user_gravity(id, float(g_classGravity) / 100.0);
+}
+
+/* Ends a class event. Only the effect that still owns a resource puts it back: another class event or a
+   duel may have taken the same numbers since. */
+stock EndClass(const code[])
+{
+	new owner = FindEffect(code);
+
+	// A clock of a run a newer class event already ended: it owns nothing any more, and the flags, the
+	// regeneration task and the saved health under `g_classPicked` now belong to the run on screen.
+	if (!equali(g_classCode, code))
+	{
+		log_amx("class '%s' is not the running one, nothing to undo", code);
+		return;
+	}
+
+	remove_task(TASK_CLASS_REGEN);
+
+	// The releases happen once, outside the loop: ClaimRelease pops the entry, so a call per bot would
+	// answer "not the owner" from the second slot on and leave the field shaped like a class.
+	new bool:healthOwned = ClaimRelease(CLAIM_HEALTH, owner);
+	new bool:speedOwned = ClaimRelease(CLAIM_SPEED, owner);
+	new bool:gravityOwned = ClaimRelease(CLAIM_GRAVITY, owner);
+
+	new Float:speed = get_cvar_float("sv_maxspeed");
+	if (speed <= 0.0)
+		speed = 320.0;
+
+	for (new id = 0; id < MAX_SLOTS; id++)
+	{
+		if (!g_classPicked[id])
+			continue;
+
+		// Health is a spawn value: only a bot that is still alive can keep the pool it was given.
+		if (healthOwned && g_classSavedHealth[id] > 0 && is_user_alive(id))
+			set_user_health(id, g_classSavedHealth[id]);
+
+		// Speed and gravity survive death, so they go back on every slot the event touched.
+		if (is_user_connected(id))
+		{
+			if (speedOwned)
+				set_user_maxspeed(id, speed);
+			if (gravityOwned)
+				set_user_gravity(id, 1.0);
+		}
+
+		g_classPicked[id] = 0;
+		g_classSavedHealth[id] = 0;
+	}
+
+	g_classActive = false;
+	g_classBotCount = 0;
+	g_classCode[0] = '^0';
+}
+
+/* Gravity is a per-bot field in this system and not the cvar, so a full reset walks the slots. */
+stock ResetBotGravity()
+{
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (is_user_connected(id))
+			set_user_gravity(id, 1.0);
+	}
+}
+
+/* Regeneration: HP a second for the picked bots, never above the class health - or REGEN_CEIL for a
+   preset that has none. The rate is a snapshot: reading `regen=` here would heal the bots of whatever
+   donation arrived last (docs/activities/systems.md, cross-cutting rule 2). */
+public TaskClassRegen()
+{
+	if (!g_classActive || g_classRegen <= 0)
+	{
+		remove_task(TASK_CLASS_REGEN);
+		return;
+	}
+
+	new ceiling = g_classHealth > 0 ? g_classHealth : REGEN_CEIL;
+
+	for (new i = 0; i < g_classBotCount; i++)
+	{
+		new id = g_classBots[i];
+		if (id <= 0 || !IsBotAlive(id))
+			continue;
+
+		new health = get_user_health(id) + g_classRegen;
+		if (health > ceiling)
+			health = ceiling;
+		set_user_health(id, health);
+	}
+}
+
+/* Knockback: how far a hit throws a class bot. Horizontal, away from the attacker, capped at
+   KNOCKBACK_CAP units a second. An impulse instead of a damage multiplier on purpose - a raptor that
+   took 160 % damage would be a 3 000 HP bot that dies like a 1 875 HP one, and what the catalogue sells
+   here is the movement. A bot thrown into a wall or off the map is not a class, it is a missing player. */
+stock PushBot(victim, attacker, Float:damage)
+{
+	if (victim <= 0 || attacker <= 0 || victim == attacker || damage <= 0.0)
+		return;
+
+	new Float:attackerOrigin[3], Float:victimOrigin[3];
+	pev(attacker, pev_origin, attackerOrigin);
+	pev(victim, pev_origin, victimOrigin);
+
+	new Float:dx = victimOrigin[0] - attackerOrigin[0];
+	new Float:dy = victimOrigin[1] - attackerOrigin[1];
+	new Float:length = floatsqroot(dx * dx + dy * dy);
+	if (length < 1.0)
+		return;
+
+	new Float:push = damage * float(g_classKnockback) / 100.0 * KNOCKBACK_SCALE;
+	if (push > KNOCKBACK_CAP)
+		push = KNOCKBACK_CAP;
+
+	new Float:velocity[3];
+	pev(victim, pev_velocity, velocity);
+	velocity[0] += dx / length * push;
+	velocity[1] += dy / length * push;
+	set_pev(victim, pev_velocity, velocity);
 }
 
 /* The kill feed is the mode's controller: the juggernaut role moves to its killer and an infected knife
@@ -2007,6 +2454,11 @@ public OnDeathMsg()
    else keeps its own damage. One hook, two rules, no interference between them. */
 public OnTakeDamage(victim, inflictor, attacker, Float:damage, damagebits)
 {
+	// Knockback is read before the knife rules below: a class bot is thrown by every hit, not only by a
+	// knife, and an early return here would shadow the whole class system on a rifle round.
+	if (g_classActive && g_classKnockback != 100 && IsClassed(victim))
+		PushBot(victim, attacker, damage);
+
 	if (attacker <= 0 || !IsBotAlive(attacker))
 		return HAM_IGNORED;
 

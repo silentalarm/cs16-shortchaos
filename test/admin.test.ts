@@ -165,7 +165,10 @@ test("a simulated donation returns the verdict and the exact RCON command", asyn
     };
 
     assert.equal(body.outcome.status, "applied");
-    assert.match(body.outcome.activityCode, /^(crowd_pile|sniper_moment|glass_cannon|ice_floor|meteor_shower|red_light|lightsaber_duel|one_bullet)$/);
+    // Derived from the catalogue instead of a hard-coded list: a new wave of codes should not fail this
+    // test, only a code that is not on sale should.
+    const onSale = BASE.activities.filter((activity) => activity.enabled).map((activity) => activity.code);
+    assert.ok(onSale.includes(body.outcome.activityCode), `${body.outcome.activityCode} is not on sale`);
     assert.match(body.outcome.command, /^amx_de [a-z_]+ (.* )?nick=vasya$/);
     // body.activity echoes the catalogue entry the panel matched; the code itself is drawn at random.
     assert.ok(commands.includes(body.outcome.command), "the exact command is in the log");
@@ -182,19 +185,7 @@ test("a simulated foreign donation is converted with the same table the poller u
     assert.equal(response.status, 200);
     const body = (await response.json()) as { outcome: { status: string; activityCode: string; command: string } };
     assert.equal(body.outcome.status, "applied");
-    const onSale = [
-      "assassin",
-      "chaos_plague",
-      "glass_cannon",
-      "juggernaut",
-      "lightsaber_duel",
-      "meteor_shower",
-      "nemesis",
-      "one_bullet",
-      "outbreak",
-      "red_light",
-      "survivor",
-    ];
+    const onSale = BASE.activities.filter((activity) => activity.enabled).map((activity) => activity.code);
     for (const code of body.outcome.activityCode.split("+")) assert.ok(onSale.includes(code), `${code} is not on sale`);
     assert.match(body.outcome.command, /nick=almaty/);
     // 150 RUB is three steps; the steps of one clock code merge into one longer run, so the length is

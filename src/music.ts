@@ -156,6 +156,55 @@ export const TRACKS: Record<string, TrackSpec> = {
     bass: "D2 Ab1 D2 F1 C2 Gb1 C2 E1 Bb1 E1 Bb1 D2 A1 Eb2 A1 D2".split(" "),
     drums: 1,
   },
+  // The S2 classes run 45 seconds (`jumpers` 30), and each one is a movement change, so the bed is the
+  // metronome: the viewer hears how the field moves before they read a single bot.
+  raptors: {
+    // Quick, predatory, and it never settles on the tonic.
+    bpm: 176,
+    wave: "saw",
+    seconds: 45,
+    lead: "A4 - A4 C5 A4 - G4 A4 E5 - D5 C5 A4 - A4 C5 A4 - G4 E4 D4 E4 G4 A4 - - -".split(" "),
+    bass: "A2 A2 A2 A2 F2 F2 F2 F2 G2 G2 G2 G2 A2 A2 A2 A2".split(" "),
+    drums: 0.95,
+  },
+  brutes: {
+    // Half the tempo and an octave down: four bots that walk through rifle fire.
+    bpm: 92,
+    wave: "square",
+    duty: 0.375,
+    seconds: 45,
+    lead: "E3 - - - E3 - G3 - F3 - - - E3 - C3 -".split(" "),
+    bass: "E1 E1 E1 E1 C1 C1 C1 C1 F1 F1 F1 F1 E1 E1 E1 E1".split(" "),
+    drums: 1,
+  },
+  runners: {
+    // A ticking sixteenth-note figure: everybody is already running.
+    bpm: 180,
+    wave: "square",
+    duty: 0.125,
+    seconds: 45,
+    lead: "C5 D5 E5 G5 E5 D5 C5 D5 E5 F5 G5 A5 G5 F5 E5 D5".split(" "),
+    bass: "C2 C2 G1 G1 A1 A1 F1 F1".split(" "),
+    drums: 0.9,
+  },
+  jumpers: {
+    // Sparse and high, with holes in it: the field is in the air more than on the ground.
+    bpm: 108,
+    wave: "tri",
+    seconds: 30,
+    lead: "G4 - - - B4 - - - D5 - - - G5 - - - F5 - - - D5 - - - B4 - - - G4 - - -".split(" "),
+    bass: "G2 - - - E2 - - - C2 - - - D2 - - -".split(" "),
+    drums: 0.35,
+  },
+  regenerators: {
+    // A pulse that keeps coming back, which is what regeneration sounds like.
+    bpm: 124,
+    wave: "saw",
+    seconds: 45,
+    lead: "D4 F4 A4 D5 - A4 - F4 E4 G4 B4 E5 - B4 - G4".split(" "),
+    bass: "D2 D2 D2 D2 E2 E2 E2 E2".split(" "),
+    drums: 0.8,
+  },
 };
 
 export const MUSIC_CODES: readonly string[] = Object.keys(TRACKS).sort();

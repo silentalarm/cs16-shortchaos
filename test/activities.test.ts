@@ -25,8 +25,9 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
 
   assert.equal(config.currency, "RUB");
   assert.equal(config.minAmount, 50);
-  // Twelve codes: the five 2025-10 events, `he_party` (kept off sale) and the six round modes of S1.
-  assert.equal(config.activities.length, 12, "five events, he_party and six round modes");
+  // Seventeen codes: the five 2025-10 events, `he_party` (kept off sale), the six round modes of S1 and
+  // the five classes of S2.
+  assert.equal(config.activities.length, 17, "five events, he_party, six round modes and five classes");
 
   const codes = config.activities.map((activity) => activity.code);
   assert.equal(new Set(codes).size, codes.length, "codes are unique");
@@ -47,24 +48,36 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
     assassin: 45,
     outbreak: 60,
     chaos_plague: 60,
+    // The S2 classes: 45 seconds is long enough for the movement change to be read, and `jumpers` is the
+    // short one because low gravity stops being funny at about half a minute.
+    raptors: 45,
+    brutes: 45,
+    runners: 45,
+    jumpers: 30,
+    regenerators: 45,
   };
   const onSale = config.activities.filter((activity) => activity.enabled);
   assert.deepEqual(
     onSale.map((activity) => activity.code).sort(),
     [
       "assassin",
+      "brutes",
       "chaos_plague",
       "glass_cannon",
       "juggernaut",
+      "jumpers",
       "lightsaber_duel",
       "meteor_shower",
       "nemesis",
       "one_bullet",
       "outbreak",
+      "raptors",
       "red_light",
+      "regenerators",
+      "runners",
       "survivor",
     ],
-    "eleven events on sale",
+    "sixteen events on sale",
   );
   for (const activity of onSale) {
     const seconds = longer[activity.code] ?? 15;
@@ -93,7 +106,7 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
 test("every effect on a clock carries that clock in its params as well", () => {
   const config = loadActivities(shippedConfig);
   const timed = config.activities.filter((activity) => activity.duration === "seconds");
-  assert.equal(timed.length, 12, "every shipped code is a clock");
+  assert.equal(timed.length, 17, "every shipped code is a clock");
 
   for (const activity of timed) {
     // The plugin reads the length from the command the control API builds, so both places must agree.
@@ -120,22 +133,27 @@ test("the HE party is the whole shop: one step, sixty seconds, no cooldown", () 
   assert.equal(party.params.maxNameLength, 16);
 });
 
-test("the catalogue is exactly the twelve codes the plugin still registers", () => {
+test("the catalogue is exactly the seventeen codes the plugin still registers", () => {
   const config = loadActivities(shippedConfig);
   assert.deepEqual(
     config.activities.map((activity) => activity.code).sort(),
     [
       "assassin",
+      "brutes",
       "chaos_plague",
       "glass_cannon",
       "he_party",
       "juggernaut",
+      "jumpers",
       "lightsaber_duel",
       "meteor_shower",
       "nemesis",
       "one_bullet",
       "outbreak",
+      "raptors",
       "red_light",
+      "regenerators",
+      "runners",
       "survivor",
     ],
   );
@@ -187,6 +205,37 @@ test("the catalogue is exactly the twelve codes the plugin still registers", () 
   assert.ok(plague);
   assert.equal(plague.params.knife, 250, "the boss knife");
   assert.equal(plague.params.infectKnife, 150, "the infection knife");
+
+  // The S2 classes carry the numbers the one applier reads; a typo here is a class with the default
+  // knockback, which is a class the viewer cannot tell from the field.
+  const raptors = byCode.get("raptors");
+  assert.ok(raptors);
+  assert.equal(raptors.params.count, 5);
+  assert.equal(raptors.params.health, 3000);
+  assert.equal(raptors.params.knockback, 160, "raptors are the class that gets thrown furthest");
+
+  const brutes = byCode.get("brutes");
+  assert.ok(brutes);
+  assert.equal(brutes.params.count, 4);
+  assert.equal(brutes.params.health, 7000);
+  assert.equal(brutes.params.speed, 0.9, "brutes are slower than the field");
+
+  // `runners` and `jumpers` have no `count`: they re-spec the whole field, which the plugin reads as
+  // count 0. `jumpers` is the only code that sends a gravity.
+  const runners = byCode.get("runners");
+  assert.ok(runners);
+  assert.equal(runners.params.count, undefined, "runners are the whole field");
+  assert.equal(runners.params.health, 75);
+
+  const jumpers = byCode.get("jumpers");
+  assert.ok(jumpers);
+  assert.equal(jumpers.params.gravity, 0.58);
+  assert.equal(jumpers.params.count, undefined, "jumpers are the whole field");
+
+  const regenerators = byCode.get("regenerators");
+  assert.ok(regenerators);
+  assert.equal(regenerators.params.regen, 35);
+  assert.equal(regenerators.params.count, 4);
 });
 
 test("price below the minimum donation is rejected", () => {

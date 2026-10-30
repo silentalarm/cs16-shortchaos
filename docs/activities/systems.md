@@ -9,10 +9,14 @@ before it is called done.
 
 1. **One owner per resource.** `sv_gravity`, maxspeed, health, weapon pool, glow, freeze, damage
    rule, bot model, name, audio bed and camera are *resources*. An effect claims a resource and
-   releases it on its own clock; when two effects hold the same resource the newest wins and on
-   release the remaining claim is re-applied, instead of a saved value being restored blindly. That
-   is the difference between "parallel" and "the last effect to end resets everything", which is
-   what `EndEffectState`'s `CleanupActive()` fallback does today for the 18 legacy codes.
+   releases it on its own clock; when two effects want the same one the newest wins, and it wins by
+   *ending* the run it replaced (`StartClass`, `StartHero`, `StartOutbreak` end the running code before
+   they take over), so the replaced run's clock finds a code that is no longer current and does nothing
+   instead of undoing numbers it no longer owns. That is the difference between "parallel" and "the
+   last effect to end resets everything", which is what `EndEffectState`'s `CleanupActive()` fallback
+   still does for the 18 legacy codes. Not built yet: a release puts the base value back and does not
+   re-apply the claim still underneath, so two effects on one resource end the older one rather than
+   degrade it.
 2. **Parameters are per command, not per timer.** `g_paramKeys`/`g_paramValues` are overwritten by the
    next `amx_de` line, so a timer that fires later must read a snapshot taken in the handler.
    `red_light` already had to do this (`g_redStockCues`); every new code inherits the rule.
