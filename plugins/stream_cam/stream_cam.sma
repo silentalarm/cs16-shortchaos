@@ -29,7 +29,15 @@
  *
  * RCON contract (docs/runbook.md):
  *   amx_stcam status -> "stream_cam status: enabled=1 interval=25.0 mode=1 spectator=<name>
- *                        target=<name> candidates=<n> dwell=12.0 hp=<n> active=<mode>"
+ *                        target=<name> candidates=<n> dwell=12.0 hp=<n> active=<mode> ar=<n>
+ *                        pov=<0|1> pov_active=<0|1> locked=<name|none> lock_left=<sec>"
+ *   amx_stcam lock <nick|#userid> [seconds] -> holds the camera on that bot, 20 s by default
+ *   amx_stcam unlock                        -> gives the camera back to the director
+ *   amx_stcam cmd <client command> [arg]    -> types a client command into the camera client
+ *
+ * The lock exists for the paid round modes (docs/activities/systems.md, S1): the director follows the
+ * busiest bot, which is right for a free-for-all and wrong for a 60 second boss, where the money buys
+ * shots of *that* bot. A lock ends with its clock, the death of its bot, a disconnect or `unlock`.
  *
  * cvars: stcam_enable 1, stcam_mode 1 (1 = chase locked, 2 = chase free), stcam_dwell 6.0,
  *        stcam_idle 5.0, stcam_interval 25.0 (max hold on one target), stcam_avoid_repeat 1,
@@ -42,7 +50,7 @@
 #include <fun>
 
 #define PLUGIN_NAME "Stream Camera"
-#define PLUGIN_VERSION "0.4.0"
+#define PLUGIN_VERSION "0.5.0"
 
 #define TASK_TICK 42001
 #define TASK_FOLLOW 42002
@@ -76,6 +84,14 @@ new Float:g_dwellUntil;
 new Float:g_holdUntil;
 new Float:g_idleSince;
 new Float:g_nextHeartbeat;
+
+// The camera lock (stage 1 of docs/activities/roadmap.md). While it runs the director ignores its own
+// dwell and hold rules; it is dropped by its clock, by the death of its bot, by a disconnect, by
+// `amx_stcam unlock`, and by the full reset in OnRoundStart.
+new g_lockTarget;
+new Float:g_lockUntil;
+#define LOCK_MAX_SECONDS 600.0
+#define LOCK_DEFAULT_SECONDS 20.0
 
 new cvar_enabled;
 new cvar_mode;
@@ -200,6 +216,8 @@ public client_disconnected(id)
 	}
 	if (id == g_target)
 		g_target = 0;
+	if (id == g_lockTarget)
+		ReleaseLock("the locked bot left");
 
 	g_hasOrigin[id] = false;
 	g_activity[id] = 0.0;
@@ -248,13 +266,27 @@ public TaskTick()
 	if (g_povActive && now >= g_povUntil)
 		LeavePov();
 
+	// A lock that ran out keeps the current picture for one more dwell instead of cutting on the tick it
+	// expires: somebody paid for that bot, and the viewer is still watching it.
+	if (g_lockTarget > 0 && now >= g_lockUntil)
+	{
+		ReleaseLock("the lock ran out");
+		g_dwellUntil = now + get_pcvar_float(cvar_dwell);
+		g_holdUntil = now + get_pcvar_float(cvar_interval);
+	}
+
 	if (!IsPlayable(g_target))
 	{
+		// A lock whose bot died or left is dropped before the director picks a replacement: PickTarget
+		// refuses to move a locked camera, so a lock left behind here would freeze the picture.
+		if (g_lockTarget > 0 && g_lockTarget == g_target)
+			ReleaseLock("the locked bot is gone");
+
 		// The followed bot died: the viewer was just watching his killer, so stay with him.
 		new killer = (g_target > 0) ? g_lastKiller[g_target] : 0;
 		PickTarget("target is gone", IsPlayable(killer) ? killer : 0);
 	}
-	else if (now >= g_dwellUntil)
+	else if (!CameraLocked(now) && now >= g_dwellUntil)
 	{
 		if (g_idleSince > 0.0 && now - g_idleSince >= get_pcvar_float(cvar_idle))
 			PickTarget("target is standing still", 0);
@@ -538,6 +570,94 @@ stock UpdateActivity()
 	}
 }
 
+/* ---------- camera lock ---------- */
+
+stock bool:CameraLocked(Float:now)
+{
+	return g_lockTarget > 0 && now < g_lockUntil;
+}
+
+/* Drops the lock. Every path that can leave the camera without a target goes through here: its own
+   clock, the death of the bot, a disconnect and `amx_stcam unlock`. */
+stock ReleaseLock(const reason[])
+{
+	if (!g_lockTarget)
+		return;
+
+	log_amx("camera lock released: %s", reason);
+	g_lockTarget = 0;
+	g_lockUntil = 0.0;
+}
+
+/**
+ * Resolves the argument of `amx_stcam lock` to a connected player.
+ *
+ * Three shapes, because three callers exist: the panel knows a nickname, the control API may pass a
+ * userid (`#12` or a bare `12`), and a human at the console types whatever they remember. A nickname
+ * arrives with underscores whenever it came from a status line, so they are read back as spaces.
+ */
+stock FindTargetPlayer(const arg[])
+{
+	if (arg[0] == '^0')
+		return 0;
+
+	if (arg[0] == '#')
+		return FindByUserId(str_to_num(arg[1]));
+
+	if (IsAllDigits(arg))
+		return FindByUserId(str_to_num(arg));
+
+	new wanted[NAME_LEN];
+	copy(wanted, charsmax(wanted), arg);
+	for (new i = 0, len = strlen(wanted); i < len; i++)
+	{
+		if (wanted[i] == '_')
+			wanted[i] = ' ';
+	}
+
+	for (new id = 1; id <= MAX_PLAYERS; id++)
+	{
+		if (!is_user_connected(id))
+			continue;
+
+		new name[NAME_LEN];
+		get_user_name(id, name, charsmax(name));
+		if (equali(name, wanted))
+			return id;
+	}
+
+	return 0;
+}
+
+stock FindByUserId(userid)
+{
+	if (userid <= 0)
+		return 0;
+
+	for (new id = 1; id <= MAX_PLAYERS; id++)
+	{
+		if (is_user_connected(id) && get_user_userid(id) == userid)
+			return id;
+	}
+
+	return 0;
+}
+
+stock bool:IsAllDigits(const text[])
+{
+	new len = strlen(text);
+	if (len == 0)
+		return false;
+
+	for (new i = 0; i < len; i++)
+	{
+		if (text[i] < '0' || text[i] > '9')
+			return false;
+	}
+
+	return true;
+}
+
 /**
  * Picks the next target. `preferred` (the killer of the previous target) gets a large bonus so the
  * cut feels like a continuation and not a jump; the bot that was on screen before is penalised so
@@ -545,6 +665,12 @@ stock UpdateActivity()
  */
 stock PickTarget(const reason[], preferred)
 {
+	// A lock owns the camera: the director only answers when there is none. Every caller that can end a
+	// lock (death, disconnect, its own clock) releases it before asking for a new target, so a paid cut
+	// still ends when its hero dies instead of freezing the picture.
+	if (CameraLocked(get_gametime()))
+		return;
+
 	new best;
 	new candidates;
 	new Float:bestScore = -1.0;
@@ -605,6 +731,11 @@ public EventDeathMsg()
 	if (victim > 0 && victim <= MAX_PLAYERS && killer > 0 && killer <= MAX_PLAYERS)
 		g_lastKiller[victim] = killer;
 
+	// The bot on camera is what the money bought: when it dies the lock dies with it, and the next tick
+	// cuts to the killer the way the director normally would. Holding a corpse would be worse than a cut.
+	if (victim == g_lockTarget)
+		ReleaseLock("the locked bot died");
+
 	if (killer <= 0 || killer > MAX_PLAYERS || killer == victim)
 		return;
 
@@ -620,6 +751,11 @@ public OnRoundStart()
 {
 	for (new id = 1; id <= MAX_PLAYERS; id++)
 		g_kills[id] = 0;
+
+	// A paid lock does not survive the round: a round mode ends with Round_End, and a lock left behind
+	// would hold the camera on a bot nobody is paying for any more. PickTarget refuses while locked, so
+	// the release has to come first.
+	ReleaseLock("round start");
 
 	// A new round is a clean cut: whoever looks busiest right now gets the camera.
 	if (g_camId > 0)
@@ -701,9 +837,75 @@ public CmdStreamCam(id, level, cid)
 		return PLUGIN_HANDLED;
 	}
 
+	if (equal(arg, "lock"))
+	{
+		// `amx_stcam lock <nick|#userid> [seconds]`: holds the camera on one bot. This is the command a
+		// paid round mode sends right after its own `amx_de`, and the reason it exists is that the
+		// director's idea of an interesting bot and the viewer's are not always the same bot.
+		new who[NAME_LEN];
+		new raw[16];
+		read_argv(2, who, charsmax(who));
+		read_argv(3, raw, charsmax(raw));
+
+		new Float:seconds = LOCK_DEFAULT_SECONDS;
+		if (raw[0] != '^0')
+			seconds = str_to_float(raw);
+		if (seconds < 1.0)
+			seconds = 1.0;
+		if (seconds > LOCK_MAX_SECONDS)
+			seconds = LOCK_MAX_SECONDS;
+
+		new target = FindTargetPlayer(who);
+		if (!target)
+		{
+			server_print("stream_cam: no such player '%s'", who);
+			return PLUGIN_HANDLED;
+		}
+
+		if (!IsPlayable(target))
+		{
+			// Dead, on the spectator team, or the camera client itself: following it would freeze the
+			// picture on nothing, and a lock is exactly what would keep it there.
+			server_print("stream_cam: '%s' cannot be followed", who);
+			return PLUGIN_HANDLED;
+		}
+
+		g_lockTarget = target;
+		g_lockUntil = get_gametime() + seconds;
+
+		// Applied in this call, not on the next director tick: the API sends the lock and the event in
+		// the same second, and a second of the wrong bot is what this command exists to prevent.
+		g_prevTarget = g_target;
+		g_target = target;
+		g_dwellUntil = g_lockUntil;
+		g_holdUntil = g_lockUntil;
+		g_idleSince = get_gametime();
+		g_modeSent = -1;
+		ApplyCamera();
+
+		new name[NAME_LEN];
+		get_user_name(target, name, charsmax(name));
+		log_amx("camera lock: '%s' for %.1f s", name, seconds);
+		ReplaceSpaces(name, charsmax(name));
+		server_print("stream_cam locked target=%s seconds=%.1f", name, seconds);
+		return PLUGIN_HANDLED;
+	}
+
+	if (equal(arg, "unlock"))
+	{
+		ReleaseLock("released by request");
+
+		// The bot already on screen keeps it for one dwell instead of being cut in the same frame.
+		new Float:now = get_gametime();
+		g_dwellUntil = now + get_pcvar_float(cvar_dwell);
+		g_holdUntil = now + get_pcvar_float(cvar_interval);
+		server_print("stream_cam lock released");
+		return PLUGIN_HANDLED;
+	}
+
 	if (!equal(arg, "status"))
 	{
-		server_print("stream_cam usage: amx_stcam status | amx_stcam cmd <client command> [arg]");
+		server_print("stream_cam usage: amx_stcam status | amx_stcam lock <nick|#userid> [seconds] | amx_stcam unlock | amx_stcam cmd <client command> [arg]");
 		return PLUGIN_HANDLED;
 	}
 
@@ -732,12 +934,26 @@ public CmdStreamCam(id, level, cid)
 			candidates++;
 	}
 
+	// The lock is reported as a name and the seconds it has left: the panel needs both to say "the
+	// camera is held on Nemesis for 42 s" and to notice a lock that should have ended.
+	new locked[NAME_LEN] = "none";
+	new Float:lockLeft = 0.0;
+	if (g_lockTarget > 0)
+	{
+		lockLeft = g_lockUntil - get_gametime();
+		if (lockLeft < 0.0)
+			lockLeft = 0.0;
+		if (is_user_connected(g_lockTarget))
+			get_user_name(g_lockTarget, locked, charsmax(locked));
+		ReplaceSpaces(locked, charsmax(locked));
+	}
+
 	// One line, key=value, no spaces inside values: docs/runbook.md greps exactly this.
-	server_print("stream_cam status: enabled=%d interval=%.1f mode=%d spectator=%s target=%s candidates=%d dwell=%.1f hp=%d active=%d ar=%d pov=%d pov_active=%d",
+	server_print("stream_cam status: enabled=%d interval=%.1f mode=%d spectator=%s target=%s candidates=%d dwell=%.1f hp=%d active=%d ar=%d pov=%d pov_active=%d locked=%s lock_left=%.1f",
 		get_pcvar_num(cvar_enabled), get_pcvar_float(cvar_interval), get_pcvar_num(cvar_mode),
 		spectator, target, candidates,
 		get_pcvar_float(cvar_dwell), hp, g_modeSent, armor,
-		get_pcvar_num(cvar_pov), g_povActive ? 1 : 0);
+		get_pcvar_num(cvar_pov), g_povActive ? 1 : 0, locked, lockLeft);
 
 	return PLUGIN_HANDLED;
 }

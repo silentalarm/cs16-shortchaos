@@ -226,7 +226,7 @@ prefixes a bot name and picks a random voice.
 
 `FL_FROZEN` on YaPB bots (does the bot AI or the engine clear it?), the clip refill without a reload
 animation, glow on the CS16Client, `set_user_origin` into a ring without stuck bots, `Ham_TraceAttack`
-looking like a shot in the picture, and `mp_friendlyfire` is *not* used any more. Two dependencies are
-not built yet: `amx_stcam lock` in `plugins/stream_cam` (camera cut for `sniper_moment`) and the
-`boss_finale` aggregator. Until `lock` exists the plugin prints stream_cam usage and the camera keeps
-its own director.
+looking like a shot in the picture, and `mp_friendlyfire` is *not* used any more. One dependency is
+still missing: the `boss_finale` aggregator. The camera cut it needed is now built -
+`amx_stcam lock <nick|#userid> [seconds]` in `plugins/stream_cam` holds the director on one bot, so a
+paid "hero" event no longer depends on the director guessing right.

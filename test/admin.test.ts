@@ -271,6 +271,42 @@ test("trigger, clear and sim-reset build the commands the plugin expects", async
   });
 });
 
+test("the panel can hold the camera on a paid hero, and the name stays one RCON token", async () => {
+  await withServer(async ({ url, commands }) => {
+    const lock = await api(url, "/api/camera", {
+      method: "POST",
+      body: JSON.stringify({ target: "Mr Smith", seconds: 45 }),
+    });
+    assert.equal(lock.status, 200);
+    const body = (await lock.json()) as { command: string };
+    // Spaces become underscores: an RCON line cannot carry them, and the plugin reads them back.
+    assert.equal(body.command, "amx_stcam lock Mr_Smith 45");
+    assert.ok(commands.includes("amx_stcam lock Mr_Smith 45"));
+
+    const release = await api(url, "/api/camera", {
+      method: "POST",
+      body: JSON.stringify({ release: true }),
+    });
+    assert.equal(release.status, 200);
+    assert.match(await release.text(), /amx_stcam unlock/);
+
+    // A name outside the token alphabet is refused instead of mangled: a mangled name locks the
+    // camera on nobody and the operator sees a "done" for a cut that never happened.
+    const broken = await api(url, "/api/camera", {
+      method: "POST",
+      body: JSON.stringify({ target: "a; quit" }),
+    });
+    assert.equal(broken.status, 400);
+    assert.equal(commands.filter((command) => command.includes("quit")).length, 0);
+
+    const tooLong = await api(url, "/api/camera", {
+      method: "POST",
+      body: JSON.stringify({ target: "Mr Smith", seconds: 601 }),
+    });
+    assert.equal(tooLong.status, 400, "a lock longer than the plugin's own ceiling must be refused here");
+  });
+});
+
 test("running an activity with parameters sends them and refuses values that would break RCON", async () => {
   await withServer(async ({ url, commands }) => {
     const withParams = await api(url, "/api/trigger", {

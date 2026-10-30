@@ -31,12 +31,18 @@ leaves the other intact.
 
 ## Stage 1 — the camera lock (`plugins/stream_cam`)
 
-- [ ] `amx_stcam lock <#userid> <seconds>` with a priority, plus `amx_stcam unlock`;
-- [ ] the director stops picking a new target while a lock is active;
-- [ ] a lock that outlives its owner is dropped on death and on disconnect;
-- [ ] `stream_cam status` reports `locked=<code|none> until=<sec>`.
+- [x] `amx_stcam lock <nick|#userid> [seconds]` (20 s default, 600 s ceiling), plus `amx_stcam unlock`;
+- [x] the director stops picking a new target while a lock is active: `PickTarget` refuses, and the
+      dwell/hold rules are skipped (`!CameraLocked(now)`), so a paid cut is not re-rolled on a timer;
+- [x] a lock that outlives its owner is dropped on death, on disconnect and on round start
+      (`ReleaseLock` is the single exit), and the bot keeps the frame for one more dwell when the
+      clock runs out instead of being cut on the tick it expires;
+- [x] `stream_cam status` reports `locked=<name|none> lock_left=<sec>`, and the panel reaches the lock
+      through `POST /api/camera` (`{ "target": "Mr Smith", "seconds": 45 }`, `{ "release": true }`),
+      recorded in `admin_actions` as `camera_lock`;
 
-**Done when:** the panel can cut to a chosen bot for 20 s and the director does not fight it.
+**Done when:** the panel can cut to a chosen bot for 20 s and the director does not fight it. Built:
+298 tests green, plugin recompiled; the live cut on a running server is the first thing stage 2 checks.
 
 ## Stage 2 — S1 round modes (6 codes)
 

@@ -22,6 +22,11 @@ import { buildState } from "./state.ts";
 
 const MAX_BODY_BYTES = 64 * 1024;
 const CLEAR_COMMAND = "amx_de clear";
+/** Gives the camera back to the director (`plugins/stream_cam`, `amx_stcam unlock`). */
+const CAMERA_UNLOCK_COMMAND = "amx_stcam unlock";
+/** Same ceiling as the plugin: a lock longer than ten minutes is somebody's typo. */
+const CAMERA_MAX_SECONDS = 600;
+const CAMERA_DEFAULT_SECONDS = 20;
 
 const STATIC_FILES: Record<string, { file: string; type: string }> = {
   "/": { file: "admin.html", type: "text/html; charset=utf-8" },
@@ -117,7 +122,7 @@ export interface RateLimitOptions {
 
 const DEFAULT_RATE_LIMIT: Required<RateLimitOptions> = { capacity: 10, refillMs: 6000 };
 /** Only the routes that send RCON commands are limited: reads must never be throttled. */
-const RATE_LIMITED_PATHS = new Set(["/api/trigger", "/api/simulate"]);
+const RATE_LIMITED_PATHS = new Set(["/api/trigger", "/api/simulate", "/api/camera"]);
 
 export class TokenBucket {
   readonly #capacity: number;
@@ -393,6 +398,72 @@ async function handleTrigger(deps: AdminDeps, request: IncomingMessage, response
 const ACTIVITY_PATH = /^\/api\/activity\/([a-z0-9_]{1,32})$/;
 const ACTIVITY_RESET_PATH = /^\/api\/activity\/([a-z0-9_]{1,32})\/reset$/;
 
+/**
+ * The target of `amx_stcam lock` as one RCON token.
+ *
+ * Spaces become underscores because an RCON line cannot carry them, and the plugin reads them back as
+ * spaces before it compares names (underscores are how `stream_cam status` publishes a nickname in the
+ * first place). Anything outside the token alphabet is refused instead of mangled: a mangled name
+ * locks the camera on nobody, and the operator would see a "done" for a cut that never happened.
+ */
+export function cameraTargetToken(raw: string): string {
+  const token = raw.trim().replace(/\s+/gu, "_");
+  if (!/^[A-Za-z0-9_.-]{1,32}$/u.test(token)) {
+    throw new HttpError(400, "target must be letters, digits, spaces, '.', '-' or '_' (32 characters at most)");
+  }
+  return token;
+}
+
+/**
+ * `POST /api/camera` -> `amx_stcam lock <target> <seconds>`, `{ "release": true }` -> `unlock`.
+ *
+ * This is what makes a paid round mode watchable: the director follows the busiest bot, and a hero
+ * event needs *that* bot on screen (docs/activities/roadmap.md, stage 1). The endpoint sends the lock
+ * as its own RCON line, because a lock is not an activity and must not touch the cooldowns, the
+ * donation history or the catalogue.
+ */
+async function handleCamera(deps: AdminDeps, request: IncomingMessage, response: ServerResponse): Promise<void> {
+  const body = await readJson(request);
+  if (!isObject(body)) throw new HttpError(400, "body must be an object");
+
+  if (body.release === true || body.target === null) {
+    const reply = await deps.apply(CAMERA_UNLOCK_COMMAND);
+    deps.store.recordAdminAction({
+      at: new Date(deps.now?.() ?? Date.now()).toISOString(),
+      kind: "camera_unlock",
+      command: CAMERA_UNLOCK_COMMAND,
+      reply,
+    });
+    deps.log("admin.camera_released", { reply });
+    sendJson(response, 200, { command: CAMERA_UNLOCK_COMMAND, reply });
+    return;
+  }
+
+  const rawTarget = body.target;
+  if (typeof rawTarget !== "string" || rawTarget.trim() === "") {
+    throw new HttpError(400, "target is required (or send {\"release\": true})");
+  }
+
+  const rawSeconds = body.seconds;
+  const seconds = rawSeconds === undefined ? CAMERA_DEFAULT_SECONDS : Math.trunc(Number(rawSeconds));
+  if (!Number.isFinite(seconds) || seconds < 1 || seconds > CAMERA_MAX_SECONDS) {
+    throw new HttpError(400, `seconds must be an integer in 1..${CAMERA_MAX_SECONDS}`);
+  }
+
+  const target = cameraTargetToken(rawTarget);
+  const command = `amx_stcam lock ${target} ${seconds}`;
+  const reply = await deps.apply(command);
+
+  deps.store.recordAdminAction({
+    at: new Date(deps.now?.() ?? Date.now()).toISOString(),
+    kind: "camera_lock",
+    command,
+    reply,
+  });
+  deps.log("admin.camera_locked", { target, seconds, reply });
+  sendJson(response, 200, { command, reply });
+}
+
 async function route(
   deps: AdminDeps,
   limiter: TokenBucket,
@@ -442,6 +513,7 @@ async function route(
   if (request.method !== "POST") throw new HttpError(405, "method not allowed");
 
   if (path === "/api/simulate") { await handleSimulate(deps, request, response); return; }
+  if (path === "/api/camera") { await handleCamera(deps, request, response); return; }
   if (path === "/api/trigger") { await handleTrigger(deps, request, response); return; }
   if (path === "/api/settings") { await handleSettings(deps, request, response); return; }
 

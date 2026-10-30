@@ -61,6 +61,48 @@ test("the status line still answers every key the runbook greps", () => {
   assert.match(status, /pov_active=%d/, "the status line does not report an open in-eye window");
 });
 
+test("the camera can be held on a paid hero, and the lock ends by itself", () => {
+  // Stage 1 of docs/activities/roadmap.md: a round mode buys shots of a particular bot, and the
+  // director's "busiest bot" is not that bot. Without the lock the money is spent off camera - the
+  // reason `sniper_moment` was rejected in docs/events.md.
+  assert.match(plugin, /register_srvcmd\("amx_stcam", "CmdStreamCam"\)/, "the command is not registered");
+  assert.match(plugin, /equal\(arg, "lock"\)/, "amx_stcam lock is not handled");
+  assert.match(plugin, /equal\(arg, "unlock"\)/, "amx_stcam unlock is not handled");
+  assert.match(plugin, /read_argv\(2, who, charsmax\(who\)\)/, "the lock does not take a target");
+  assert.match(plugin, /str_to_float\(raw\)/, "the lock length is not read from the command");
+  assert.match(plugin, /#define LOCK_MAX_SECONDS 600\.0/, "a donated lock length is not bounded");
+  assert.match(plugin, /#define LOCK_DEFAULT_SECONDS 20\.0/, "the default lock length changed");
+
+  // Applied in the same RCON call, because the event and the lock arrive in the same second.
+  const lock = /if \(equal\(arg, "lock"\)\)\s*\{[\s\S]*?\n\t\}/.exec(plugin)?.[0] ?? "";
+  assert.notEqual(lock, "", "the lock branch is missing");
+  assert.match(lock, /ApplyCamera\(\)/, "the camera is not cut in the call that took the lock");
+  assert.match(lock, /IsPlayable\(target\)/, "a dead bot can be locked");
+
+  // Every path out: the clock, the death of the bot, a disconnect, the round start and the manual unlock.
+  assert.match(plugin, /stock bool:CameraLocked\(Float:now\)/, "CameraLocked is missing");
+  assert.match(plugin, /stock ReleaseLock\(const reason\[\]\)/, "ReleaseLock is missing");
+  const tick = /public TaskTick\(\)\s*\{[\s\S]*?\n\}/.exec(plugin)?.[0] ?? "";
+  assert.match(tick, /now >= g_lockUntil/, "the lock never expires on its own");
+  assert.match(tick, /!CameraLocked\(now\) && now >= g_dwellUntil/, "the director relocks during a paid cut");
+  const pick = /stock PickTarget\(const reason\[\], preferred\)\s*\{[\s\S]*?\n\}/.exec(plugin)?.[0] ?? "";
+  assert.match(pick, /if \(CameraLocked\(get_gametime\(\)\)\)\s*\n\t\treturn;/, "the director ignores the lock");
+  const death = /public EventDeathMsg\(\)\s*\{[\s\S]*?\n\}/.exec(plugin)?.[0] ?? "";
+  assert.match(death, /victim == g_lockTarget[\s\S]*ReleaseLock/, "a dead hero keeps the camera");
+  const gone = /public client_disconnected\(id\)\s*\{[\s\S]*?\n\}/.exec(plugin)?.[0] ?? "";
+  assert.match(gone, /id == g_lockTarget[\s\S]*ReleaseLock/, "a disconnected hero keeps the camera");
+  const round = /public OnRoundStart\(\)\s*\{[\s\S]*?\n\}/.exec(plugin)?.[0] ?? "";
+  assert.match(round, /ReleaseLock\("round start"\)/, "the lock survives the round it was bought for");
+});
+
+test("the status line reports the lock as a name and the seconds left", () => {
+  const status = /server_print\("stream_cam status:([^"]+)"/.exec(plugin)?.[1] ?? "";
+  assert.match(status, /locked=%s/, "the panel cannot tell that the camera is held");
+  assert.match(status, /lock_left=%.1f/, "the panel cannot tell when the lock ends");
+  assert.match(plugin, /new locked\[NAME_LEN\] = "none"/, "an unlocked camera must read locked=none");
+  assert.match(plugin, /ReplaceSpaces\(locked, charsmax\(locked\)\)/, "the lock name would break the key=value line");
+});
+
 test("the HUD still gets real health and armour from the server", () => {
   // A spectator has no player state of its own, so both numbers are pushed every second: without them
   // the client draws an empty health bar and the bot name with 0 HP.

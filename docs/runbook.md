@@ -135,8 +135,12 @@ next to them, so a conversion can be explained afterwards.
 - **Tests pin a fixture, not the catalogue.** `test/fixture.ts` (`onSaleCatalogue()`) is the
   single-effect catalogue that the poller/queue/mapping tests assert exact RCON lines against; the
   shipped catalogue is covered by `test/activities.test.ts` and `test/plugin-contract.test.ts`.
-- **Two pieces are not built yet:** `amx_stcam lock <#userid> <seconds>` in `plugins/stream_cam`
-  (without it `sniper_moment` cannot cut the camera) and the `boss_finale` accumulation bar.
+- **The camera lock exists now:** `amx_stcam lock <nick|#userid> [seconds]` holds the director on one
+  bot (20 s by default, 600 s at most) and `amx_stcam unlock` gives the camera back. The lock ends by
+  itself when its clock runs out, when the bot dies, when it disconnects and on round start; the status
+  line reports `locked=<name|none> lock_left=<sec>`, and the panel reaches it through
+  `POST /api/camera` (`{ "target": "Mr Smith", "seconds": 45 }`, `{ "release": true }`). What is still
+  missing is the `boss_finale` accumulation bar.
 
 ## The respawn mode: csdm_lite, no CSDM
 
