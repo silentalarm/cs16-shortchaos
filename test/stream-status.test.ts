@@ -210,20 +210,34 @@ test("duplicate codes in the reply are reported once", () => {
 });
 
 test("plugin status is parsed into active, queued and nick", () => {
-  const status = parsePluginStatus("donation_events status: api=1 active=knives_only queued=2 nick=vasya");
-  assert.equal(status.active, "knives_only");
+  const status = parsePluginStatus("donation_events status: api=1 active=glass_cannon queued=2 nick=vasya");
+  assert.equal(status.active, "glass_cannon");
+  assert.deepEqual(status.actives, ["glass_cannon"]);
   assert.equal(status.queued, 2);
+  assert.equal(status.nick, "vasya");
+});
+
+test("several effects in one frame are all reported, not just the last one", () => {
+  // The plugin joins the running codes with '+': one donation can buy a whole batch, and the panel has
+  // to say what is on screen. `active` keeps the first code for older consumers.
+  const status = parsePluginStatus(
+    "donation_events status: api=1 active=meteor_shower+lightsaber_duel+he_party queued=0 nick=vasya",
+  );
+  assert.deepEqual(status.actives, ["meteor_shower", "lightsaber_duel", "he_party"]);
+  assert.equal(status.active, "meteor_shower");
   assert.equal(status.nick, "vasya");
 });
 
 test("an idle server reports none, and an old plugin reply keeps everything null", () => {
   const idle = parsePluginStatus("donation_events status: api=1 active=none queued=0 nick=none");
   assert.equal(idle.active, null);
+  assert.deepEqual(idle.actives, []);
   assert.equal(idle.queued, 0);
   assert.equal(idle.nick, null);
 
   const old = parsePluginStatus("donation_events rejected unknown activity status");
   assert.equal(old.active, null);
+  assert.deepEqual(old.actives, []);
   assert.equal(old.queued, null);
   assert.equal(old.raw, "donation_events rejected unknown activity status");
 });

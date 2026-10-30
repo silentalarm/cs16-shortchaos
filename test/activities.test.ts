@@ -25,15 +25,15 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
 
   assert.equal(config.currency, "RUB");
   assert.equal(config.minAmount, 50);
-  // 18 codes, one price step each: the ladder is the only "menu" the viewer sees, so every step
-  // has to show a different picture. bless_bot/curse_leader/bot_phrase are cheap instant ones,
-  // chaos_burst only triggers plugins/chaos_core, he_party is the one effect on a clock of its own,
-  // bounty/hot_potato/boss_raid follow the round.
-  assert.equal(config.activities.length, 23, "18 legacy codes plus five 2025-10 events");
+  // Six survivors of the 2026-10 reset: the five events on sale plus he_party, which the owner kept
+  // off sale. The other seventeen codes were deleted from the catalogue and from the Pawn plugin; the
+  // plan for the next forty-four is in docs/activities/catalogue.md.
+  assert.equal(config.activities.length, 6, "five 2025-10 events plus the kept he_party");
 
   const codes = config.activities.map((activity) => activity.code);
   assert.equal(new Set(codes).size, codes.length, "codes are unique");
-  assert.equal(codes.includes("zone_start"), false, "the zone activities are gone for good");
+  assert.equal(codes.includes("bot_nick"), false, "the 17 disabled codes are gone for good");
+  assert.equal(codes.includes("map_change"), false, "the 17 disabled codes are gone for good");
 
   // The 2025-10 deal: eight events, one price, one length. A 50 RUB step rolls one of them at random,
   // so an entry that is not enabled can never be drawn and every enabled entry has to cost exactly
@@ -73,19 +73,14 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
   }
 
   const byDuration = new Map(config.activities.map((activity) => [activity.code, activity.duration]));
-  assert.equal(byDuration.get("bot_nick"), "until_map_change");
-  assert.equal(byDuration.get("map_change"), "instant");
-  assert.equal(byDuration.get("chaos_burst"), "instant");
-
-  const mapChange = config.activities.find((activity) => activity.code === "map_change");
-  assert.ok(mapChange);
-  assert.ok(mapChange.globalCooldownSec >= 600, "map change is rate limited to once per 10 minutes");
+  assert.equal(byDuration.get("he_party"), "seconds");
+  assert.equal([...byDuration.values()].every((duration) => duration === "seconds"), true, "every survivor is a clock");
 });
 
 test("every effect on a clock carries that clock in its params as well", () => {
   const config = loadActivities(shippedConfig);
   const timed = config.activities.filter((activity) => activity.duration === "seconds");
-  assert.equal(timed.length, 15, "the five 2025-10 events plus the ten effects that used to wait for Round_End");
+  assert.equal(timed.length, 6, "the five events on sale plus the kept he_party");
 
   for (const activity of timed) {
     // The plugin reads the length from the command the control API builds, so both places must agree.
@@ -112,35 +107,26 @@ test("the HE party is the whole shop: one step, sixty seconds, no cooldown", () 
   assert.equal(party.params.maxNameLength, 16);
 });
 
-test("the round fights carry the parameters the plugin reads", () => {
+test("the catalogue is exactly the six codes the plugin still registers", () => {
   const config = loadActivities(shippedConfig);
+  assert.deepEqual(
+    config.activities.map((activity) => activity.code).sort(),
+    ["glass_cannon", "he_party", "lightsaber_duel", "meteor_shower", "one_bullet", "red_light"],
+  );
+
   const byCode = new Map(config.activities.map((activity) => [activity.code, activity]));
-
-  const bounty = byCode.get("bounty");
-  assert.ok(bounty);
-  assert.equal(bounty.price, 105);
-  assert.equal(bounty.duration, "seconds", "a round never ends here, so the bounty has a clock");
-  assert.equal(bounty.params.health, 150);
-  assert.equal(bounty.params.reward, "weapon_deagle");
-
-  const potato = byCode.get("hot_potato");
-  assert.ok(potato);
-  assert.equal(potato.price, 125);
-  assert.equal(potato.params.health, 25);
-
-  const raid = byCode.get("boss_raid");
-  assert.ok(raid);
-  assert.equal(raid.price, 185);
-  assert.equal(raid.params.bosses, 2);
-  assert.equal(raid.params.bossHealth, 1500);
-  assert.equal(raid.params.bossWeapon, "weapon_m249");
-  assert.equal(raid.params.gruntWeapon, "weapon_deagle");
-
-  for (const activity of [bounty, potato, raid]) {
-    // Without maxNameLength the poller sends no `nick=` and the buyer never appears in the chat
-    // line the plugin prints, which is the only trace of who paid.
-    assert.equal(typeof activity.params.maxNameLength, "number", `${activity.code} must accept a nickname`);
+  // Every survivor is a clock that passes its length to the plugin and accepts the buyer's name: the
+  // donor tag is attached to whichever bot the effect touched.
+  for (const code of ["glass_cannon", "lightsaber_duel", "meteor_shower", "one_bullet", "red_light"]) {
+    const activity = byCode.get(code);
+    assert.ok(activity, `${code} is missing`);
+    assert.equal(activity.enabled, true, `${code} must be on sale`);
+    assert.equal(activity.params.maxNameLength, 16, `${code} must accept a nickname`);
   }
+
+  const party = byCode.get("he_party");
+  assert.ok(party);
+  assert.equal(party.enabled, false, "he_party stays off sale but stays in the plugin");
 });
 
 test("price below the minimum donation is rejected", () => {

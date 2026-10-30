@@ -110,7 +110,7 @@ test("trigger and simulate answer 429 once the bucket is empty, and recover afte
   let clock = Date.parse("2026-01-01T12:00:00.000Z");
   await withServer(async ({ url, commands }) => {
     const trigger = (): Promise<Response> =>
-      api(url, "/api/trigger", { method: "POST", body: JSON.stringify({ code: "awp_only" }) });
+      api(url, "/api/trigger", { method: "POST", body: JSON.stringify({ code: "he_party" }) });
 
     assert.equal((await trigger()).status, 200);
     assert.equal((await trigger()).status, 200);
@@ -118,7 +118,7 @@ test("trigger and simulate answer 429 once the bucket is empty, and recover afte
     const limited = await trigger();
     assert.equal(limited.status, 429);
     assert.ok(Number(limited.headers.get("retry-after")) >= 1, "the answer says when to come back");
-    assert.equal(commands.filter((command) => command === "amx_de awp_only").length, 2, "a limited request never reached RCON");
+    assert.equal(commands.filter((command) => command === "amx_de he_party maxNameLength=16 seconds=60").length, 2, "a limited request never reached RCON");
 
     // One token per second in this configuration: after the wait the panel works again.
     clock += 1000;
@@ -221,31 +221,31 @@ test("simulation can be switched off, and a bad body is rejected with 400", asyn
 
 test("editing a price is validated, persisted and applied to the running catalogue", async () => {
   await withServer(async ({ url, getCatalog, path }) => {
-    const response = await api(url, "/api/activity/knives_only", { method: "POST", body: JSON.stringify({ price: 80 }) });
+    const response = await api(url, "/api/activity/meteor_shower", { method: "POST", body: JSON.stringify({ price: 80 }) });
     assert.equal(response.status, 200);
-    assert.equal(getCatalog().activities.find((activity) => activity.code === "knives_only")?.price, 80);
+    assert.equal(getCatalog().activities.find((activity) => activity.code === "meteor_shower")?.price, 80);
 
     const saved = parseOverrides(JSON.parse(readFileSync(path, "utf8")) as unknown);
-    assert.equal(saved.activities["knives_only"]?.price, 80);
+    assert.equal(saved.activities["meteor_shower"]?.price, 80);
 
-    const invalid = await api(url, "/api/activity/knives_only", { method: "POST", body: JSON.stringify({ price: 10 }) });
+    const invalid = await api(url, "/api/activity/meteor_shower", { method: "POST", body: JSON.stringify({ price: 10 }) });
     assert.equal(invalid.status, 400);
-    assert.equal(getCatalog().activities.find((activity) => activity.code === "knives_only")?.price, 80);
+    assert.equal(getCatalog().activities.find((activity) => activity.code === "meteor_shower")?.price, 80);
 
-    const typo = await api(url, "/api/activity/knives_only", { method: "POST", body: JSON.stringify({ prise: 90 }) });
+    const typo = await api(url, "/api/activity/meteor_shower", { method: "POST", body: JSON.stringify({ prise: 90 }) });
     assert.equal(typo.status, 400);
 
-    const reset = await api(url, "/api/activity/knives_only/reset", { method: "POST", body: JSON.stringify({}) });
+    const reset = await api(url, "/api/activity/meteor_shower/reset", { method: "POST", body: JSON.stringify({}) });
     assert.equal(reset.status, 200);
-    assert.equal(getCatalog().activities.find((activity) => activity.code === "knives_only")?.price, 75);
+    assert.equal(getCatalog().activities.find((activity) => activity.code === "meteor_shower")?.price, 50);
   });
 });
 
 test("trigger, clear and sim-reset build the commands the plugin expects", async () => {
   await withServer(async ({ url, commands }) => {
-    const trigger = await api(url, "/api/trigger", { method: "POST", body: JSON.stringify({ code: "awp_only" }) });
+    const trigger = await api(url, "/api/trigger", { method: "POST", body: JSON.stringify({ code: "he_party" }) });
     assert.equal(trigger.status, 200);
-    assert.ok(commands.includes("amx_de awp_only"));
+    assert.ok(commands.includes("amx_de he_party maxNameLength=16 seconds=60"));
 
     const unknown = await api(url, "/api/trigger", { method: "POST", body: JSON.stringify({ code: "nope" }) });
     assert.equal(unknown.status, 404);
@@ -267,7 +267,7 @@ test("trigger, clear and sim-reset build the commands the plugin expects", async
     assert.ok(kinds.includes("trigger"));
     assert.ok(kinds.includes("clear"));
     assert.ok(kinds.includes("sim_reset"));
-    assert.ok(state.adminActions.some((action) => action.command === "amx_de awp_only"));
+    assert.ok(state.adminActions.some((action) => action.command === "amx_de he_party maxNameLength=16 seconds=60"));
   });
 });
 
@@ -275,16 +275,16 @@ test("running an activity with parameters sends them and refuses values that wou
   await withServer(async ({ url, commands }) => {
     const withParams = await api(url, "/api/trigger", {
       method: "POST",
-      body: JSON.stringify({ code: "bot_rain", params: { extraBots: 10 } }),
+      body: JSON.stringify({ code: "meteor_shower", params: { damage: 40 } }),
     });
     assert.equal(withParams.status, 200);
     const body = (await withParams.json()) as { command: string };
-    assert.equal(body.command, "amx_de bot_rain extraBots=10 maxBots=22 seconds=90");
-    assert.ok(commands.includes("amx_de bot_rain extraBots=10 maxBots=22 seconds=90"));
+    assert.equal(body.command, "amx_de meteor_shower damage=40 maxNameLength=16 radius=320 seconds=15 stock=0");
+    assert.ok(commands.includes("amx_de meteor_shower damage=40 maxNameLength=16 radius=320 seconds=15 stock=0"));
 
     const injected = await api(url, "/api/trigger", {
       method: "POST",
-      body: JSON.stringify({ code: "bot_rain", params: { extraBots: "10; rcon_password x" } }),
+      body: JSON.stringify({ code: "meteor_shower", params: { damage: "40; rcon_password x" } }),
     });
     assert.equal(injected.status, 400);
     assert.equal(commands.filter((command) => command.includes("rcon_password")).length, 0);

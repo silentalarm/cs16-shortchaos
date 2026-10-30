@@ -74,9 +74,14 @@ plugins synced from the image"), so a stale volume is not a problem; a stale *co
 - the round is only a fallback: with `csdm_lite` a round almost never ends, so every lasting effect
   carries its own clock (`set_task`, `seconds=` from the catalogue) and `Round_End` /
   `plugin_end` / `amx_de clear` drop whatever is still running;
-- `bot_nick` lives until a map change, `map_change` changes the map immediately;
-- several effects can run at the same time; `amx_de status` reports the last applied code as
-  `active`, and `queued=0` stays in the line only because the admin panel parses it;
+- `he_party` keeps a repeating task of its own instead of the generic clock, because it has to re-arm
+  the field twice a second, not only end itself;
+- several effects run at the same time; `amx_de status` reports the running codes as a `+`-joined list
+  (`active=glass_cannon+meteor_shower`, five entries at most) and `queued=0` stays in the line only
+  because the admin panel parses it. Everything shared - `sv_gravity`, run speed, health, the weapon
+  rule, glow, the freeze, the camera, the audio bed - is held as a *claim*: the newest effect owns it,
+  and an effect releases only what it still owns (`ClaimTake` / `ClaimRelease` / `EndEffectState`),
+  which is what keeps one event's clock from undoing another's;
 - health, weapons and armour are reset by the next spawn, so only cvars, glows and run speed need
   cleanup.
 
@@ -663,6 +668,10 @@ A second pass with the same DB must report `cursor` equal to the last id and pro
 3. restart the control API. The Pawn plugin does not care about prices.
 
 ## Adding an activity
+
+> The planned catalogue (50 codes in nine systems, with models, sounds and the stage order) is in
+> [`docs/activities/`](activities/README.md). The four steps below are the mechanical part; the system
+> description and the assets belong to that directory.
 
 1. `config/activities.json`: unique `code`, `price`, `duration`, `rounds: 1` (round effects) or
    `seconds: 60` (clock effects) or both `null`, `params` for the effect arguments;

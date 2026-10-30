@@ -259,23 +259,32 @@ export function readStreamHealth(dir: string, now = Date.now()): StreamHealth {
 
 /**
  * Pulls the machine-readable fields out of `donation_events status: active=... queued=... nick=...`.
- * An older plugin answers something else; then everything stays null and the raw reply is shown.
+ *
+ * `active` is a '+'-joined list since several paid effects run at the same time: `active` keeps the
+ * first code so an older panel still shows something, and `actives` carries the whole list. An older
+ * plugin answers something else; then everything stays null and the raw reply is shown.
  */
 export interface PluginStatus {
   active: string | null;
+  /** Every code whose clock is still armed, in the order the plugin reports them. */
+  actives: string[];
   queued: number | null;
   nick: string | null;
   raw: string;
 }
 
 export function parsePluginStatus(reply: string): PluginStatus {
-  const active = /active=([A-Za-z0-9_]+)/.exec(reply);
+  const active = /active=([A-Za-z0-9_+]+)/.exec(reply);
   const queued = /queued=(\d+)/.exec(reply);
   const nick = /nick=([^\s]+)/.exec(reply);
   const activeValue = active?.[1];
   const nickValue = nick?.[1];
+  const actives = activeValue === undefined || activeValue === "none"
+    ? []
+    : activeValue.split("+").filter((code) => code !== "");
   return {
-    active: activeValue === undefined || activeValue === "none" ? null : activeValue,
+    active: actives[0] ?? null,
+    actives,
     queued: queued?.[1] === undefined ? null : Number.parseInt(queued[1], 10),
     nick: nickValue === undefined || nickValue === "none" ? null : nickValue,
     raw: reply.trim(),

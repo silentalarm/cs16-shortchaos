@@ -17,23 +17,26 @@ import { resolveDonation } from "../src/mapping.ts";
 const base = loadActivities(new URL("../config/activities.json", import.meta.url));
 
 test("an override changes only the fields it mentions", () => {
-  const document = parseOverrides({ version: 1, activities: { knives_only: { price: 90 } } });
+  const document = parseOverrides({ version: 1, activities: { he_party: { price: 90 } } });
   const merged = applyOverrides(base, document);
-  const knives = merged.activities.find((activity) => activity.code === "knives_only");
-  const awp = merged.activities.find((activity) => activity.code === "awp_only");
+  const party = merged.activities.find((activity) => activity.code === "he_party");
+  const cannon = merged.activities.find((activity) => activity.code === "glass_cannon");
 
-  assert.equal(knives?.price, 90);
-  assert.equal(knives?.announce, "KNIVES ONLY!");
-  assert.equal(knives?.rounds, 1);
-  assert.equal(awp?.price, 100);
-  assert.deepEqual(overriddenCodes(document), ["knives_only"]);
+  assert.equal(party?.price, 90);
+  assert.equal(party?.announce, "ALL WEAPONS GONE, HE GRENADES ONLY!");
+  assert.equal(party?.seconds, 60);
+  assert.equal(cannon?.price, 50);
+  assert.deepEqual(overriddenCodes(document), ["he_party"]);
 });
 
 test("params are merged over the defaults instead of replacing them", () => {
-  const document = parseOverrides({ version: 1, activities: { bot_rain: { params: { extraBots: 10 } } } });
+  const document = parseOverrides({ version: 1, activities: { meteor_shower: { params: { damage: 40 } } } });
   const merged = applyOverrides(base, document);
-  const rain = merged.activities.find((activity) => activity.code === "bot_rain");
-  assert.deepEqual(rain?.params, { extraBots: 10, maxBots: 22, seconds: 90 });
+  const meteor = merged.activities.find((activity) => activity.code === "meteor_shower");
+  // The override replaces one value and keeps the rest of the shipped params.
+  assert.equal(meteor?.params.damage, 40);
+  assert.equal(meteor?.params.radius, 320);
+  assert.equal(meteor?.params.seconds, 15);
 });
 
 test("disabling every effect on sale leaves nothing to sell", () => {
@@ -56,7 +59,7 @@ test("an override can put a retired effect back on sale for the same 50 RUB step
   );
   const document = parseOverrides({
     version: 1,
-    activities: { ...allOff, knives_only: { enabled: true, price: 50 } },
+    activities: { ...allOff, he_party: { enabled: true, price: 50 } },
   });
   const merged = applyOverrides(base, document);
   const resolution = resolveDonation({ amount: 250, currency: "RUB" }, merged);
@@ -64,12 +67,13 @@ test("an override can put a retired effect back on sale for the same 50 RUB step
   assert.equal(resolution.kind, "activate");
   if (resolution.kind !== "activate") return;
   assert.equal(resolution.units, 5, "5 steps of 50 RUB");
-  // A round-based effect has no clock to extend, so every step keeps its own line.
-  assert.deepEqual(resolution.activities.map((activity) => activity.code), Array(5).fill("knives_only"));
+  // he_party carries a clock, so its five steps become one 300 second run instead of five commands.
+  assert.deepEqual(resolution.activities.map((activity) => activity.code), ["he_party"]);
+  assert.equal(resolution.activities[0]?.seconds, 300);
 });
 
 test("an override that breaks the catalogue rules is refused with a readable error", () => {
-  const document = parseOverrides({ version: 1, activities: { knives_only: { price: 10 } } });
+  const document = parseOverrides({ version: 1, activities: { he_party: { price: 10 } } });
   assert.throws(() => applyOverrides(base, document), (error: unknown) => {
     assert.ok(error instanceof OverrideError);
     assert.match(error.message, /minAmount|price/i);

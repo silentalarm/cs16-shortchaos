@@ -120,11 +120,10 @@ test("the donor's nickname is tagged onto a bot without stealing bot_nick's job"
   assert.match(/stock CleanupActive\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "", /ClearDonorName\(\)/);
   assert.match(/public ClearDonorName\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "", /set_user_info\(g_donorBot, "name", g_donorOriginal\)/);
 
-  // Every nickname-carrying activity gets the tag, except the ones that rename a bot themselves.
+  // Every nickname-carrying activity gets the tag; nothing is excluded any more, because the code that
+  // renamed a bot itself (bot_nick) and the one with nothing to rename (map_change) are gone.
   const dispatch = /public CmdDonationEvent\(id, level, cid\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
   assert.match(dispatch, /AssignDonorNameToTopBot\(nick, EffectSeconds/, "the tag is never applied");
-  assert.match(dispatch, /!equal\(code, "bot_nick"\)/, "bot_nick would lose the name the viewer bought");
-  assert.match(dispatch, /!equal\(code, "map_change"\)/, "a map change has nobody to rename");
 });
 
 test("a repeated HE party adds time instead of restarting the same minute", () => {
@@ -143,7 +142,7 @@ test("every lasting effect on a clock ends itself, because a round never does", 
   const timed = catalog.activities.filter(
     (activity) => activity.duration === "seconds" && activity.code !== "he_party",
   );
-  assert.ok(timed.length >= 9, `only ${timed.length} effects carry a clock`);
+  assert.ok(timed.length >= 5, `only ${timed.length} effects carry a clock`);
 
   for (const activity of timed) {
     const handlerName = registered().get(activity.code);
@@ -186,10 +185,58 @@ test("a dropped player id takes its effect state with it", () => {
   assert.notEqual(disconnected, "", "client_disconnected is not handled");
   assert.match(disconnected, /remove_task\(id\)/, "the delayed re-arm survives the disconnect");
   assert.match(disconnected, /ClearGlow\(id\)/, "the glow stays on a reused slot");
-  assert.match(disconnected, /DropBoss\(id\)/);
   assert.match(disconnected, /g_donorBot == id/, "the donor tag stays on a reused slot");
-  assert.match(disconnected, /g_bountyTarget == id/);
-  assert.match(disconnected, /g_potatoHolder == id/);
+});
+
+test("an effect only gives back what it still owns", () => {
+  // The claim layer: a resource is taken by the newest code and released by ownership, not by putting
+  // a saved value back. Without it the second donation of the night undoes the first one's state.
+  // The resources are plain defines because they are array indexes; a tagged enum only buys warnings.
+  assert.match(source, /#define CLAIM_COUNT \d+/, "the claim resources are not declared");
+  assert.match(source, /#define MAX_CLAIMS \d+/, "the claim depth is not declared");
+
+  const take = /stock bool:ClaimTake\(res, owner, value\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(take, "", "ClaimTake is missing");
+  assert.match(take, /g_claimDepth\[res\]\+\+/, "a claim is not recorded");
+  assert.match(take, /g_claimDepth\[res\] >= MAX_CLAIMS/, "the claim stack has no ceiling");
+
+  const release = /stock bool:ClaimRelease\(res, owner\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(release, "", "ClaimRelease is missing");
+  assert.match(release, /new bool:top = \(i == g_claimDepth\[res\] - 1\)/, "a release cannot tell whether it was the newest claim");
+  assert.match(release, /return top;/, "the caller is never told to undo");
+});
+
+test("every catalogue code has its own undo and never resets its neighbours", () => {
+  const undo = /stock EndEffectState\(const code\[\]\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(undo, "", "EndEffectState is missing");
+  // The old fallback reset every running effect: a meteor ending used to cut a duel short.
+  assert.doesNotMatch(undo, /CleanupActive\(\)/, "a finished effect resets its neighbours again");
+
+  for (const activity of catalog.activities) {
+    assert.match(undo, new RegExp(`equal\\(code, "${activity.code}"\\)`), `${activity.code} has no undo branch`);
+  }
+});
+
+test("the status line reports every running effect, not the last one", () => {
+  const status = /if \(equal\(code, "status"\)\)\s*\{[\s\S]*?\n\t\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(status, "", "the status probe is missing");
+  assert.match(status, /ActiveList\(active, charsmax\(active\)\)/, "the status line does not build a list");
+  assert.match(status, /active=%s queued=0 nick=%s/, "the status line format changed");
+
+  const list = /stock ActiveList\(dest\[\], len\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(list, "", "ActiveList is missing");
+  assert.match(list, /task_exists\(TASK_EFFECT_BASE \+ i\)/, "a running clock is not detected");
+  assert.match(list, /g_hePartyActive/, "he_party keeps its own task and would never be listed");
+});
+
+test("no timer reads the RCON parameter table", () => {
+  // g_paramKeys is overwritten by the next donation, so a timer that reads it acts on somebody else's
+  // money. Handlers snapshot what they need into globals (g_redStockCues, g_meteorDamage, ...).
+  const timers = [...source.matchAll(/public (Task\w+|ReArmOnSpawn)\([^)]*\)\s*\{[\s\S]*?\n\}/g)].map((match) => match[0]);
+  assert.ok(timers.length >= 4, `only ${timers.length} timers found`);
+  for (const timer of timers) {
+    assert.doesNotMatch(timer, /Param(Int|Float|Copy)\(/, `a timer reads live parameters: ${timer.slice(0, 60)}`);
+  }
 });
 
 test("chaos_core resets a slot the engine hands to the next bot", () => {

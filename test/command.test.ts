@@ -1,14 +1,30 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadActivities, findActivity, parseActivities } from "../src/activities.ts";
+import { parseActivities } from "../src/activities.ts";
+import type { Activity } from "../src/activities.ts";
 import { CommandError, buildActivityCommand, sanitizeNick } from "../src/command.ts";
 
-const config = loadActivities(new URL("../config/activities.json", import.meta.url));
-
-function activity(code: string) {
-  const found = findActivity(config, code);
-  assert.ok(found, `activity ${code} must exist in the shipped catalogue`);
-  return found;
+/**
+ * A minimal activity: the builder is tested on its own rules, not on today's shop. Borrowing a code
+ * from config/activities.json made every removal from the catalogue a broken test, and the builder
+ * never cared what the code was called.
+ */
+function bare(overrides: Partial<Activity> = {}): Activity {
+  return {
+    code: "test_effect",
+    title: "Test",
+    announce: "TEST",
+    price: 50,
+    priority: 0,
+    duration: "instant",
+    rounds: null,
+    seconds: null,
+    cooldownSec: 0,
+    globalCooldownSec: 0,
+    enabled: true,
+    params: {},
+    ...overrides,
+  };
 }
 
 test("cyrillic nicknames are transliterated because GoldSrc cannot render them", () => {
@@ -31,35 +47,34 @@ test("nickname respects the length limit and never ends with a separator", () =>
   assert.equal(sanitizeNick("a", 999), "a");
 });
 
-test("simple activities produce a one-word command", () => {
-  assert.equal(buildActivityCommand(activity("knives_only")), "amx_de knives_only");
-  assert.equal(buildActivityCommand(activity("awp_only")), "amx_de awp_only");
+test("an activity without params produces a one-word command", () => {
+  assert.equal(buildActivityCommand(bare()), "amx_de test_effect");
 });
 
 test("params are serialized in a stable sorted order", () => {
   assert.equal(
-    buildActivityCommand(activity("zombie_round")),
-    "amx_de zombie_round seconds=60 zombieHealth=1000 zombieSpeed=1.2 zombies=3",
+    buildActivityCommand(bare({ params: { seconds: 60, zombieSpeed: 1.2, zombies: 3 } })),
+    "amx_de test_effect seconds=60 zombieSpeed=1.2 zombies=3",
   );
-  assert.equal(buildActivityCommand(activity("moon_gravity")), "amx_de moon_gravity gravity=200 seconds=60");
 });
 
 test("lists are comma separated", () => {
   assert.equal(
-    buildActivityCommand(activity("map_change")),
-    "amx_de map_change maps=fy_iceworld,fy_pool_day,fy_snow,fy_buzzkill,fy_simpsons,fy_aztec,fy_dustworld",
+    buildActivityCommand(bare({ params: { maps: ["fy_iceworld", "fy_snow"] } })),
+    "amx_de test_effect maps=fy_iceworld,fy_snow",
   );
 });
 
 test("the bot nickname travels as nick= and maxNameLength is applied", () => {
-  assert.equal(buildActivityCommand(activity("bot_nick"), { nick: "Вася" }), "amx_de bot_nick nick=vasya");
-  assert.equal(buildActivityCommand(activity("bot_nick"), { nick: "a".repeat(40) }), `amx_de bot_nick nick=${"a".repeat(16)}`);
+  const withNick = bare({ params: { maxNameLength: 16 } });
+  assert.equal(buildActivityCommand(withNick, { nick: "Вася" }), "amx_de test_effect nick=vasya");
+  assert.equal(buildActivityCommand(withNick, { nick: "a".repeat(40) }), `amx_de test_effect nick=${"a".repeat(16)}`);
 });
 
 test("the viewer's message travels as one underscore-joined token", () => {
-  const phrase = activity("bot_phrase");
+  const phrase = bare({ params: { maxPhraseLength: 40 } });
 
-  assert.equal(buildActivityCommand(phrase, { message: "Привет, как дела?" }), "amx_de bot_phrase text=privet_kak_dela");
+  assert.equal(buildActivityCommand(phrase, { message: "Привет, как дела?" }), "amx_de test_effect text=privet_kak_dela");
   // No spaces, no newlines, no quoting: the RCON line cannot be split or extended by a viewer.
   const hostile = buildActivityCommand(phrase, { message: 'go "; rcon_password x; //' });
   assert.equal(hostile.includes(" "), true, "the command itself keeps its argument separators");
@@ -68,24 +83,21 @@ test("the viewer's message travels as one underscore-joined token", () => {
 });
 
 test("an empty or unprintable message is dropped, so the plugin keeps its default", () => {
-  const phrase = activity("bot_phrase");
-  assert.equal(buildActivityCommand(phrase, { message: "   " }), "amx_de bot_phrase");
-  assert.equal(buildActivityCommand(phrase, { message: "***" }), "amx_de bot_phrase");
-  assert.equal(buildActivityCommand(phrase, {}), "amx_de bot_phrase");
+  const phrase = bare({ params: { maxPhraseLength: 40 } });
+  assert.equal(buildActivityCommand(phrase, { message: "   " }), "amx_de test_effect");
+  assert.equal(buildActivityCommand(phrase, { message: "***" }), "amx_de test_effect");
+  assert.equal(buildActivityCommand(phrase, {}), "amx_de test_effect");
 });
 
 test("a message is ignored by activities that do not ask for one", () => {
-  assert.equal(buildActivityCommand(activity("knives_only"), { message: "hello there" }), "amx_de knives_only");
+  assert.equal(buildActivityCommand(bare(), { message: "hello there" }), "amx_de test_effect");
 });
 
-test("blessing and cursing carry the nickname of the buyer", () => {
+test("health and weapon travel with the nickname in one line", () => {
+  const buff = bare({ params: { health: 250, maxNameLength: 16, weapon: "weapon_deagle" } });
   assert.equal(
-    buildActivityCommand(activity("bless_bot"), { nick: "Вася" }),
-    "amx_de bless_bot health=250 weapon=weapon_deagle nick=vasya",
-  );
-  assert.equal(
-    buildActivityCommand(activity("curse_leader"), { nick: "kolya" }),
-    "amx_de curse_leader health=25 nick=kolya",
+    buildActivityCommand(buff, { nick: "Вася" }),
+    "amx_de test_effect health=250 weapon=weapon_deagle nick=vasya",
   );
 });
 
@@ -109,7 +121,10 @@ test("an honest nickname survives the stopword filter", () => {
 
 test("a viewer phrase is not stopword filtered", () => {
   // The phrase is the product the viewer paid for; only the nickname sticks to the scoreboard.
-  assert.equal(buildActivityCommand(activity("bot_phrase"), { message: "suka" }), "amx_de bot_phrase text=suka");
+  assert.equal(
+    buildActivityCommand(bare({ params: { maxPhraseLength: 40 } }), { message: "suka" }),
+    "amx_de test_effect text=suka",
+  );
 });
 
 test("a param with forbidden characters is refused before it reaches RCON", () => {

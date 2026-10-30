@@ -183,15 +183,9 @@ test("the rotation is fight-yard maps only, and every one of them is fetched", (
     assert.ok(pinned !== null, `${map} has no sha256 pin in infra/maps/maps.json`);
   }
 
-  // Two copies of the list exist on purpose - the cvar is what the duel uses, the activity's
-  // `maps=` is what a donation sends - so the test is what keeps them equal.
-  const activities = JSON.parse(
-    readFileSync(new URL("../config/activities.json", import.meta.url), "utf8"),
-  ) as { activities: { code: string; params?: { maps?: string[] } }[] };
-  const mapChange = activities.activities.find((activity) => activity.code === "map_change");
-  const sent = mapChange?.params?.maps ?? [];
-  for (const map of rotation) {
-    assert.ok(sent.includes(map), `the map_change activity does not know ${map}`);
-  }
+  // The rotation used to be checked against the `map_change` activity's `maps=` list. That code was
+  // removed with the 2026-10 reset; when S5 of docs/activities/roadmap.md brings a map rotation back,
+  // this is the test that pins it against the cvar the duel uses.
+  assert.ok(rotation.length > 0, "the map rotation is empty");
 });
 

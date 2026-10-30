@@ -22,7 +22,7 @@ function donation(overrides: Partial<StoredDonation> = {}): StoredDonation {
     amount: 130,
     currency: "RUB",
     status: "applied",
-    activityCode: "bot_rain",
+    activityCode: "glass_cannon",
     receivedAt: new Date(NOW).toISOString(),
     source: "da",
     ...overrides,
@@ -44,23 +44,23 @@ test("the last donation is shown with its amount, and what it bought on its own 
   const overlay = buildOverlay({ recent: [donation()], catalog, now: NOW });
 
   assert.equal(overlay.lines[1], "LAST: Vasya 130 RUB");
-  assert.equal(overlay.lines[2], "ВЫПАЛО: BOT RAIN");
+  assert.equal(overlay.lines[2], "ВЫПАЛО: ПУШКА");
 });
 
 test("a batch keeps every name: one strip could hold only the first one", () => {
   const overlay = buildOverlay({
-    recent: [donation({ activityCode: "bot_nick+he_party" })],
+    recent: [donation({ activityCode: "glass_cannon+he_party" })],
     catalog,
     now: NOW,
   });
-  assert.equal(overlay.lines[2], "ВЫПАЛО: BOT NICKNAME, HE PARTY");
+  assert.equal(overlay.lines[2], "ВЫПАЛО: ПУШКА, HE PARTY");
 });
 
 test("a queued donation is marked as waiting, not as applied", () => {
-  const overlay = buildOverlay({ recent: [donation({ status: "queued", activityCode: "map_change" })], catalog, now: NOW });
+  const overlay = buildOverlay({ recent: [donation({ status: "queued", activityCode: "meteor_shower" })], catalog, now: NOW });
 
   assert.equal(overlay.lines[1], "LAST: WAITING Vasya 130 RUB");
-  assert.equal(overlay.lines[2], "ВЫПАЛО: MAP CHANGE");
+  assert.equal(overlay.lines[2], "ВЫПАЛО: МЕТЕОР");
 });
 
 test("the queue depth replaces the menu headline", () => {

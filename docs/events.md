@@ -1,5 +1,10 @@
 # The 2025-10 event set
 
+> **Superseded (2026-10).** The set below is the record of the five-event deal. The plan that replaces
+> it — 6 kept codes, 17 removed, 44 new in nine systems, with assets and the order of work — lives in
+> [`docs/activities/`](activities/README.md). Read that first; this file stays as history and as the
+> list of ideas that were rejected and why.
+
 The stream sells **five events, one price, one length** and runs **one accumulation bar**. This file is
 the record of that decision: it is written down so a later session does not have to re-derive it from
 chat history. Code lives in `config/activities.json`, `plugins/donation_events/donation_events.sma`

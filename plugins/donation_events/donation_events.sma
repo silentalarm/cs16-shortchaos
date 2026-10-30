@@ -4,18 +4,23 @@
  * Contract with the control API (src/command.ts):
  *   amx_de codes                     -> prints "donation_events codes: a,b,c"
  *   amx_de version                   -> prints API and plugin version
- *   amx_de status                    -> prints "donation_events status: api=1 active=<code|none> queued=0 nick=<nick|none>"
- *   amx_de clear                     -> cancels the round effects and restores the nickname
+ *   amx_de status                    -> prints "donation_events status: api=1 active=<a+b|none> queued=0 nick=<nick|none>"
+ *   amx_de clear                     -> cancels every running effect
  *   amx_de <code> key=value ...      -> applies the activity now, in the same RCON call
  *
  * Rules: every activity applies at once - a donation that shows up on screen two minutes later
  * reads as a refund request. Lasting effects end on their own clock (set_task + `seconds=` from the
  * catalogue), because a csdm_lite round almost never ends; Round_End, `amx_de clear` and plugin_end
- * are the fallback that drops whatever is still running. bot_nick persists until the map changes;
- * map_change changes the map at once.
- * Round fights (bounty, hot_potato, boss_raid) watch DeathMsg for the rest of the round: the
- * effect changes hands when a bot dies, which is the part the viewer is paying for.
- * Adding an activity = write a handler and add one RegisterDonationEffect line.
+ * are the fallback that drops whatever is still running.
+ *
+ * Several paid effects run at the same time, one donation can buy a whole batch, so an effect may
+ * only undo what it still owns: every shared resource (gravity, run speed, health, the weapon rule,
+ * glow, the freeze, the camera, the audio bed) is taken as a *claim* and released on the effect's own
+ * clock. `EndEffectState` is the only place a code gives its state back, and it never resets a
+ * neighbour. The nine systems this plugin is growing into are described in docs/activities/.
+ *
+ * Adding an activity = write a handler, claim what it touches, add one RegisterDonationEffect line
+ * and one branch in EndEffectState.
  */
 #include <amxmodx>
 #include <fakemeta>
@@ -40,10 +45,11 @@
 // How long a blessed or cursed bot keeps its glow. Health and weapons reset on the next spawn.
 #define GLOW_SECONDS 20.0
 
-/* The registry only has to hold the codes the catalogue sells: the 18 legacy handlers plus the eight
-   2025-10 events is 26, so the table is 30. It used to be 32, which costs 2 KB of static data for
-   nothing - and static data is what amxxpc runs out of on this file, so it is not padded further. */
-#define MAX_EFFECTS 30
+/* The registry only has to hold the codes the catalogue sells plus the ones the roadmap is about to
+   add: 6 surviving codes today, 50 when the nine systems of docs/activities/ are built. 56 leaves a
+   little room to add a code without a recompile of the table, and the strings live in a table of
+   codes and handler names, which is the cheapest part of the static data this file spends. */
+#define MAX_EFFECTS 56
 /* m_pActiveItem is not defined by the CS include set of this AMXX build. 373 with the linux player
    offset (5) is the field the active weapon entity is read from; it has not moved since CS 1.6, and
    the alternative is a version-specific include. */
@@ -53,6 +59,9 @@
 #define KEY_LEN 24
 #define VALUE_LEN 64
 #define NICK_LEN 32
+/* The `active` field of the status line: a '+'-joined list of running codes. Five codes of up to 20
+   characters plus separators fit; the list is capped, not truncated mid-code. */
+#define ACTIVE_LEN 128
 
 new g_codes[MAX_EFFECTS][CODE_LEN];
 new g_handlers[MAX_EFFECTS][CODE_LEN];
@@ -65,29 +74,43 @@ new g_paramCount;
 new g_paramKeys[MAX_PARAMS][KEY_LEN];
 new g_paramValues[MAX_PARAMS][VALUE_LEN];
 
-new g_nickBot;
-new g_nickOriginal[NICK_LEN];
-/* The name the plugin actually put on the bot, so a stale tag can be told apart from a name the
-   server itself changed. Declared here, with the other nick state: a `new` further down the file is
-   invisible to a function above it, and amxxpc answers that with std::bad_alloc, not with an error. */
-new g_nickApplied[NICK_LEN];
-new bool:g_nickActive;
-
-/* The donor tag: a bot at the top of the scoreboard temporarily wears the buyer's name. It is
-   separate from bot_nick on purpose - that one is bought outright and lasts until the map changes,
-   while this one is a badge on top of whatever activity the money bought. */
+/* The donor tag: a bot at the top of the scoreboard temporarily wears the buyer's name. It is the
+   badge on top of whatever activity the money bought, not a nickname the viewer owns. */
 #define TASK_DONOR_TAG 4021
 new g_donorBot;
 new g_donorOriginal[NICK_LEN];
 new g_donorApplied[NICK_LEN];
 new bool:g_donorActive;
 
-new g_savedGravity;
-new g_savedBotQuota;
-new bool:g_gravitySaved;
-new bool:g_quotaSaved;
-/* zombie_round is the only effect that touches per-player run speed; the flag keeps CleanupActive
-   from rewriting every bot's speed on a round end that never changed it. */
+/* ---------- resource claims ----------
+   Effects run at the same time, so "restore the value I saved" is wrong the moment two of them touch
+   the same resource: the slower one would put back a value the newer one never had. A claim is
+   (resource, owner, value). The owner is a registry index and not the code string, because a
+   CLAIM_COUNT x MAX_CLAIMS x CODE_LEN table is several KB of static data, and amxxpc already runs
+   close to its budget on this file. The newest claim wins; `ClaimRelease` answers whether the caller
+   *was* the newest, and only then may it undo the state it applied. */
+/* The resources an effect can own. Plain defines rather than a tagged enum: these values are array
+   indexes, and a tag here buys nothing but "tag mismatch" warnings on every `g_claimDepth[res]`. */
+#define CLAIM_GRAVITY 0
+#define CLAIM_SPEED 1
+#define CLAIM_HEALTH 2
+#define CLAIM_WEAPONS 3
+#define CLAIM_GLOW 4
+#define CLAIM_FREEZE 5
+#define CLAIM_AUDIO 6
+#define CLAIM_CAMERA 7
+#define CLAIM_COUNT 8
+#define MAX_CLAIMS 3
+new g_claimOwner[CLAIM_COUNT][MAX_CLAIMS];
+new g_claimValue[CLAIM_COUNT][MAX_CLAIMS];
+new g_claimDepth[CLAIM_COUNT];
+/* sv_gravity as the server had it before the first claim took it: the only value a release may put
+   back once no claim is left. */
+new g_gravityBase;
+new bool:g_gravityBaseSaved;
+
+/* lightsaber_duel is the only effect that touches per-player run speed; the flag keeps ResetBotSpeed
+   from rewriting every bot's speed on a reset that never changed it. */
 new bool:g_speedBoosted;
 
 /* lightsaber_duel holds the whole field on knives for its clock. The flag is read by the respawn and
@@ -95,25 +118,6 @@ new bool:g_speedBoosted;
    by the time a bot respawns. */
 new bool:g_duelActive;
 new g_duelHealth;
-
-/* Round fights. All three are one-round effects that follow the kill feed, so their state lives
-   next to the round state and is dropped in CleanupActive() together with the cvars we touched. */
-#define MAX_BOSSES 4
-#define MAX_TRACKED_BOTS 32
-
-new g_bountyTarget;
-new bool:g_bountyActive;
-new g_bountyReward[VALUE_LEN];
-
-new g_potatoHolder;
-new bool:g_potatoActive;
-new g_potatoHealth;
-
-new g_bosses[MAX_BOSSES];
-new g_bossCount;
-new g_bossHealth;
-new g_bossWeapon[VALUE_LEN];
-new bool:g_bossRaidActive;
 
 /* The HE party was the first effect with a clock of its own: it does not end with the round, it ends
    when `seconds` runs out. The task runs twice a second, so the counter counts halves. */
@@ -129,6 +133,14 @@ new bool:g_hePartyActive;
    waiting for Round_End meant a gravity change, a bounty or a boss raid could sit on the server until
    the next map. The task id is derived from the registry index, which gives exactly one timer per
    code: starting the same effect again replaces its timer instead of stacking a second one. */
+/* Task id ranges, so a new system cannot collide with an old one:
+     4013  HE party's repeating task
+     4021  the donor tag
+     4500+ effect clocks, one per registry index (MAX_EFFECTS is 56, so 4500..4555)
+     4701+ the per-effect helper tasks of the 2025-10 set
+     4800+ everything added after the reset (docs/activities/roadmap.md)
+   A per-player task must be mapped from the player id, because `client_disconnected` drops the task
+   with the same id. */
 #define TASK_EFFECT_BASE 4500
 #define DEFAULT_EFFECT_SECONDS 45.0
 
@@ -153,11 +165,18 @@ new bool:g_hePartyActive;
 new g_cannonBot;
 new bool:g_cannonActive;
 /* The health the cannon bot had before it was buffed: "restore what it was" is part of what the
-   viewer buys, and a 1000 HP bot that keeps the number after the clock is a bug you can see. */
+   viewer buys, and a 1000 HP bot that keeps the number after the clock is a bug you can see.
+   `g_cannonHealth` is the buff itself, captured from the command: ArmGlassCannon runs again from the
+   ammo task when the hero dies, and by then the parameter table belongs to another donation. */
 new g_cannonSavedHealth;
+new g_cannonHealth = 1000;
 
 new bool:g_meteorActive;
 new g_meteorSprite;
+/* Snapshot of the command's parameters: MeteorStrike runs 43 times a second from a timer, and by then
+   the parameter table belongs to whatever donation arrived last. Same rule as g_redStockCues. */
+new g_meteorRadius = 320;
+new g_meteorDamage = 2;
 
 new bool:g_redLightActive;
 new bool:g_redFrozen;
@@ -174,36 +193,16 @@ public plugin_init()
 	register_plugin(PLUGIN_NAME, PLUGIN_VERSION, "cs16-youtube");
 	register_srvcmd("amx_de", "CmdDonationEvent");
 
-	register_logevent("OnRoundStart", 2, "1=Round_Start");
 	register_logevent("OnRoundEnd", 2, "1=Round_End");
 
-	// DeathMsg: 1 = killer, 2 = victim. Bounty, hot potato and the boss raid change hands on a kill.
-	register_event("DeathMsg", "OnDeathMsg", "a");
-	// ResetHUD is delivered to the player who just spawned: a boss has to come back as a boss.
+	// ResetHUD is delivered to the player who just spawned: the duel re-arms its rule there.
 	register_event("ResetHUD", "OnPlayerSpawn", "be");
 	// CurWeapon fires on every weapon switch: lightsaber_duel turns one back into a knife.
 	register_event("CurWeapon", "OnCurWeapon", "be", "1=1");
 	// A dropped weapon is a pickup away from breaking the duel; the touch hook refuses it.
 	RegisterHam(Ham_Touch, "weaponbox", "OnWeaponBoxTouch");
 
-	RegisterDonationEffect("bot_nick", "EffectBotNick");
-	RegisterDonationEffect("meat_round", "EffectMeatRound");
-	RegisterDonationEffect("knives_only", "EffectKnivesOnly");
 	RegisterDonationEffect("he_party", "EffectHeParty");
-	RegisterDonationEffect("moon_gravity", "EffectMoonGravity");
-	RegisterDonationEffect("awp_only", "EffectAwpOnly");
-	RegisterDonationEffect("bounty", "EffectBounty");
-	RegisterDonationEffect("bot_rain", "EffectBotRain");
-	RegisterDonationEffect("hot_potato", "EffectHotPotato");
-	RegisterDonationEffect("terminators", "EffectTerminators");
-	RegisterDonationEffect("zombie_round", "EffectZombieRound");
-	RegisterDonationEffect("boss_raid", "EffectBossRaid");
-	RegisterDonationEffect("terminator_one", "EffectTerminatorOne");
-	RegisterDonationEffect("map_change", "EffectMapChange");
-	RegisterDonationEffect("bless_bot", "EffectBlessBot");
-	RegisterDonationEffect("curse_leader", "EffectCurseLeader");
-	RegisterDonationEffect("bot_phrase", "EffectBotPhrase");
-	RegisterDonationEffect("chaos_burst", "EffectChaosBurst");
 
 	// The 2025-10 event set: 50 RUB each, 15 seconds each, one in the frame at a time.
 	RegisterDonationEffect("glass_cannon", "EffectGlassCannon");
@@ -307,18 +306,20 @@ public CmdDonationEvent(id, level, cid)
 
 	if (equal(code, "status"))
 	{
-		// One line, key=value, no spaces inside values: the admin panel parses exactly this.
-		new active[CODE_LEN];
-		if (g_activeCode[0])
-			copy(active, CODE_LEN - 1, g_activeCode);
-		else
-			copy(active, CODE_LEN - 1, "none");
+		// One line, key=value, no spaces inside values: the admin panel parses exactly this. `active`
+		// is a '+'-joined list, because several paid effects run at the same time; `nick` keeps its
+		// key for the panel and reports the bot wearing the buyer's tag, or `none`.
+		new active[ACTIVE_LEN];
+		ActiveList(active, charsmax(active));
+
+		if (active[0] == '^0')
+			copy(active, charsmax(active), "none");
 
 		new nick[NICK_LEN];
 		copy(nick, NICK_LEN - 1, "none");
-		if (g_nickActive && g_nickBot > 0 && is_user_connected(g_nickBot))
+		if (g_donorActive && g_donorBot > 0 && is_user_connected(g_donorBot))
 		{
-			get_user_name(g_nickBot, nick, NICK_LEN - 1);
+			get_user_name(g_donorBot, nick, NICK_LEN - 1);
 			if (nick[0] == '^0')
 				copy(nick, NICK_LEN - 1, "none");
 		}
@@ -354,10 +355,8 @@ public CmdDonationEvent(id, level, cid)
 	copy(g_activeCode, CODE_LEN - 1, code);
 	RunHandler(handler);
 
-	// The buyer's name goes on the scoreboard for every activity that carries a nickname and does not
-	// rename a bot itself: the effect is what the money bought, this is who bought it. The tag lives as
-	// long as the effect the same command bought.
-	if (!equal(code, "bot_nick") && !equal(code, "bot_phrase") && !equal(code, "map_change") && !equal(code, "chaos_burst"))
+	// The buyer's name goes on the scoreboard on top of the effect the same command bought: the effect
+	// is what the money bought, the gold shell is who bought it. The tag lives as long as the effect.
 	{
 		new nick[VALUE_LEN];
 		ParamCopy("nick", nick, charsmax(nick), "");
@@ -505,16 +504,164 @@ stock LiveEffectCode(dest[], len, const skip[])
 	return 0;
 }
 
-/* One effect's own undo. Codes handled here keep a batch alive: a meteor that ends must not restore the
-   cannon bot's health, and a duel that ends must not drop a zombie's speed. Anything else (the older
-   fight effects) keeps the global reset it has always had - their state is not split per effect yet. */
+/* Every code whose clock is still armed, joined by '+', capped at five entries. Several paid effects
+   run at the same time, so `active` is a list and not one code: the panel needs to know that a meteor
+   is still going while the cannon is also on. `he_party` keeps its own repeating task and is asked
+   separately, because it has no generic clock. */
+stock ActiveList(dest[], len)
+{
+	dest[0] = '^0';
+	new parts;
+
+	for (new i = 0; i < g_effectCount && parts < 5; i++)
+	{
+		if (!task_exists(TASK_EFFECT_BASE + i))
+			continue;
+
+		if (dest[0] != '^0')
+			add(dest, len, "+");
+		add(dest, len, g_codes[i]);
+		parts++;
+	}
+
+	if (g_hePartyActive && parts < 5)
+	{
+		if (dest[0] != '^0')
+			add(dest, len, "+");
+		add(dest, len, "he_party");
+	}
+}
+
+/* ---------- resource claims: who may undo what ---------- */
+
+/* Push a claim and report whether the caller is now the newest owner of that resource. A caller that
+   is not the newest must not touch it: that is the whole point, a later effect overrides an earlier
+   one instead of the two fighting over the same cvar. */
+stock bool:ClaimTake(res, owner, value)
+{
+	if (owner < 0 || res < CLAIM_GRAVITY || res >= CLAIM_COUNT)
+		return false;
+
+	// The same owner claiming twice replaces its own entry instead of taking a second slot.
+	for (new i = 0; i < g_claimDepth[res]; i++)
+	{
+		if (g_claimOwner[res][i] == owner)
+		{
+			g_claimValue[res][i] = value;
+			return i == g_claimDepth[res] - 1;
+		}
+	}
+
+	if (g_claimDepth[res] >= MAX_CLAIMS)
+	{
+		// Drop the oldest claim. Its owner is the one that has run longest and whose clock fires first;
+		// it will release a resource it no longer holds, which ClaimRelease reports safely.
+		for (new i = 0; i < MAX_CLAIMS - 1; i++)
+		{
+			g_claimOwner[res][i] = g_claimOwner[res][i + 1];
+			g_claimValue[res][i] = g_claimValue[res][i + 1];
+		}
+		g_claimDepth[res] = MAX_CLAIMS - 1;
+	}
+
+	g_claimOwner[res][g_claimDepth[res]] = owner;
+	g_claimValue[res][g_claimDepth[res]] = value;
+	g_claimDepth[res]++;
+	return true;
+}
+
+/* Release one claim. `true` means the caller was the newest owner, so it has to undo the state it
+   applied; `false` means somebody newer owns the resource and the undo must be skipped. */
+stock bool:ClaimRelease(res, owner)
+{
+	if (owner < 0 || res < CLAIM_GRAVITY || res >= CLAIM_COUNT)
+		return false;
+
+	for (new i = g_claimDepth[res] - 1; i >= 0; i--)
+	{
+		if (g_claimOwner[res][i] != owner)
+			continue;
+
+		new bool:top = (i == g_claimDepth[res] - 1);
+		for (new j = i; j < g_claimDepth[res] - 1; j++)
+		{
+			g_claimOwner[res][j] = g_claimOwner[res][j + 1];
+			g_claimValue[res][j] = g_claimValue[res][j + 1];
+		}
+
+		g_claimDepth[res]--;
+		g_claimOwner[res][g_claimDepth[res]] = -1;
+		g_claimValue[res][g_claimDepth[res]] = 0;
+		return top;
+	}
+
+	return false;
+}
+
+/* Drops every claim an owner holds. `amx_de clear`, the round end and plugin_end start from a blank
+   field, and a leftover claim would let the next event believe the resource is still taken. */
+stock ReleaseAllClaims(owner)
+{
+	for (new res = 0; res < CLAIM_COUNT; res++)
+	{
+		for (new i = g_claimDepth[res] - 1; i >= 0; i--)
+		{
+			if (g_claimOwner[res][i] != owner)
+				continue;
+
+			for (new j = i; j < g_claimDepth[res] - 1; j++)
+			{
+				g_claimOwner[res][j] = g_claimOwner[res][j + 1];
+				g_claimValue[res][j] = g_claimValue[res][j + 1];
+			}
+
+			g_claimDepth[res]--;
+			g_claimOwner[res][g_claimDepth[res]] = -1;
+			g_claimValue[res][g_claimDepth[res]] = 0;
+		}
+	}
+}
+
+/* sv_gravity is the one resource the plugin can apply on its own: the base is captured before the
+   first claim, and only the newest owner writes the cvar. */
+stock ClaimGravity(owner, gravity)
+{
+	if (!g_gravityBaseSaved)
+	{
+		g_gravityBase = get_cvar_num("sv_gravity");
+		g_gravityBaseSaved = true;
+	}
+
+	ClaimTake(CLAIM_GRAVITY, owner, gravity);
+	set_cvar_num("sv_gravity", gravity);
+}
+
+stock RestoreGravity()
+{
+	if (!g_gravityBaseSaved)
+		return;
+
+	set_cvar_num("sv_gravity", g_gravityBase);
+	g_gravityBaseSaved = false;
+}
+
+/* One effect's own undo, and the only undo an effect may run: a code releases the claims it holds and
+   touches nothing else. Codes that used to fall through to CleanupActive() - which resets every other
+   running effect as well - have their own branch here. That fallback is why a meteor ending on its
+   clock used to restore the cannon bot's health and cut a duel short. */
 stock EndEffectState(const code[])
 {
+	new owner = FindEffect(code);
+
 	if (equal(code, "glass_cannon"))
 	{
 		remove_task(TASK_CANNON_AMMO);
-		if (g_cannonBot > 0 && g_cannonSavedHealth > 0 && is_user_alive(g_cannonBot))
+		// The health is only put back by the effect that still owns it: a second health event on the
+		// same bot overrides this one, and then the old value is not the right one any more.
+		if (ClaimRelease(CLAIM_HEALTH, owner) && g_cannonBot > 0 && g_cannonSavedHealth > 0 && is_user_alive(g_cannonBot))
 			set_user_health(g_cannonBot, g_cannonSavedHealth);
+		if (ClaimRelease(CLAIM_GLOW, owner))
+			ClearGlow(g_cannonBot);
 		g_cannonActive = false;
 		g_cannonBot = 0;
 		g_cannonSavedHealth = 0;
@@ -541,10 +688,24 @@ stock EndEffectState(const code[])
 	if (equal(code, "lightsaber_duel"))
 	{
 		g_duelActive = false;
-		ResetBotSpeed();
+		if (ClaimRelease(CLAIM_SPEED, owner))
+			ResetBotSpeed();
 		// The duel glows the whole field, and a glow is render state on the entity: it survives respawn.
-		for (new id = 1; id <= get_maxplayers(); id++)
-			ClearGlow(id);
+		if (ClaimRelease(CLAIM_GLOW, owner))
+		{
+			for (new id = 1; id <= get_maxplayers(); id++)
+				ClearGlow(id);
+		}
+		return;
+	}
+
+	if (equal(code, "he_party"))
+	{
+		// The party owns its own repeating task instead of a generic clock, so its undo is explicit.
+		remove_task(TASK_HE_PARTY);
+		g_hePartyActive = false;
+		g_hePartyTicks = 0;
+		ClaimRelease(CLAIM_WEAPONS, owner);
 		return;
 	}
 
@@ -554,31 +715,21 @@ stock EndEffectState(const code[])
 		return;
 	}
 
-	CleanupActive();
+	// No fallback on purpose: a code without a branch here would reset its neighbours, which is the
+	// bug this function exists to avoid. A new code adds a branch, and the contract test insists on it.
 }
 
 /* ---------- round lifecycle ---------- */
 
-public OnRoundStart()
-{
-	ValidateNickState();
-}
-
 public OnRoundEnd()
 {
-	// Round effects never survive the round. `bot_nick` is persistent state with its own lifetime,
-	// so the round only drops its label; the renamed bot keeps its name until a map change.
-	new bool:nickRunning = false;
-	if (g_activeCode[0] && equal(g_activeCode, "bot_nick"))
-		nickRunning = true;
-
 	// Unconditional: with every activity applying at once, a round can hold several effects, and
 	// the cleanup must not depend on which one happened to be applied last. The clocks are dropped
 	// with it: an effect the round already ended must not announce itself again in two minutes.
 	StopAllEffectTimers();
 	CleanupActive();
 
-	if (g_activeCode[0] && !nickRunning)
+	if (g_activeCode[0])
 	{
 		log_amx("activity '%s' finished", g_activeCode);
 		server_print("donation_events finished %s", g_activeCode);
@@ -620,23 +771,15 @@ stock RunHandler(const handler[])
 	return 1;
 }
 
-/* Restores every global this plugin touched. Health and weapons do not need restoring:
-   the next spawn resets them. */
+/* The full reset, used by the round end, `amx_de clear` and plugin_end: every claim is dropped, the
+   gravity returns to the value the server had before the first claim, and every effect-specific cvar
+   is released by ResetEventState. Health and weapons need no restoring - the next spawn resets them. */
 stock CleanupActive()
 {
-	if (g_gravitySaved)
-	{
-		set_cvar_num("sv_gravity", g_savedGravity);
-		g_gravitySaved = false;
-	}
+	for (new res = 0; res < CLAIM_COUNT; res++)
+		g_claimDepth[res] = 0;
 
-	if (g_quotaSaved)
-	{
-		SetCvarFirst("yb_quota", "pb_quota", g_savedBotQuota);
-		g_quotaSaved = false;
-	}
-
-	ClearFightState();
+	RestoreGravity();
 	ClearDonorName();
 	ResetBotSpeed();
 	// The 2025-10 events keep their own tasks and cvars; one entry point for every reset path.
@@ -664,37 +807,12 @@ stock ResetBotSpeed()
 	log_amx("speed: back to %.0f", speed);
 }
 
-/* A finished round leaves nothing behind except the glow: health, weapons and armour are reset by
-   the next spawn. The state is dropped even when a bot is gone, so a reused player id can never
-   inherit somebody else's bounty. */
-stock ClearFightState()
-{
-	if (g_bountyTarget > 0)
-		ClearGlow(g_bountyTarget);
-
-	if (g_potatoHolder > 0)
-		ClearGlow(g_potatoHolder);
-
-	for (new i = 0; i < g_bossCount; i++)
-		ClearGlow(g_bosses[i]);
-
-	g_bountyTarget = 0;
-	g_bountyActive = false;
-	g_potatoHolder = 0;
-	g_potatoActive = false;
-	g_bossCount = 0;
-	g_bossRaidActive = false;
-}
-
-/* Cancels everything at once: the round effect and the persistent nickname. Used by `amx_de clear`
-   (the panel's "stop everything") and by nothing else. */
+/* Cancels everything at once. Used by `amx_de clear` (the panel's "stop everything") and by nothing
+   else. */
 stock ClearAll()
 {
 	StopAllEffectTimers();
 	CleanupActive();
-
-	if (g_nickActive)
-		RestoreNick();
 
 	g_activeCode[0] = '^0';
 	g_paramCount = 0;
@@ -702,17 +820,15 @@ stock ClearAll()
 
 public plugin_end()
 {
-	// A map change unloads the plugin while the server keeps running: every clock and every cvar has
-	// to be dropped here, or the next map inherits a renamed bot and a 200 gravity world.
+	// A map change unloads the plugin while the server keeps running: every clock, every claim and
+	// every cvar has to be dropped here, or the next map inherits a 200 gravity world.
 	StopAllEffectTimers();
 	CleanupActive();
-	if (g_nickActive)
-		RestoreNick();
 }
 
 /* A player id is a slot, not a person: the engine reuses the slot of a bot that dropped, so every
    piece of state keyed by id is dropped here. Without this the next occupant inherits somebody else's
-   bounty, potato, boss bar or nickname.
+   glow or donor tag.
  *
  * `drop`, `message` and `maxlen` are part of the AMXX forward
  * (`client_disconnected(id, bool:drop, message[], maxlen)`); nothing here depends on them. Declaring
@@ -723,32 +839,9 @@ public client_disconnected(id, bool:drop, message[], maxlen)
 	if (id <= 0 || id > get_maxplayers())
 		return;
 
-	// The 0.3 s re-arm a boss or the potato scheduled for this spawn.
+	// The 0.3 s re-arm the duel schedules for this spawn.
 	remove_task(id);
 	ClearGlow(id);
-
-	if (g_bountyTarget == id)
-	{
-		g_bountyTarget = 0;
-		g_bountyActive = false;
-		StopEffectTimer("bounty");
-	}
-
-	if (g_potatoHolder == id)
-	{
-		g_potatoHolder = 0;
-		g_potatoActive = false;
-		StopEffectTimer("hot_potato");
-	}
-
-	DropBoss(id);
-
-	if (g_nickBot == id)
-	{
-		g_nickActive = false;
-		g_nickBot = 0;
-		g_nickApplied[0] = '^0';
-	}
 
 	if (g_donorBot == id)
 	{
@@ -765,116 +858,7 @@ public client_disconnected(id, bool:drop, message[], maxlen)
 	log_amx("client %d left, its effect state is dropped", id);
 }
 
-/* Removes one id from the boss list and keeps the list dense, so IsBoss and the re-arm never look at
-   an empty slot that a fresh connection could take over. */
-stock DropBoss(id)
-{
-	for (new i = 0; i < g_bossCount; i++)
-	{
-		if (g_bosses[i] != id)
-			continue;
-
-		for (new j = i; j < g_bossCount - 1; j++)
-			g_bosses[j] = g_bosses[j + 1];
-
-		g_bossCount--;
-		g_bosses[g_bossCount] = 0;
-		i--;
-	}
-
-	if (g_bossCount == 0 && g_bossRaidActive)
-	{
-		g_bossRaidActive = false;
-		StopEffectTimer("boss_raid");
-	}
-}
-
 /* ---------- effects: one public function per activity code ---------- */
-
-public EffectBotNick()
-{
-	new nick[VALUE_LEN];
-	ParamCopy("nick", nick, charsmax(nick), "");
-
-	if (nick[0] == '^0')
-	{
-		log_amx("bot_nick called without a nickname");
-		return;
-	}
-
-	new bot = FindFirstBot();
-	if (!bot)
-	{
-		log_amx("bot_nick: no bots are connected");
-		return;
-	}
-
-	if (g_nickActive)
-		RestoreNick();
-
-	get_user_name(bot, g_nickOriginal, NICK_LEN - 1);
-	set_user_info(bot, "name", nick);
-	copy(g_nickApplied, NICK_LEN - 1, nick);
-	g_nickBot = bot;
-	g_nickActive = true;
-	log_amx("bot_nick: bot %d is now '%s' (was '%s')", bot, nick, g_nickOriginal);
-}
-
-public EffectMeatRound()
-{
-	new health = ParamInt("health", 1);
-	if (health < 1)
-		health = 1;
-
-	new bots;
-	for (new id = 1; id <= get_maxplayers(); id++)
-	{
-		if (!IsBotAlive(id))
-			continue;
-
-		StripWeapons(id);
-		give_item(id, "weapon_knife");
-		set_user_health(id, health);
-		bots++;
-	}
-
-	log_amx("meat_round: %d bots at %d hp with knives only", bots, health);
-	// Weapons and health come back with the next respawn, but a bot that never dies would keep 1 HP
-	// for the rest of the map: the clock is what makes the effect temporary, not the round.
-	StartEffectTimer("meat_round", EffectSeconds(DEFAULT_EFFECT_SECONDS));
-}
-
-public EffectKnivesOnly()
-{
-	new bots;
-	for (new id = 1; id <= get_maxplayers(); id++)
-	{
-		if (!IsBotAlive(id))
-			continue;
-
-		StripWeapons(id);
-		give_item(id, "weapon_knife");
-		bots++;
-	}
-
-	log_amx("knives_only: %d bots rearmed with knives", bots);
-}
-
-public EffectAwpOnly()
-{
-	new bots;
-	for (new id = 1; id <= get_maxplayers(); id++)
-	{
-		if (!IsBotAlive(id))
-			continue;
-
-		StripWeapons(id);
-		give_item(id, "weapon_awp");
-		bots++;
-	}
-
-	log_amx("awp_only: %d bots rearmed with AWP", bots);
-}
 
 /* HE party: every weapon gone, endless HE grenades, for a fixed number of seconds. The effect is a
    timer, not a round: a round is nine minutes now, and this is a 60 second gag.
@@ -903,6 +887,9 @@ public EffectHeParty()
 		g_hePartyTicks = MAX_HE_PARTY_TICKS;
 
 	g_hePartyActive = true;
+	// The field's weapon rule belongs to this event until its own task ends; another weapon event that
+	// starts later takes the claim and this one stops owning the knives.
+	ClaimTake(CLAIM_WEAPONS, FindEffect("he_party"), 1);
 
 	DisarmField();
 
@@ -979,620 +966,33 @@ stock bool:HasGun(id)
 	return false;
 }
 
-public EffectMoonGravity()
-{
-	new gravity = ParamInt("gravity", 200);
-	if (gravity < 1 || gravity > 1000)
-	{
-		log_amx("moon_gravity: refusing gravity %d", gravity);
-		return;
-	}
-
-	if (!g_gravitySaved)
-	{
-		g_savedGravity = get_cvar_num("sv_gravity");
-		g_gravitySaved = true;
-	}
-
-	set_cvar_num("sv_gravity", gravity);
-	// sv_gravity is server wide: without a clock a single donation would change the map's physics
-	// until the next changelevel, because Round_End almost never arrives here.
-	StartEffectTimer("moon_gravity", EffectSeconds(60.0));
-	log_amx("moon_gravity: sv_gravity %d for one round", gravity);
-}
-
-public EffectBotRain()
-{
-	new extra = ParamInt("extraBots", 6);
-	new maxBots = ParamInt("maxBots", 24);
-	new current = GetCvarFirst("yb_quota", "pb_quota", 0);
-
-	if (extra < 1 || maxBots < 1)
-	{
-		log_amx("bot_rain: bad params extra=%d max=%d", extra, maxBots);
-		return;
-	}
-
-	if (current <= 0)
-	{
-		log_amx("bot_rain: no bot quota cvar found (yb_quota/pb_quota)");
-		return;
-	}
-
-	if (!g_quotaSaved)
-	{
-		g_savedBotQuota = current;
-		g_quotaSaved = true;
-	}
-
-	// One slot stays free for the spectator camera: it is a real connection, and a quota
-	// that fills every slot keeps it out of the server.
-	new slots = get_maxplayers() - 1;
-	if (maxBots > slots)
-	{
-		log_amx("bot_rain: maxBots %d clamped to %d (server slots)", maxBots, slots);
-		maxBots = slots;
-	}
-
-	new target = current + extra;
-	if (target > maxBots)
-		target = maxBots;
-
-	SetCvarFirst("yb_quota", "pb_quota", target);
-	// The quota is a server cvar: the extra bots have to go away on their own, or the stream ends up
-	// with a full server nobody asked for.
-	StartEffectTimer("bot_rain", EffectSeconds(90.0));
-	log_amx("bot_rain: quota %d -> %d", current, target);
-}
-
-public EffectTerminators()
-{
-	new difficulty = ParamInt("difficulty", 100);
-
-	if (SetCvarFirst("yb_difficulty", "pb_skill", difficulty))
-	{
-		StartEffectTimer("terminators", EffectSeconds(60.0));
-		log_amx("terminators: bot difficulty set to %d", difficulty);
-		return;
-	}
-
-	// Graceful degradation: the bot plugin may expose a different cvar name, and an activity
-	// that silently does nothing is worse than a visible buff.
-	new bots;
-	for (new id = 1; id <= get_maxplayers(); id++)
-	{
-		if (!IsBotAlive(id))
-			continue;
-
-		StripWeapons(id);
-		give_item(id, "weapon_ak47");
-		set_user_health(id, 300);
-		bots++;
-	}
-
-	log_amx("terminators: no difficulty cvar, %d bots buffed instead", bots);
-	StartEffectTimer("terminators", EffectSeconds(60.0));
-}
-
-public EffectZombieRound()
-{
-	new zombies = ParamInt("zombies", 3);
-	new health = ParamInt("zombieHealth", 1000);
-	new Float:speed = ParamFloat("zombieSpeed", 1.2);
-
-	if (zombies < 1)
-		zombies = 1;
-	if (health < 1)
-		health = 1;
-	if (speed < 0.1 || speed > 3.0)
-		speed = 1.2;
-
-	new made;
-	for (new id = 1; id <= get_maxplayers() && made < zombies; id++)
-	{
-		if (!IsBotAlive(id))
-			continue;
-
-		StripWeapons(id);
-		give_item(id, "weapon_knife");
-		set_user_health(id, health);
-		// zombieSpeed is a multiplier of the normal run speed: set_user_maxspeed takes units, and
-		// passing 1.2 froze the zombies in place instead of making them fast.
-		new Float:baseSpeed = get_cvar_float("sv_maxspeed");
-		if (baseSpeed <= 0.0)
-			baseSpeed = 320.0;
-		set_user_maxspeed(id, baseSpeed * speed);
-		made++;
-	}
-
-	g_speedBoosted = made > 0;
-
-	StartEffectTimer("zombie_round", EffectSeconds(60.0));
-	log_amx("zombie_round: %d zombies with %d hp at speed %.2f", made, health, speed);
-}
-
-public EffectTerminatorOne()
-{
-	new weapon[32];
-	ParamCopy("weapon", weapon, charsmax(weapon), "weapon_m249");
-	if (!IsSafeWeapon(weapon))
-		copy(weapon, charsmax(weapon), "weapon_m249");
-
-	new health = ParamInt("health", 500);
-	if (health < 1)
-		health = 500;
-
-	new bot = FindFirstBot();
-	if (!bot)
-	{
-		log_amx("terminator_one: no bots are connected");
-		return;
-	}
-
-	StripWeapons(bot);
-	give_item(bot, weapon);
-	set_user_health(bot, health);
-	set_user_armor(bot, 100);
-
-	new others;
-	for (new id = 1; id <= get_maxplayers(); id++)
-	{
-		if (id == bot || !IsBotAlive(id))
-			continue;
-
-		StripWeapons(id);
-		give_item(id, "weapon_knife");
-		others++;
-	}
-
-	log_amx("terminator_one: bot %d has %s and %d hp, %d bots on knives", bot, weapon, health, others);
-	StartEffectTimer("terminator_one", EffectSeconds(60.0));
-}
-
-public EffectMapChange()
-{
-	new maps[VALUE_LEN * 2];
-	new map[32];
-
-	ParamCopy("maps", maps, charsmax(maps), "");
-
-	if (!PickRandomMap(maps, map, charsmax(map)))
-	{
-		log_amx("map_change: no usable map in '%s'", maps);
-		return;
-	}
-
-	log_amx("map_change: going to %s", map);
-	server_cmd("changelevel %s", map);
-}
-
-/* ---------- round fights: bounty, hot potato, boss raid ---------- */
-
-/* One kill can end any of the three, so they are checked in one handler: DeathMsg is a global event
-   and three separate registrations would mean three reads of the same data. */
-public OnDeathMsg()
-{
-	new killer = read_data(1);
-	new victim = read_data(2);
-
-	if (g_bountyActive && victim == g_bountyTarget)
-		ClaimBounty(killer, victim);
-
-	if (g_potatoActive && victim == g_potatoHolder)
-		PassHotPotato(killer, victim);
-
-	if (g_bossRaidActive && IsBoss(victim))
-		ReportBossDown(killer, victim);
-}
-
-/* The price goes on the leader, not on a random bot: with a 0.5 s respawn somebody kills a random
-   bot within seconds, and the bounty would be claimed before the viewer finishes reading it. */
-public EffectBounty()
-{
-	new nick[VALUE_LEN];
-	ParamCopy("nick", nick, charsmax(nick), "");
-
-	new health = ParamInt("health", 150);
-	if (health < 50)
-		health = 50;
-	if (health > 2000)
-		health = 2000;
-
-	new reward[VALUE_LEN];
-	ParamCopy("reward", reward, charsmax(reward), "weapon_deagle");
-	if (!IsSafeWeapon(reward))
-		copy(reward, charsmax(reward), "weapon_deagle");
-
-	new target = FindLeaderBot();
-	if (!target)
-	{
-		log_amx("bounty: no bots are connected");
-		return;
-	}
-
-	g_bountyTarget = target;
-	g_bountyActive = true;
-	copy(g_bountyReward, charsmax(g_bountyReward), reward);
-
-	set_user_health(target, health);
-	set_user_rendering(target, kRenderFxGlowShell, 255, 200, 0, kRenderNormal, 25);
-	// The fight follows the kill feed, and with csdm_lite the round does not end: the bounty needs its
-	// own deadline or an unfound target keeps the price forever.
-	StartEffectTimer("bounty", EffectSeconds(60.0));
-
-	new botName[NICK_LEN];
-	get_user_name(target, botName, NICK_LEN - 1);
-	if (nick[0] == '^0')
-		Announce("BOUNTY ON %s (%d HP)", botName, health);
-	else
-		Announce("%s PUT A BOUNTY ON %s (%d HP)", nick, botName, health);
-	log_amx("bounty: '%s' on bot %d '%s', %d hp, reward %s", nick, target, botName, health, reward);
-}
-
-stock ClaimBounty(killer, victim)
-{
-	new victimName[NICK_LEN];
-	get_user_name(victim, victimName, NICK_LEN - 1);
-	// The glow would otherwise survive the respawn and mark a bot that no longer has a price.
-	ClearGlow(victim);
-	// The bounty is settled here; its clock would only fire into an empty state.
-	StopEffectTimer("bounty");
-
-	g_bountyActive = false;
-	g_bountyTarget = 0;
-
-	if (killer <= 0 || killer == victim || !is_user_connected(killer) || !is_user_bot(killer))
-	{
-		Announce("BOUNTY ON %s WENT UNSOLD", victimName);
-		log_amx("bounty: '%s' died without a killer, nobody is paid", victimName);
-		return;
-	}
-
-	// The reward is a weapon and health: money means nothing on a server where nobody buys.
-	give_item(killer, g_bountyReward);
-	set_user_health(killer, 100);
-
-	new killerName[NICK_LEN];
-	get_user_name(killer, killerName, NICK_LEN - 1);
-	Announce("%s CLAIMED THE BOUNTY ON %s", killerName, victimName);
-	log_amx("bounty: bot %d '%s' killed bot %d '%s' and got %s", killer, killerName, victim, victimName, g_bountyReward);
-}
-
-/* ---------- hot potato: the holder is the target, the killer inherits it ---------- */
-
-public EffectHotPotato()
-{
-	new nick[VALUE_LEN];
-	ParamCopy("nick", nick, charsmax(nick), "");
-
-	new health = ParamInt("health", 25);
-	if (health < 1)
-		health = 1;
-	if (health > 100)
-		health = 100;
-
-	new bot = PickRandomBot();
-	if (!bot)
-	{
-		log_amx("hot_potato: no bots are connected");
-		return;
-	}
-
-	g_potatoHolder = bot;
-	g_potatoHealth = health;
-	g_potatoActive = true;
-	PotatoArm(bot);
-	StartEffectTimer("hot_potato", EffectSeconds(60.0));
-
-	new botName[NICK_LEN];
-	get_user_name(bot, botName, NICK_LEN - 1);
-	if (nick[0] == '^0')
-		Announce("HOT POTATO: %s - KILL HIM TO PASS IT", botName);
-	else
-		Announce("%s MADE %s THE HOT POTATO", nick, botName);
-	log_amx("hot_potato: '%s' -> bot %d '%s', %d hp", nick, bot, botName, health);
-}
-
-stock PotatoArm(id)
-{
-	StripWeapons(id);
-	give_item(id, "weapon_knife");
-	set_user_health(id, g_potatoHealth);
-	set_user_rendering(id, kRenderFxGlowShell, 255, 120, 0, kRenderNormal, 25);
-}
-
-stock PassHotPotato(killer, victim)
-{
-	new victimName[NICK_LEN];
-	get_user_name(victim, victimName, NICK_LEN - 1);
-	// Cleared here, not at round end: the old holder respawns in 0.5 s and the orange shell would
-	// stay on a bot that no longer carries anything.
-	ClearGlow(victim);
-
-	g_potatoActive = false;
-	g_potatoHolder = 0;
-
-	// A suicide, a fall or a kill by the world burns the potato: passing it to a dead player would
-	// leave the glow on a corpse and the announcement would name nobody.
-	if (killer <= 0 || killer == victim || !is_user_connected(killer) || !is_user_bot(killer))
-	{
-		StopEffectTimer("hot_potato");
-		Announce("HOT POTATO BURNED OUT WITH %s", victimName);
-		log_amx("hot_potato: '%s' died without a killer, the potato is gone", victimName);
-		return;
-	}
-
-	g_potatoHolder = killer;
-	g_potatoActive = true;
-	PotatoArm(killer);
-	// Each pass resets the deadline: the potato is one effect that changes hands, not one per victim.
-	StartEffectTimer("hot_potato", EffectSeconds(60.0));
-
-	new killerName[NICK_LEN];
-	get_user_name(killer, killerName, NICK_LEN - 1);
-	Announce("%s IS THE HOT POTATO NOW", killerName);
-	log_amx("hot_potato: passed from bot %d '%s' to bot %d '%s'", victim, victimName, killer, killerName);
-}
-
-/* ---------- boss raid: a few tanks against everyone else ---------- */
-
-public EffectBossRaid()
-{
-	new nick[VALUE_LEN];
-	ParamCopy("nick", nick, charsmax(nick), "");
-
-	new wanted = ParamInt("bosses", 2);
-	if (wanted < 1)
-		wanted = 1;
-	if (wanted > MAX_BOSSES)
-		wanted = MAX_BOSSES;
-
-	new health = ParamInt("bossHealth", 1500);
-	if (health < 200)
-		health = 200;
-	if (health > 10000)
-		health = 10000;
-
-	new bossWeapon[VALUE_LEN];
-	ParamCopy("bossWeapon", bossWeapon, charsmax(bossWeapon), "weapon_m249");
-	if (!IsSafeWeapon(bossWeapon))
-		copy(bossWeapon, charsmax(bossWeapon), "weapon_m249");
-
-	new gruntWeapon[VALUE_LEN];
-	ParamCopy("gruntWeapon", gruntWeapon, charsmax(gruntWeapon), "weapon_deagle");
-	if (!IsSafeWeapon(gruntWeapon))
-		copy(gruntWeapon, charsmax(gruntWeapon), "weapon_deagle");
-
-	// Both sides are picked from one scratch list, so nobody can end up on both of them.
-	new bots[MAX_TRACKED_BOTS];
-	new count;
-	for (new id = 1; id <= get_maxplayers() && count < MAX_TRACKED_BOTS; id++)
-	{
-		if (IsBotAlive(id))
-			bots[count++] = id;
-	}
-
-	if (count < 2)
-	{
-		log_amx("boss_raid: at least 2 living bots are needed, found %d", count);
-		return;
-	}
-
-	// One raider at least: a raid of nothing but bosses is not a raid.
-	if (wanted >= count)
-		wanted = count - 1;
-
-	g_bossCount = 0;
-	g_bossHealth = health;
-	g_bossRaidActive = true;
-	copy(g_bossWeapon, charsmax(g_bossWeapon), bossWeapon);
-
-	// Swap-to-front pick: as random as shuffling the list, without a second array.
-	for (new i = 0; i < wanted; i++)
-	{
-		new pick = random_num(i, count - 1);
-		new swap = bots[i];
-		bots[i] = bots[pick];
-		bots[pick] = swap;
-		g_bosses[g_bossCount++] = bots[i];
-	}
-
-	for (new i = 0; i < g_bossCount; i++)
-		BossArm(g_bosses[i]);
-
-	new raiders;
-	for (new i = wanted; i < count; i++)
-	{
-		StripWeapons(bots[i]);
-		give_item(bots[i], "weapon_knife");
-		give_item(bots[i], gruntWeapon);
-		set_user_health(bots[i], 100);
-		set_user_armor(bots[i], 50);
-		raiders++;
-	}
-
-	if (nick[0] == '^0')
-		Announce("BOSS RAID: %d BOSSES VS %d RAIDERS", g_bossCount, raiders);
-	else
-		Announce("%s CALLED A BOSS RAID: %d VS %d", nick, g_bossCount, raiders);
-	StartEffectTimer("boss_raid", EffectSeconds(90.0));
-	log_amx("boss_raid: '%s' %d bosses (%d hp, %s) vs %d raiders (%s)", nick, g_bossCount, health, bossWeapon, raiders, gruntWeapon);
-}
-
-stock BossArm(id)
-{
-	StripWeapons(id);
-	give_item(id, "weapon_knife");
-	give_item(id, g_bossWeapon);
-	set_user_health(id, g_bossHealth);
-	set_user_armor(id, 100);
-	set_user_rendering(id, kRenderFxGlowShell, 255, 0, 0, kRenderNormal, 25);
-}
-
-stock bool:IsBoss(id)
-{
-	for (new i = 0; i < g_bossCount; i++)
-	{
-		if (g_bosses[i] == id)
-			return true;
-	}
-	return false;
-}
-
-stock ReportBossDown(killer, victim)
-{
-	new victimName[NICK_LEN];
-	get_user_name(victim, victimName, NICK_LEN - 1);
-
-	if (killer <= 0 || killer == victim || !is_user_connected(killer))
-	{
-		Announce("BOSS %s IS DOWN", victimName);
-		log_amx("boss_raid: boss %d '%s' died without a killer", victim, victimName);
-		return;
-	}
-
-	new killerName[NICK_LEN];
-	get_user_name(killer, killerName, NICK_LEN - 1);
-	Announce("BOSS %s DOWN - %s GETS THE KILL", victimName, killerName);
-	log_amx("boss_raid: bot %d '%s' killed boss %d '%s'", killer, killerName, victim, victimName);
-}
-
-/* csdm_lite re-arms every respawn with a random weapon, so without this a boss would be an ordinary
-   bot again after its first death and the raid would last one kill. The short delay is what puts
-   this after csdm_lite's own arming, which runs in the same respawn. The duel uses the same hook for
-   the same reason: a bot that respawns with a rifle mid-duel would end the "knives only" rule. */
+/* ---------- respawn hooks ---------- */
+
+/* csdm_lite re-arms every respawn with a random weapon, so without this a bot that respawns mid-duel
+   would break the "knives only" rule on its first death. The short delay is what puts this after
+   csdm_lite's own arming, which runs in the same respawn. The re-arm is a public task because
+   set_task can only call a public, and the task id is the player id so `client_disconnected` can
+   drop it with the same `remove_task(id)`. */
 public OnPlayerSpawn(id)
 {
-	if (!g_bossRaidActive && !g_potatoActive && !g_duelActive)
+	if (!g_duelActive)
 		return;
 
 	if (!is_user_connected(id) || !is_user_bot(id))
 		return;
 
-	if (IsBoss(id) || (g_potatoActive && id == g_potatoHolder) || g_duelActive)
-		set_task(0.3, "RebuffOnSpawn", id);
+	set_task(0.3, "ReArmOnSpawn", id);
 }
 
-public RebuffOnSpawn(id)
+public ReArmOnSpawn(id)
 {
-	if (!is_user_connected(id) || !is_user_alive(id) || !is_user_bot(id))
+	if (!g_duelActive || !IsBotAlive(id))
 		return;
 
-	if (g_bossRaidActive && IsBoss(id))
-		BossArm(id);
-	else if (g_potatoActive && id == g_potatoHolder)
-		PotatoArm(id);
-	else if (g_duelActive)
-		DuelArm(id);
+	DuelArm(id);
 }
 
 /* ---------- helpers ---------- */
-
-/* The cheap personal tier: one bot gets the donor's name, a big health pool and a glow, so the
-   viewer's money is visible on a single fighter for the next GLOW_SECONDS. */
-public EffectBlessBot()
-{
-	new nick[VALUE_LEN];
-	ParamCopy("nick", nick, charsmax(nick), "");
-
-	new health = ParamInt("health", 250);
-	if (health < 50)
-		health = 50;
-	if (health > 1000)
-		health = 1000;
-
-	new weapon[VALUE_LEN];
-	ParamCopy("weapon", weapon, charsmax(weapon), "weapon_deagle");
-
-	new bot = PickRandomBot();
-	if (!bot)
-	{
-		log_amx("bless_bot: no bots are connected");
-		return;
-	}
-
-	StripWeapons(bot);
-	if (IsSafeWeapon(weapon))
-		give_item(bot, weapon);
-	give_item(bot, "weapon_knife");
-	set_user_health(bot, health);
-	set_user_rendering(bot, kRenderFxGlowShell, 0, 120, 255, kRenderNormal, 20);
-
-	new botName[NICK_LEN];
-	get_user_name(bot, botName, NICK_LEN - 1);
-	Announce("%s BLESSED %s (^%d HP)", nick, botName, health);
-	log_amx("bless_bot: %s -> bot %d '%s', %d hp, %s", nick, bot, botName, health, weapon);
-	set_task(GLOW_SECONDS, "ClearGlow", bot);
-}
-
-/* The social hook: the bot with the most frags loses its weapons and most of its health.
-   Frags are not shown in the message: the server runs free-for-all with friendly fire, where a
-   kill subtracts a frag, so the number can be negative and only confuses the chat. */
-public EffectCurseLeader()
-{
-	new nick[VALUE_LEN];
-	ParamCopy("nick", nick, charsmax(nick), "");
-
-	new health = ParamInt("health", 25);
-	if (health < 1)
-		health = 1;
-
-	new bot = FindLeaderBot();
-	if (!bot)
-	{
-		log_amx("curse_leader: no bots are connected");
-		return;
-	}
-
-	new botName[NICK_LEN];
-	get_user_name(bot, botName, NICK_LEN - 1);
-
-	StripWeapons(bot);
-	give_item(bot, "weapon_knife");
-	set_user_health(bot, health);
-	set_user_rendering(bot, kRenderFxGlowShell, 255, 40, 0, kRenderNormal, 20);
-
-	Announce("%s CURSED THE LEADER %s", nick, botName);
-	log_amx("curse_leader: %s cursed bot %d '%s', %d hp, knife only", nick, bot, botName, health);
-	set_task(GLOW_SECONDS, "ClearGlow", bot);
-}
-
-/* The viewer's own words. RCON cannot carry spaces, so the control API sends underscores and the
-   phrase arrives here as a single token; it is turned back into spaces for the chat line. */
-public EffectBotPhrase()
-{
-	new text[VALUE_LEN];
-	ParamCopy("text", text, charsmax(text), "");
-
-	if (text[0] == '^0')
-	{
-		log_amx("bot_phrase: called without a phrase");
-		return;
-	}
-
-	replace_all(text, charsmax(text), "_", " ");
-
-	new bot = PickRandomBot();
-	if (!bot)
-	{
-		log_amx("bot_phrase: no bots are connected");
-		return;
-	}
-
-	new botName[NICK_LEN];
-	get_user_name(bot, botName, NICK_LEN - 1);
-	Announce("%s: %s", botName, text);
-	log_amx("bot_phrase: bot %d '%s' said '%s'", bot, botName, text);
-}
-
-/* Runs one chaos effect right now, through plugins/chaos_core. The core owns the effects, the
-   weights and the reverts; this is only the trigger, so a donation cannot leave a cvar behind. */
-public EffectChaosBurst()
-{
-	server_cmd("amx_chaos force");
-	Announce("CHAOS INCOMING");
-	log_amx("chaos_burst: forced a chaos effect");
-}
 
 /* ---------- the 2025-10 events: shared state ---------- */
 
@@ -1755,6 +1155,13 @@ public EffectGlassCannon()
 	ArmGlassCannon(g_cannonBot);
 	set_task(0.2, "TaskCannonAmmo", TASK_CANNON_AMMO, "", 0, "b");
 
+	// Two claims, both on the hero bot: its health and its glow. A later event that re-specs the same
+	// bot takes ownership, and this one then ends without touching it (see EndEffectState).
+	new owner = FindEffect("glass_cannon");
+	g_cannonHealth = ParamInt("health", 1000);
+	ClaimTake(CLAIM_HEALTH, owner, g_cannonHealth);
+	ClaimTake(CLAIM_GLOW, owner, 1);
+
 	StartEffectTimer("glass_cannon", EffectSeconds(EVENT_SECONDS));
 	DonorSay("1 HP, AN M249 AND NO RELOAD");
 }
@@ -1770,10 +1177,10 @@ stock ArmGlassCannon(id)
 	StripWeapons(id);
 	give_item(id, "weapon_m249");
 	give_item(id, "weapon_knife");
-	set_user_health(id, ParamInt("health", 1000));
+	set_user_health(id, g_cannonHealth);
 	set_user_rendering(id, kRenderFxGlowShell, 255, 0, 0, kRenderNormal, 22);
 
-	log_amx("glass_cannon: bot %d armed with %d hp (was %d)", id, ParamInt("health", 1000), g_cannonSavedHealth);
+	log_amx("glass_cannon: bot %d armed with %d hp (was %d)", id, g_cannonHealth, g_cannonSavedHealth);
 }
 
 public TaskCannonAmmo()
@@ -1823,12 +1230,14 @@ public EffectMeteorShower()
 	}
 
 	g_meteorActive = true;
+	g_meteorRadius = ParamInt("radius", 320);
+	g_meteorDamage = ParamInt("damage", 2);
 	MeteorVolley();
 	set_task(METEOR_INTERVAL, "TaskMeteor", TASK_METEOR, "", 0, "b");
 
 	StartEffectTimer("meteor_shower", EffectSeconds(EVENT_SECONDS));
 	log_amx("meteor_shower: %d strikes every %.2f s, %d damage a strike",
-		METEOR_STRIKES, METEOR_INTERVAL, ParamInt("damage", 2));
+		METEOR_STRIKES, METEOR_INTERVAL, g_meteorDamage);
 	DonorSay("METEOR SHOWER");
 }
 
@@ -1873,8 +1282,9 @@ stock MeteorStrike()
 	write_byte(0);
 	message_end();
 
-	new radius = ParamInt("radius", 320);
-	new damage = ParamInt("damage", 2);
+	// Read from the snapshot, not from the parameter table: this runs 43 times a second from a timer.
+	new radius = g_meteorRadius;
+	new damage = g_meteorDamage;
 
 	// No per-strike log line: at 43 strikes a second it would write 640 lines per event and format a
 	// string inside the hot loop. The setup line in EffectMeteorShower carries the numbers instead.
@@ -1912,6 +1322,9 @@ public EffectRedLight()
 	log_amx("red_light: RED, stock cues %s", g_redStockCues ? "on" : "off");
 
 	set_task(1.5, "TaskRedLightGo", TASK_RED_GO);
+	// A freeze is a claim: a second event that wants the field frozen (or wants it moving) takes the
+	// resource from this one, and then this event's clock ends without thawing somebody else's freeze.
+	ClaimTake(CLAIM_FREEZE, FindEffect("red_light"), 1);
 	StartEffectTimer("red_light", EffectSeconds(EVENT_SECONDS));
 }
 
@@ -1970,8 +1383,13 @@ public EffectLightsaberDuel()
 		bots++;
 	}
 
-	// ResetBotSpeed (called from CleanupActive) is what puts the speeds back on the clock.
+	// ResetBotSpeed (released with the CLAIM_SPEED claim in EndEffectState) is what puts the speeds
+	// back; the weapon rule and the field glow belong to this event until its clock runs out.
 	g_speedBoosted = true;
+	new owner = FindEffect("lightsaber_duel");
+	ClaimTake(CLAIM_SPEED, owner, 140);
+	ClaimTake(CLAIM_WEAPONS, owner, 1);
+	ClaimTake(CLAIM_GLOW, owner, 1);
 
 	// `stock=0` leaves the soundtrack to the stream, and the swing cue is a stock sound too: the stream
 	// plays the opera bed instead of it.
@@ -2180,101 +1598,6 @@ stock bool:IsSafeWeapon(const weapon[])
 	return true;
 }
 
-stock bool:IsSafeMapName(const map[])
-{
-	new length = strlen(map);
-	if (length < 1 || length > 31)
-		return false;
-
-	for (new i = 0; i < length; i++)
-	{
-		new c = map[i];
-		if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'))
-			return false;
-	}
-	return true;
-}
-
-/* Picks one entry from "a,b,c"; returns false when nothing safe is left. */
-stock bool:PickRandomMap(const list[], out[], len)
-{
-	new offsets[16];
-	new lengths[16];
-	new count;
-	new start;
-	new total = strlen(list);
-
-	for (new i = 0; i <= total; i++)
-	{
-		if (i == total || list[i] == ',')
-		{
-			if (count < 16 && i > start)
-			{
-				offsets[count] = start;
-				lengths[count] = i - start;
-				count++;
-			}
-			start = i + 1;
-		}
-	}
-
-	if (count == 0)
-		return false;
-
-	new candidate[32];
-	new pick = random_num(0, count - 1);
-	new length = lengths[pick];
-	if (length > 31)
-		length = 31;
-
-	for (new i = 0; i < length; i++)
-		candidate[i] = list[offsets[pick] + i];
-	candidate[length] = '^0';
-
-	if (!IsSafeMapName(candidate))
-		return false;
-
-	copy(out, len, candidate);
-	return true;
-}
-
-/* Bot cvar names differ between YaPB and PodBot, so try both and report honestly. */
-stock SetCvarFirst(const first[], const second[], value)
-{
-	if (first[0] && get_cvar_pointer(first))
-	{
-		set_cvar_num(first, value);
-		return 1;
-	}
-
-	if (second[0] && get_cvar_pointer(second))
-	{
-		set_cvar_num(second, value);
-		return 1;
-	}
-
-	return 0;
-}
-
-stock GetCvarFirst(const first[], const second[], fallback)
-{
-	if (first[0] && get_cvar_pointer(first))
-		return get_cvar_num(first);
-	if (second[0] && get_cvar_pointer(second))
-		return get_cvar_num(second);
-	return fallback;
-}
-
-stock RestoreNick()
-{
-	if (g_nickBot > 0 && is_user_connected(g_nickBot))
-		set_user_info(g_nickBot, "name", g_nickOriginal);
-
-	g_nickActive = false;
-	g_nickBot = 0;
-	g_nickApplied[0] = '^0';
-}
-
 /* Puts the buyer's name on the bot that leads the scoreboard (or on any living bot when the board is
    empty of bots), so a donation is visible on the fighter everyone is watching.
 
@@ -2349,32 +1672,3 @@ public ClearDonorName()
 	g_donorApplied[0] = '^0';
 	g_donorOriginal[0] = '^0';
 }
-
-/* After a map change player ids are gone, so the renamed bot can no longer be restored:
-   the state is dropped instead of pointing at a stranger. */
-stock ValidateNickState()
-{
-	if (!g_nickActive)
-		return;
-
-	new name[NICK_LEN];
-	if (g_nickBot <= 0 || !is_user_connected(g_nickBot))
-	{
-		g_nickActive = false;
-		g_nickBot = 0;
-		return;
-	}
-
-	get_user_name(g_nickBot, name, NICK_LEN - 1);
-	if (!equal(name, g_nickApplied))
-	{
-		g_nickActive = false;
-		g_nickBot = 0;
-		g_nickApplied[0] = '^0';
-	}
-}
-
-
-
-
-
