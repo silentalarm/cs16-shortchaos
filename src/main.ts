@@ -116,9 +116,12 @@ function mockSource(): (cursor: number) => Promise<DonationRow[]> {
   };
 }
 
+/** Where `npm run oauth-login` leaves the tokens; `data/` is gitignored. */
+const DA_TOKEN_PATH = "data/da-token.json";
+
 /** Real donations: refresh the access token five minutes before it dies, then poll. */
 function liveSource(clientId: string, clientSecret: string, redirectUri: string): (cursor: number) => Promise<DonationRow[]> {
-  const tokens = new TokenStore("data/da-token.json");
+  const tokens = new TokenStore(DA_TOKEN_PATH);
   return async (cursor) => {
     const current = tokens.load();
     if (current === null) {
@@ -417,6 +420,19 @@ function startAdmin(): import("node:http").Server | null {
 }
 
 async function main(): Promise<void> {
+  // A live deployment without application credentials cannot poll for donations at all: the only
+  // trace is a `poll.error` every few seconds, and that mistake is usually discovered mid-stream.
+  // `DA_CLIENT_ID` is the App ID and `DA_CLIENT_SECRET` the API Key of the DonationAlerts
+  // application; the tokens come from the one-off `npm run oauth-login`, not from that page.
+  if (!env.mock) {
+    if (env.da.clientId === "" || env.da.clientSecret === "") {
+      throw new Error("DA_MOCK is off but DA_CLIENT_ID (App ID) or DA_CLIENT_SECRET (API Key) is empty in .env");
+    }
+    if (new TokenStore(DA_TOKEN_PATH).load() === null) {
+      throw new Error(`no DonationAlerts tokens in ${DA_TOKEN_PATH}: run \`npm run oauth-login\` once, then start again`);
+    }
+  }
+
   const source = env.mock ? mockSource() : liveSource(env.da.clientId, env.da.clientSecret, env.da.redirectUri);
   log("started", {
     mock: env.mock,

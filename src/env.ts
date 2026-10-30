@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { parseCurrencyRates } from "./mapping.ts";
 
 /**
@@ -78,9 +78,30 @@ function flag(name: string, fallback: boolean): boolean {
   return raw === "1" || raw.toLowerCase() === "true";
 }
 
+/**
+ * Node parses an env file as UTF-8, and it silently ignores a byte order mark, while a UTF-16 file
+ * is not parsed at all: every variable then reads as unset although the value is plainly there in the
+ * editor. That failure has no error message, so an operator sees "client id is empty" next to a line
+ * that is not empty - measured on Node 24.22.0, a BOM in front of the first line is enough to lose
+ * that one key. Notepad and some editors save as "UTF-8 with BOM" or "Unicode" by default, so the
+ * check is loud instead of clever.
+ */
+function assertPlainUtf8(envFile: string): void {
+  const head = readFileSync(envFile).subarray(0, 4);
+  const utf16 = (head[0] === 0xff && head[1] === 0xfe) || (head[0] === 0xfe && head[1] === 0xff);
+  const bom = head[0] === 0xef && head[1] === 0xbb && head[2] === 0xbf;
+  if (utf16 || bom) {
+    throw new Error(
+      `${envFile} is saved as ${utf16 ? "UTF-16" : "UTF-8 with a BOM"}; re-save it as plain UTF-8, ` +
+        "otherwise Node reads every variable as empty",
+    );
+  }
+}
+
 /** Loads `.env` when present, then reads and validates the process environment. */
 export function loadEnv(envFile = ".env"): Env {
   if (existsSync(envFile)) {
+    assertPlainUtf8(envFile);
     process.loadEnvFile(envFile);
   }
 
