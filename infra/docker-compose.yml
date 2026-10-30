@@ -23,9 +23,14 @@ services:
       STREAM_POV: ${STREAM_POV:-0}
       MAXPLAYERS: ${MAXPLAYERS:-22}
       RCON_PASSWORD: ${RCON_PASSWORD:?set RCON_PASSWORD in .env}
+    # Loopback only, exactly like the panel: RCON rides TCP 27015, so a publish on every interface
+    # puts the operator password on the internet and one leaked value is `rcon_password <theirs>`.
+    # Nothing in the stack needs the host mapping - the control API and the capture client reach the
+    # server by service name (`hlds:27015`) over the compose network - so this exists only for
+    # playing from the host by hand. Drop the prefix or add a firewall rule and the port is public.
     ports:
-      - "27015:27015/tcp"
-      - "27015:27015/udp"
+      - "127.0.0.1:27015:27015/tcp"
+      - "127.0.0.1:27015:27015/udp"
     cap_drop:
       - ALL
     security_opt:
