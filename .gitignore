@@ -4,5 +4,12 @@ node_modules/
 data/
 *.log
 infra/.cache/
+# The .mdl files are committed (a machine without SMAK still builds the image); the review renders
+# written next to them by infra/models/build/sheets.mjs are not - they are regenerated, not read.
+infra/models/**/*.png
+# Stock files copied out of the image for the model builds (`docker cp ... .tmp-stock`).
+.tmp-*/
 infra/checksums.env
 out/
+# `node infra/sounds/generate.ts` without an argument renders into the current directory.
+freeze/
