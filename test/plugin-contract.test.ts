@@ -300,6 +300,14 @@ test("the five classes are one applier and a table, not five handlers", () => {
   assert.match(push, /if \(push > KNOCKBACK_CAP\)/, "the knockback has no ceiling");
   const damage = /public OnTakeDamage\([^)]*\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
   assert.match(damage, /PushBot\(victim, attacker, damage\)/, "knockback is never applied");
+
+  // A push is invisible: the bot keeps standing where it was put and the log says nothing, so the run
+  // counts the impulses it applied and how many of them hit the ceiling. Without the summary the only
+  // answer to "does knockback work" is a picture nobody can re-read afterwards.
+  assert.match(push, /g_classCappedPushes\+\+/, "the cap is never counted");
+  assert.match(push, /g_classPushes\+\+/, "the impulses are never counted");
+  assert.match(undo, /%d knockback\(s\), %d at the cap/, "the run does not report what its knockback did");
+  assert.match(applier, /g_classPushes = 0/, "the counters survive into the next run");
 });
 
 test("a replaced hero or infection cannot tear down the run that replaced it", () => {

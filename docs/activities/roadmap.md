@@ -84,10 +84,13 @@ All six codes are in the plugin and on sale; what is left is the live round and 
       run's clock cleared the flags and the regeneration task of the run on screen. Verified on the test
       server: `raptors` -> `runners` 22 s later logged `class 'raptors' is not the running one` and the
       runners ran to their own clock, with no error in the AMXX log;
-- [~] `knockback` as a capped impulse (`PushBot`) instead of a damage multiplier - the parameter exists,
-      is wired, and `amx_de raptors knockback=400 count=4` ran live on fy_aztec with 18 bots and no AMXX
-      error, but nobody has watched a bot fly yet: a throw that lands off the map reads the same in the
-      log as one that does not, so the picture is what closes this;
+- [x] `knockback` as a capped impulse (`PushBot`) instead of a damage multiplier, and the run reports
+      what it did - `class 'brutes' ended: 507 knockback(s), 178 at the cap` - because a push leaves no
+      other trace: the bot stands where it lands and the log says nothing. Live at `knockback=400`:
+      fy_iceworld 507 impulses in 45 s, 178 of them at the 400 u/s ceiling, fy_aztec 296 with 182 at it,
+      and nobody left the map - zero `worldspawn` suicides inside either run (the only ones in the
+      window came from the map change itself). The field stayed at 18-20 bots, which is YaPB filling a
+      freshly loaded map, not bots disappearing;
 - [x] smoke test on all seven maps: `scripts/map-walk.ts` walks the rotation and fires one activity per
       map (`nemesis`, `raptors`, `outbreak`, `jumpers`, `runners`, `brutes knockback=400`,
       `regenerators`). All seven started with their own CRC (`fy_iceworld`, `fy_pool_day`, `fy_snow`,
@@ -97,10 +100,12 @@ All six codes are in the plugin and on sale; what is left is the live round and 
       or an activity does not start;
 
 **Done when:** the five codes are one function and a table, not five handlers. Built: one applier, five
-rows, `npm test` green, plugin compiled into the image (27 018 B in the `cs16-hlds:local` build, which
-the entrypoint syncs into the volume on every start, so a rebuild is now the whole deploy). The seven
-maps are walked and every code applied on a live field; what the log cannot answer - does YaPB still
-jump sanely at 58 % gravity, does a thrown bot land on the map - is left to a watched round.
+rows, `npm test` green, plugin compiled into the image (27 097 B in the `cs16-hlds:local` build, which
+the entrypoint syncs into the volume on every start, so a rebuild is now the whole deploy). All five
+codes are checked: the seven maps are walked with one activity each, the swapped-out run is proven a
+no-op on a live server, and knockback is counted rather than guessed. Left for a watched round: whether
+YaPB still reads as jumping *sanely* at 58 % gravity - the walk shows it jumps, not whether it looks like
+a bunny.
 
 ## Stage 4 — S4 skills (5 codes)
 

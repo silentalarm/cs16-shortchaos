@@ -243,6 +243,11 @@ new bool:g_redStockCues;
 
 new g_classBots[MAX_CLASS_BOTS];
 new g_classBotCount;
+/* Knockback is the one class parameter a live round can only guess at, so the run counts what it did:
+   the summary in EndClass answers "was anything actually thrown" without a picture, and
+   `capped` says whether the ceiling of `KNOCKBACK_CAP` was the thing in effect. */
+new g_classPushes;
+new g_classCappedPushes;
 new bool:g_classActive;
 /* Which of the five codes shapes the field right now. A newer class event ends the running one before it
    takes over, and the ended run's clock still fires later: without this code that stale clock would
@@ -2236,6 +2241,10 @@ stock bool:StartClass(const code[], count, health, Float:speed, Float:gravity, r
 
 	g_classActive = true;
 	g_classBotCount = 0;
+	// The run reports what its knockback did, because nothing else can: a push that lands a bot on the
+	// floor and one that lands it off the map read the same in the log.
+	g_classPushes = 0;
+	g_classCappedPushes = 0;
 	copy(g_classCode, CODE_LEN - 1, code);
 
 	while (g_classBotCount < wanted)
@@ -2360,6 +2369,14 @@ stock EndClass(const code[])
 
 	g_classActive = false;
 	g_classBotCount = 0;
+
+	// Said at the end, not per hit: a fight logs this line once, and it is the only place where
+	// "knockback 400" turns into "it moved 137 bots, 12 of them at the cap".
+	if (g_classKnockback > 0)
+		log_amx("class '%s' ended: %d knockback(s), %d at the cap", code, g_classPushes, g_classCappedPushes);
+
+	// Cleared last on purpose: `code` can be this very array (StartClass hands its own code in), so a
+	// line logged after the clear would print an empty name.
 	g_classCode[0] = '^0';
 }
 
@@ -2420,7 +2437,11 @@ stock PushBot(victim, attacker, Float:damage)
 
 	new Float:push = damage * float(g_classKnockback) / 100.0 * KNOCKBACK_SCALE;
 	if (push > KNOCKBACK_CAP)
+	{
 		push = KNOCKBACK_CAP;
+		g_classCappedPushes++;
+	}
+	g_classPushes++;
 
 	new Float:velocity[3];
 	pev(victim, pev_velocity, velocity);
