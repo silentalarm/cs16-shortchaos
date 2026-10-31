@@ -29,6 +29,7 @@ src/main.ts              daemon: env, wiring, graceful shutdown, POLL_ONCE mode
 scripts/fake-donation.ts appends a fake donation for the mock source
 scripts/oauth-login.ts   one-off OAuth helper, writes data/da-token.json
 scripts/ui-preview.ts    local preview of the panel, no Docker and no game server
+scripts/map-walk.ts      walks the map rotation, one activity per map (the smoke test)
 plugins/donation_events/ Pawn plugin: effect registry, one public handler per activity
 plugins/team_war/        Pawn plugin: T vs CT frag race, published as cvars for the panel
 infra/Dockerfile         game image: HLDS + ReHLDS + ReGameDLL + Metamod-R + AMXX + YaPB
@@ -88,6 +89,10 @@ npm run fake-donation -- --amount 120 --user Vasya   # mock donation (DA_MOCK=1)
 $env:POLL_ONCE='1'; npm start              # one pass, then exit
 npm start                                  # daemon, polls every DA_POLL_SEC
 npm run oauth-login                        # once per account, writes data/da-token.json
+
+# smoke test: every map of the rotation with one activity on it (needs the stack up)
+docker exec cs16-youtube-control-api-1 node scripts/map-walk.ts
+docker exec cs16-youtube-control-api-1 node scripts/map-walk.ts --maps fy_iceworld,fy_snow --code raptors
 ```
 
 Dry run: leave `RCON_PASSWORD` empty and commands are logged instead of sent, so the whole

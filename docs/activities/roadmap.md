@@ -85,14 +85,22 @@ All six codes are in the plugin and on sale; what is left is the live round and 
       server: `raptors` -> `runners` 22 s later logged `class 'raptors' is not the running one` and the
       runners ran to their own clock, with no error in the AMXX log;
 - [~] `knockback` as a capped impulse (`PushBot`) instead of a damage multiplier - the parameter exists,
-      is wired, and `amx_de raptors knockback=400 count=4` was accepted live (20 bots, no AMXX error),
-      but nobody has watched a bot fly yet: the throw needs the picture, not the log;
-- [ ] smoke test on all seven maps.
+      is wired, and `amx_de raptors knockback=400 count=4` ran live on fy_aztec with 18 bots and no AMXX
+      error, but nobody has watched a bot fly yet: a throw that lands off the map reads the same in the
+      log as one that does not, so the picture is what closes this;
+- [x] smoke test on all seven maps: `scripts/map-walk.ts` walks the rotation and fires one activity per
+      map (`nemesis`, `raptors`, `outbreak`, `jumpers`, `runners`, `brutes knockback=400`,
+      `regenerators`). All seven started with their own CRC (`fy_iceworld`, `fy_pool_day`, `fy_snow`,
+      `fy_buzzkill`, `fy_simpsons`, `fy_aztec`, `fy_dustworld`), every activity applied to 17-20 live
+      bots, 20 bots still on the server afterwards, no `error_*.log` and no `TEX_InitFromWad` in the
+      console. The walk is a committed tool, not a one-off: it fails non-zero when a map does not load
+      or an activity does not start;
 
 **Done when:** the five codes are one function and a table, not five handlers. Built: one applier, five
-rows, `npm test` green, plugin recompiled (27 263 B). The live pass - does YaPB still jump sanely at
-58 % gravity, does a respawned raptor come back with its shape, does a thrown bot stay on the map - is
-what the smoke test on the seven maps is for.
+rows, `npm test` green, plugin compiled into the image (27 018 B in the `cs16-hlds:local` build, which
+the entrypoint syncs into the volume on every start, so a rebuild is now the whole deploy). The seven
+maps are walked and every code applied on a live field; what the log cannot answer - does YaPB still
+jump sanely at 58 % gravity, does a thrown bot land on the map - is left to a watched round.
 
 ## Stage 4 — S4 skills (5 codes)
 
