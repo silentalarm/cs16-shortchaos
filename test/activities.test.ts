@@ -25,11 +25,12 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
 
   assert.equal(config.currency, "RUB");
   assert.equal(config.minAmount, 50);
-  // Twenty-three codes: the five 2025-10 events, `he_party` (kept off sale), the six round modes of S1,
-  // the five classes of S2, the five skills of S4 and the first item of S3. The skills and the item are
-  // not on sale yet: they are in the catalogue so the plugin cannot keep a handler nobody can trigger,
-  // and `enabled: false` keeps them out of the random roll until the live check is done.
-  assert.equal(config.activities.length, 23, "five events, he_party, six round modes, five classes, five skills, one item");
+  // Forty codes: the five 2025-10 events, `he_party` (kept off sale), the six round modes of S1,
+  // the five classes of S2, the three items of S3, the five skills of S4, the five chases of S5, the
+  // six physics codes of S6 and the four sound codes of S8. Everything past the original five is off sale:
+  // it is in the catalogue so the plugin cannot keep a handler nobody can trigger, and `enabled: false`
+  // keeps it out of the random roll until the live check is done.
+  assert.equal(config.activities.length, 40, "five events, he_party, six round modes, five classes, three items, five skills, five chases, six physics codes, four sound codes");
 
   const codes = config.activities.map((activity) => activity.code);
   assert.equal(new Set(codes).size, codes.length, "codes are unique");
@@ -47,7 +48,7 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
     nemesis: 60,
     survivor: 60,
     juggernaut: 60,
-    assassin: 45,
+    sniper: 45,
     outbreak: 60,
     chaos_plague: 60,
     // The S2 classes: 45 seconds is long enough for the movement change to be read, and `jumpers` is the
@@ -62,7 +63,6 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
   assert.deepEqual(
     onSale.map((activity) => activity.code).sort(),
     [
-      "assassin",
       "brutes",
       "chaos_plague",
       "glass_cannon",
@@ -77,6 +77,7 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
       "red_light",
       "regenerators",
       "runners",
+      "sniper",
       "survivor",
     ],
     "sixteen events on sale",
@@ -108,7 +109,7 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
 test("every effect on a clock carries that clock in its params as well", () => {
   const config = loadActivities(shippedConfig);
   const timed = config.activities.filter((activity) => activity.duration === "seconds");
-  assert.equal(timed.length, 23, "every shipped code is a clock");
+  assert.equal(timed.length, 40, "every shipped code is a clock");
 
   for (const activity of timed) {
     // The plugin reads the length from the command the control API builds, so both places must agree.
@@ -135,34 +136,51 @@ test("the HE party is the whole shop: one step, sixty seconds, no cooldown", () 
   assert.equal(party.params.maxNameLength, 16);
 });
 
-test("the catalogue is exactly the twenty-three codes the plugin still registers", () => {
+test("the catalogue is exactly the forty codes the plugin still registers", () => {
   const config = loadActivities(shippedConfig);
   assert.deepEqual(
     config.activities.map((activity) => activity.code).sort(),
     [
-      "assassin",
+      "airstrike",
+      "announcer_countdown",
+      "bazooka_drop",
       "blink_bots",
       "brutes",
       "chain_lightning",
       "chaos_plague",
+      "duel_bell",
       "fire_grenades",
+      "fire_ring",
+      "freeze_nades",
       "glass_cannon",
+      "guntrain",
       "he_party",
+      "head_hunter",
       "hero_roulette",
       "hex_wave",
+      "invert_velocity",
       "juggernaut",
       "jumpers",
+      "king_of_the_hill",
       "lightsaber_duel",
+      "low_gravity_knives",
       "meteor_shower",
+      "music_swap",
       "nemesis",
       "one_bullet",
       "outbreak",
+      "quake",
+      "quotes_pack",
       "raptors",
       "red_light",
       "regenerators",
       "runners",
+      "siren",
+      "sniper",
+      "statues",
       "survivor",
       "vampiric_aura",
+      "weapon_rain",
     ],
   );
 
@@ -192,7 +210,7 @@ test("the catalogue is exactly the twenty-three codes the plugin still registers
   assert.equal(survivor.params.weapon, "weapon_m249");
   assert.equal(survivor.params.baseHealth, 1200);
 
-  // The other four round modes: the role transfer for the juggernaut, the silhouette for the assassin,
+  // The other four round modes: the role transfer for the juggernaut, the five round budget for the sniper,
   // and the two numbers the infection reads (`health` and `infectKnife`, not `knife` - the chaos plague
   // carries both a hero knife and an infection knife in the same command).
   const juggernaut = byCode.get("juggernaut");
@@ -200,9 +218,13 @@ test("the catalogue is exactly the twenty-three codes the plugin still registers
   assert.equal(juggernaut.params.transfer, 1, "the juggernaut role must go to its killer");
   assert.equal(juggernaut.params.weapon, "weapon_knife");
 
-  const assassin = byCode.get("assassin");
-  assert.ok(assassin);
-  assert.equal(assassin.params.alpha, 140, "the assassin is a silhouette, not an invisible bot");
+  // `sniper` replaced the silhouette mode: the same hero machinery, an AWP and a budget the plugin counts
+  // in shots, because csdm_lite refills the reserve once a second and a budget kept in ammo would be a lie.
+  const sniper = byCode.get("sniper");
+  assert.ok(sniper);
+  assert.equal(sniper.params.weapon, "weapon_awp");
+  assert.equal(sniper.params.rounds, 5, "the sniper starts with five rounds");
+  assert.equal(sniper.params.baseHealth, 250);
 
   const outbreak = byCode.get("outbreak");
   assert.ok(outbreak);
@@ -244,6 +266,105 @@ test("the catalogue is exactly the twenty-three codes the plugin still registers
   assert.ok(regenerators);
   assert.equal(regenerators.params.regen, 35);
   assert.equal(regenerators.params.count, 4);
+
+  // S3 items: the two grenade codes. Both carry their own blast because YaPB never throws, and both read
+  // its width from the command - a missing radius here is a blast with the plugin's default.
+  const fire = byCode.get("fire_grenades");
+  assert.ok(fire);
+  assert.equal(fire.params.damage, 60);
+  assert.equal(fire.params.burn, 15);
+  assert.equal(fire.params.radius, 300, "the fire spark has no width of its own");
+
+  const freeze = byCode.get("freeze_nades");
+  assert.ok(freeze);
+  assert.equal(freeze.params.freeze, 6);
+  assert.equal(freeze.params.radius, 300);
+
+  // S5 chases: the ladder arrives as one parameter per rung (`rung1=.. rung8=..`), because a comma-joined list
+  // is split by the engine and only its first entry reaches the plugin. The hill and the bell carry the numbers
+  // their applier reads; a typo here is a ladder that starts on the knife or a hill nobody can stand on.
+  const guntrain = byCode.get("guntrain");
+  assert.ok(guntrain);
+  assert.deepEqual(
+    [1, 2, 3, 4, 5, 6, 7, 8].map((rung) => guntrain.params[`rung${rung}`]),
+    ["glock18", "usp", "deagle", "mp5navy", "ak47", "m4a1", "awp", "knife"],
+  );
+  assert.equal(guntrain.params.ladder, undefined, "a comma-joined list is back");
+
+  const roulette = byCode.get("hero_roulette");
+  assert.ok(roulette);
+  assert.deepEqual(
+    [1, 2, 3, 4].map((slot) => roulette.params[`power${slot}`]),
+    ["invisible", "speed", "health", "deagle"],
+  );
+
+  const hill = byCode.get("king_of_the_hill");
+  assert.ok(hill);
+  assert.equal(hill.params.radius, 200);
+  assert.equal(hill.params.hold, 3);
+  assert.equal(hill.params.health, 300);
+
+  const bell = byCode.get("duel_bell");
+  assert.ok(bell);
+  assert.equal(bell.params.period, 10);
+  assert.equal(bell.params.health, 1, "a duel at 100 HP is not a duel");
+
+  const hunter = byCode.get("head_hunter");
+  assert.ok(hunter);
+  assert.equal(hunter.params.reward, "weapon_awp");
+  assert.equal(hunter.params.hold, 15);
+  assert.equal(hunter.params.period, 3);
+
+  // S6 physics: every number the plugin clamps is present here as the catalogue's own preset, so the
+  // panel can retune a code without a recompile and the contract test above can read the values back.
+  const airstrike = byCode.get("airstrike");
+  assert.ok(airstrike);
+  assert.equal(airstrike.params.strikes, 10);
+  assert.equal(airstrike.params.damage, 120);
+  assert.equal(airstrike.params.radius, 300);
+
+  const rain = byCode.get("weapon_rain");
+  assert.ok(rain);
+  assert.equal(rain.params.count, 5, "the five-entity cap is the whole point of the code");
+  assert.equal(rain.params.period, 2);
+
+  const quake = byCode.get("quake");
+  assert.ok(quake);
+  assert.equal(quake.params.period, 0.7);
+  assert.equal(quake.params.force, 400);
+
+  const ring = byCode.get("fire_ring");
+  assert.ok(ring);
+  assert.equal(ring.params.damage, 5);
+  assert.equal(ring.params.period, 1);
+  assert.equal(ring.params.shrink, 40);
+
+  const invert = byCode.get("invert_velocity");
+  assert.ok(invert);
+  assert.equal(invert.params.period, 0.2);
+
+  const knives = byCode.get("low_gravity_knives");
+  assert.ok(knives);
+  assert.equal(knives.params.gravity, 150);
+
+  // S8 sound: the four codes are broadcast-side effects. `quotes_pack` needs `maxPhraseLength`, or the
+  // poller never sends `text=` and every quote is the built-in one; `music_swap` is bed-only.
+  const countdown = byCode.get("announcer_countdown");
+  assert.ok(countdown);
+  assert.equal(countdown.params.stock, 0, "the stock cue would talk over the TTS countdown");
+
+  const quotes = byCode.get("quotes_pack");
+  assert.ok(quotes);
+  assert.equal(quotes.params.maxPhraseLength, 40, "without this the viewer's phrase never reaches the game");
+
+  const siren = byCode.get("siren");
+  assert.ok(siren);
+  assert.equal(siren.params.music, "siren", "the siren bed is not named");
+
+  const swap = byCode.get("music_swap");
+  assert.ok(swap);
+  assert.equal(swap.params.music, "music_swap");
+  assert.equal(swap.params.onlyMusic, true, "a spoken line over the swapped bed defeats the point");
 });
 
 test("price below the minimum donation is rejected", () => {

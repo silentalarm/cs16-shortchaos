@@ -24,7 +24,24 @@ if [ -d "$DEFAULTS" ]; then
   if [ -d "$DEFAULTS/plugins" ]; then
     cp -f "$DEFAULTS/plugins"/*.amxx "$AMXX/plugins/" 2>/dev/null || true
   fi
-  echo "configs and plugins synced from the image"
+  # The models this repository makes for itself. Without this they stay in the image and the plugin's
+  # `file_exists` sees nothing, so the event runs without its picture and nothing in the log says why.
+  if [ -d "$DEFAULTS/models" ]; then
+    mkdir -p /hlds/cstrike/models
+    cp -f "$DEFAULTS/models"/*.mdl /hlds/cstrike/models/ 2>/dev/null || true
+    # Player models live one folder down, the way CS keeps its own: models/player/<name>/<name>.mdl.
+    if [ -d "$DEFAULTS/models/player" ]; then
+      mkdir -p /hlds/cstrike/models/player
+      cp -rf "$DEFAULTS/models/player/." /hlds/cstrike/models/player/ 2>/dev/null || true
+    fi
+  fi
+  # A sound the client does not have is a silent bang, and `precache_sound` says nothing about it: the
+  # freeze sample is synced here for the same reason the models are.
+  if [ -d "$DEFAULTS/sound" ]; then
+    mkdir -p /hlds/cstrike/sound
+    cp -rf "$DEFAULTS/sound/." /hlds/cstrike/sound/ 2>/dev/null || true
+  fi
+  echo "configs, plugins, models and sounds synced from the image"
 fi
 
 # The image never contains a usable rcon password; it is written at start.

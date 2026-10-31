@@ -4,7 +4,7 @@ import type { Activity } from "./activities.ts";
 import { applyOverrides, OverrideStore } from "./activities-override.ts";
 import { createAdminServer } from "./admin/server.ts";
 import { addToChaos, CHAOS_THRESHOLD } from "./chaos-meter.ts";
-import { CODES_PROBE } from "./command.ts";
+import { CODES_PROBE, sanitizePhrase } from "./command.ts";
 import type { DonationRow } from "./db.ts";
 import { openStore } from "./db.ts";
 import { fetchDonations } from "./donationalerts.ts";
@@ -12,7 +12,7 @@ import { loadEnv } from "./env.ts";
 import { GamePoller } from "./game-poller.ts";
 import { buildOverlay, writeOverlay } from "./overlay.ts";
 import { drainQueue, pollOnce, restoreQueue } from "./poller.ts";
-import { announcementFor, chaosRequest, donationAnnouncement, phaseCues, silenceRequest, writeVoiceRequest } from "./voice.ts";
+import { announcementFor, countdownCues, donationAnnouncement, phaseCues, quoteRequest, silenceRequest, writeVoiceRequest } from "./voice.ts";
 import { PendingQueue } from "./queue.ts";
 import { RconClient } from "./rcon.ts";
 import { parsePluginCodes, parsePluginStatus } from "./stream-status.ts";
@@ -45,15 +45,16 @@ function log(event: string, details: Record<string, unknown> = {}): void {
  */
 const voice = (
   activities: readonly Activity[],
-  donation?: { username: string; amount: number; currency: string },
+  donation?: { username: string; amount: number; currency: string; message?: string | null },
 ): void => {
   const first = activities[0];
   if (first === undefined) return;
 
-  // An event whose sound belongs to a phase (`red_light`) gets one request per phase, mirroring the
-  // plugin's timing, and no bed of its own: the cues are its soundtrack. The previous bed is cut
-  // first, otherwise the duel's music plays on underneath the Squid Game cues.
-  const phaseOnly = activities.every((activity) => phaseCues(activity).length > 0);
+  // An event whose sound belongs to a rhythm or a phase (`announcer_countdown`, `red_light`) gets one
+  // request per cue, mirroring the plugin's timing, and no bed of its own: the cues are its soundtrack.
+  // The previous bed is cut first, otherwise the duel's music plays on underneath the new cues.
+  const cuesOf = (activity: Activity) => [...phaseCues(activity), ...countdownCues(activity)];
+  const phaseOnly = activities.every((activity) => cuesOf(activity).length > 0);
   if (phaseOnly) {
     try {
       writeVoiceRequest(env.overlayDir, { musicStop: true });
@@ -63,7 +64,7 @@ const voice = (
   }
 
   for (const activity of activities) {
-    for (const cue of phaseCues(activity)) {
+    for (const cue of cuesOf(activity)) {
       setTimeout(() => {
         try {
           writeVoiceRequest(env.overlayDir, cue.request);
@@ -76,13 +77,30 @@ const voice = (
 
   if (phaseOnly) return;
 
-  // The donor's name and sum go on top: "Петя, 900 рублей. Выпало: ОДНА ПУЛЯ, ДУЭЛЬ" is the credit the
-  // viewer paid for, and one line for the whole batch keeps six announcements from talking over each
-  // other. A panel run has no donor, so it announces the activity itself.
+  // The bed of the batch and nothing spoken: the narrator is gone (see `announcementFor`). A panel run has
+  // no donor, and both paths now write the same kind of request - music, a cue, and the clock to cut it at.
   writeVoiceRequest(
     env.overlayDir,
-    donation === undefined ? announcementFor(first) : donationAnnouncement(activities, donation),
+    donation === undefined ? announcementFor(first) : donationAnnouncement(activities),
   );
+
+  // `quotes_pack` is a line the viewer paid to hear, in the same ASCII form the chat shows. The raw
+  // message may be Cyrillic, and a spoken line that differs from its subtitle reads as a bug, so both
+  // go through `sanitizePhrase`. A panel run carries no message: the plugin then uses its own pack and
+  // the catalogue line is what the voice says.
+  const quote = activities.find((activity) => activity.code === "quotes_pack");
+  const raw = donation?.message ?? "";
+  if (quote !== undefined && raw.trim() !== "") {
+    const limit = typeof quote.params["maxPhraseLength"] === "number" ? quote.params["maxPhraseLength"] : 40;
+    const phrase = sanitizePhrase(raw, limit);
+    if (phrase !== "") {
+      try {
+        writeVoiceRequest(env.overlayDir, quoteRequest(phrase));
+      } catch (error) {
+        log("voice.failed", { error: (error as Error).message });
+      }
+    }
+  }
 };
 
 /** The Stop button: kill the bed so the board and the mix are cleared together. */
@@ -256,11 +274,6 @@ async function collectChaos(): Promise<void> {
     } catch (error) {
       log("chaos.failed", { error: (error as Error).message });
     }
-  }
-  try {
-    writeVoiceRequest(env.overlayDir, chaosRequest());
-  } catch (error) {
-    log("voice.failed", { error: (error as Error).message });
   }
 }
 

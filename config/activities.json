@@ -200,9 +200,9 @@
       }
     },
     {
-      "code": "assassin",
-      "title": "Assassin",
-      "announce": "AN ASSASSIN IS HUNTING!",
+      "code": "sniper",
+      "title": "Sniper",
+      "announce": "ONE BOT, ONE AWP, FIVE ROUNDS!",
       "price": 50,
       "priority": 5,
       "duration": "seconds",
@@ -215,13 +215,14 @@
         "seconds": 45,
         "baseHealth": 250,
         "perBot": 0,
-        "knife": 200,
-        "speed": 1.25,
-        "alpha": 140,
-        "weapon": "weapon_knife",
+        "knife": 0,
+        "speed": 1.0,
+        "alpha": 0,
+        "weapon": "weapon_awp",
+        "rounds": 5,
         "maxNameLength": 16,
-        "short": "АССАСИН",
-        "say": "АССАСИН ОХОТИТСЯ"
+        "short": "СНАЙПЕР",
+        "say": "СНАЙПЕР НА ПОЛЕ"
       }
     },
     {
@@ -458,7 +459,10 @@
       "enabled": false,
       "params": {
         "seconds": 45,
-        "pool": ["invisible", "speed", "health", "deagle"],
+        "power1": "invisible",
+        "power2": "speed",
+        "power3": "health",
+        "power4": "deagle",
         "maxNameLength": 16,
         "short": "РУЛЕТКА",
         "say": "КТО-ТО ПОЛУЧИТ СИЛУ"
@@ -500,10 +504,376 @@
         "seconds": 30,
         "damage": 60,
         "burn": 15,
+        "radius": 300,
         "maxNameLength": 16,
         "short": "ОГОНЬ",
         "say": "ГРАНАТЫ ЖГУТ"
       }
+    },
+    {
+      "code": "freeze_nades",
+      "title": "Freeze Grenades",
+      "announce": "FLASHBANGS FREEZE THE FIELD",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 30,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": false,
+      "params": {
+        "seconds": 30,
+        "freeze": 6,
+        "radius": 300,
+        "maxNameLength": 16,
+        "short": "ЗАМОРОЗКА",
+        "say": "ФЛЕШКА ВЯЖЕТ"
+      }
+    },
+    {
+      "code": "bazooka_drop",
+      "title": "Bazooka Drop",
+      "announce": "ONE BOT GETS A LAUNCHER",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 30,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": false,
+      "params": {
+        "seconds": 30,
+        "maxNameLength": 16,
+        "short": "БАЗУКА",
+        "say": "У БОТА БАЗУКА"
+      }
+    },
+    {
+      "code": "guntrain",
+      "title": "GunGame Ladder",
+      "announce": "A KILL MOVES YOU UP",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 60,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": false,
+      "params": {
+        "seconds": 60,
+        "rung1": "glock18",
+        "rung2": "usp",
+        "rung3": "deagle",
+        "rung4": "mp5navy",
+        "rung5": "ak47",
+        "rung6": "m4a1",
+        "rung7": "awp",
+        "rung8": "knife",
+        "maxNameLength": 16,
+        "short": "ЛЕСТНИЦА",
+        "say": "КАЖДЫЙ ФРАГ — СТУПЕНЬ"
+      }
+    },
+    {
+      "code": "statues",
+      "title": "Statues",
+      "announce": "DON'T BE SEEN",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 30,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": false,
+      "params": {
+        "seconds": 30,
+        "maxNameLength": 16,
+        "short": "СТАТУИ",
+        "say": "УВИДЕЛ — ЗАМЕР"
+      }
+    },
+    {
+      "code": "head_hunter",
+      "title": "Head Hunter",
+      "announce": "A PRICE ON A HEAD",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 45,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": false,
+      "params": {
+        "seconds": 45,
+        "reward": "weapon_awp",
+        "hold": 15,
+        "period": 3,
+        "maxNameLength": 16,
+        "short": "ОХОТА",
+        "say": "ГОЛОВА ЗА НАГРАДУ"
+      }
+    },
+    {
+      "code": "king_of_the_hill",
+      "title": "King of the Hill",
+      "announce": "TAKE THE HILL",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 60,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": false,
+      "params": {
+        "seconds": 60,
+        "radius": 200,
+        "hold": 3,
+        "health": 300,
+        "maxNameLength": 16,
+        "short": "ХОЛМ",
+        "say": "ДЕРЖИ ЦЕНТР"
+      }
+    },
+    {
+      "code": "duel_bell",
+      "title": "Duel Bell",
+      "announce": "THE BELL RINGS",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 40,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": false,
+      "params": {
+        "seconds": 40,
+        "period": 10,
+        "health": 1,
+        "maxNameLength": 16,
+        "short": "ДУЭЛЬ",
+        "say": "ЗВОНОК НА ДУЭЛЬ"
+      }
     }
+,
+    {
+      "code": "airstrike",
+      "title": "Airstrike",
+      "announce": "AIRSTRIKE INBOUND!",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 20,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": false,
+      "params": {
+        "seconds": 20,
+        "strikes": 10,
+        "damage": 120,
+        "radius": 300,
+        "maxNameLength": 16,
+        "short": "АВИАУДАР",
+        "say": "АВИАУДАР"
+      }
+    },
+    {
+      "code": "weapon_rain",
+      "title": "Weapon Rain",
+      "announce": "IT RAINS GUNS",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 20,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": false,
+      "params": {
+        "seconds": 20,
+        "count": 5,
+        "period": 2,
+        "maxNameLength": 16,
+        "short": "ОРУЖИЕ",
+        "say": "ДОЖДЬ ОРУЖИЯ"
+      }
+    },
+    {
+      "code": "quake",
+      "title": "Earthquake",
+      "announce": "EARTHQUAKE!",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 15,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": false,
+      "params": {
+        "seconds": 15,
+        "period": 0.7,
+        "force": 400,
+        "maxNameLength": 16,
+        "short": "ТРЯСКА",
+        "say": "ЗЕМЛЕТРЯСЕНИЕ"
+      }
+    },
+    {
+      "code": "fire_ring",
+      "title": "Fire Ring",
+      "announce": "NOWHERE TO RUN",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 30,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": false,
+      "params": {
+        "seconds": 30,
+        "damage": 5,
+        "period": 1,
+        "shrink": 40,
+        "maxNameLength": 16,
+        "short": "КРУГ",
+        "say": "КРУГ ОГНЯ"
+      }
+    },
+    {
+      "code": "invert_velocity",
+      "title": "Invert Velocity",
+      "announce": "EVERYTHING IN REVERSE",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 10,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": false,
+      "params": {
+        "seconds": 10,
+        "period": 0.2,
+        "maxNameLength": 16,
+        "short": "РЕВЕРС",
+        "say": "ВСЁ НАОБОРОТ"
+      }
+    },
+    {
+      "code": "low_gravity_knives",
+      "title": "Moon Knives",
+      "announce": "KNIVES IN LOW GRAVITY",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 25,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": false,
+      "params": {
+        "seconds": 25,
+        "gravity": 150,
+        "maxNameLength": 16,
+        "short": "ЛУНА",
+        "say": "ЛУННЫЕ НОЖИ"
+      }
+    }
+
+,
+    {
+      "code": "announcer_countdown",
+      "title": "Announcer Countdown",
+      "announce": "3... 2... 1... FIGHT!",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 10,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": false,
+      "params": {
+        "seconds": 10,
+        "stock": 0,
+        "maxNameLength": 16,
+        "short": "ОТСЧЁТ",
+        "say": "ОБРАТНЫЙ ОТСЧЁТ"
+      }
+    },
+    {
+      "code": "quotes_pack",
+      "title": "Quotes Pack",
+      "announce": "A BOT SAYS A LINE",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 5,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": false,
+      "params": {
+        "seconds": 5,
+        "stock": 0,
+        "maxPhraseLength": 40,
+        "maxNameLength": 16,
+        "short": "ЦИТАТА",
+        "say": "ФРАЗА ИЗ ФИЛЬМА"
+      }
+    },
+    {
+      "code": "siren",
+      "title": "Air Raid Siren",
+      "announce": "AIR RAID SIREN",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 15,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": false,
+      "params": {
+        "seconds": 15,
+        "stock": 0,
+        "music": "siren",
+        "maxNameLength": 16,
+        "short": "СИРЕНА",
+        "say": "ВОЗДУШНАЯ ТРЕВОГА"
+      }
+    },
+    {
+      "code": "music_swap",
+      "title": "Music Swap",
+      "announce": "THE TRACK CHANGES",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 20,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": false,
+      "params": {
+        "seconds": 20,
+        "stock": 0,
+        "music": "music_swap",
+        "onlyMusic": true,
+        "maxNameLength": 16,
+        "short": "МУЗЫКА",
+        "say": "МУЗЫКА"
+      }
+    }
+
   ]
 }

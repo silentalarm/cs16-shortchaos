@@ -3,6 +3,14 @@
 #   docker buildx imagetools inspect debian:bookworm-slim   -> debian@sha256:...
 ARG BASE_IMAGE=debian:bookworm-slim
 
+# The freeze's own sample (`src/sound.ts`): rendered from tables, never committed as a recording. A separate
+# stage keeps node and the source tree out of the game image; only the rendered .wav is copied forward.
+FROM node:24-bookworm-slim AS sounds
+COPY src/music.ts src/sound.ts /s/src/
+COPY infra/sounds/generate.ts /s/infra/sounds/generate.ts
+WORKDIR /s
+RUN node infra/sounds/generate.ts /sound
+
 FROM ${BASE_IMAGE} AS build
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive
@@ -44,6 +52,18 @@ COPY infra/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN --mount=type=cache,target=/var/cache/steamcmd \
     chmod +x /usr/local/bin/build-hlds.sh /usr/local/bin/entrypoint.sh \
  && bash /usr/local/bin/build-hlds.sh
+
+# Weapon models made for this server (infra/models/build/bazooka.mjs, SMAK): `cstrike/models` is flat, the
+# way CS keeps its own v_/w_/p_ files, and the textures are inside the .mdl.
+COPY infra/models/weapons/ /hlds/cstrike/models/
+# Player models are the one thing CS keeps in a folder of their own: `models/player/<name>/<name>.mdl`. The
+# nemesis and the survivor are painted here over stock soldiers (`infra/models/build/nemesis.mjs`,
+# `survivor.mjs`, `skin.mjs`) and are new files - the stock `urban.mdl` and `leet.mdl` beside them are never
+# written.
+COPY infra/models/player/ /hlds/cstrike/models/player/
+# The freeze's sound. `precache_sound` on a missing file is silent rather than fatal, so an image built
+# without this stage would look healthy and play no bang at all.
+COPY --from=sounds /sound/ /hlds/cstrike/sound/
 
 # amxxpc is a 32-bit binary: it needs the i386 loader, which the base deps above lack.
 # Everything from here on is cheap to rebuild, so editing the Pawn plugin re-runs only
@@ -87,6 +107,16 @@ COPY --from=build --chown=10001:10001 /hlds/cstrike/server.cfg /opt/defaults/ser
 COPY --from=build --chown=10001:10001 /hlds/cstrike/addons/amxmodx/configs/plugins.ini /opt/defaults/plugins.ini
 COPY --from=build --chown=10001:10001 /hlds/cstrike/addons/amxmodx/configs/modules.ini /opt/defaults/modules.ini
 COPY --from=build --chown=10001:10001 /hlds/cstrike/addons/amxmodx/plugins /opt/defaults/plugins
+# The models this repository makes for itself (`infra/models`, built by `infra/models/build/*.mjs`). Only
+# these, never the whole stock `models/` directory: the rest is Steam's and is seeded with the volume.
+COPY --from=build --chown=10001:10001 /hlds/cstrike/models/p_bazooka.mdl /hlds/cstrike/models/w_bazooka.mdl /hlds/cstrike/models/p_nemesis_knife.mdl /opt/defaults/models/
+# The nemesis and the survivor player models keep CS's own folder layout, so the entrypoint syncs `player/`
+# too. Each mode precaches its own folder and checks the file first, so one missing look cannot take the
+# server down.
+COPY --from=build --chown=10001:10001 /hlds/cstrike/models/player/nemesis /opt/defaults/models/player/nemesis
+COPY --from=build --chown=10001:10001 /hlds/cstrike/models/player/survivor /opt/defaults/models/player/survivor
+# The freeze sound keeps its `freeze/` subdirectory for the same reason.
+COPY --from=build --chown=10001:10001 /hlds/cstrike/sound/freeze /opt/defaults/sound/freeze
 
 # The entrypoint must live outside /hlds: that directory is a named volume in compose, and a
 # volume is populated from the image only once. An entrypoint stored there would keep executing

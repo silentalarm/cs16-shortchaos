@@ -31,6 +31,32 @@ before it is called done.
    priority is the first stage of the roadmap, before any S1 code.
 6. **Never cluster models in one frame area.** `crowd_pile` froze the capture client twice: llvmpipe
    renders on the CPU. Every system that adds models adds vertices — see the FPS check in `assets.md`.
+7. **A list travels as indexed parameters, not as one comma-joined token.** Measured on the live server:
+   `reward=weapon_awp,zzz` reaches the plugin as `weapon_awp`, and `ladder=a,b` as `a` — the engine splits
+   the RCON line at commas and colons. `hero_roulette` shipped with a comma-joined `pool` and always played
+   its first power; it and `guntrain` now read `power1..` / `rung1..`, one token each, and a contract test
+   keeps the joined form out.
+8. **A weapon a bot was given does not survive its death.** `csdm_lite` respawns a slot about half a second
+   after the kill and hands it a random rifle with full ammo, so anything that armed a bot has to arm it
+   again in `ReArmOnSpawn` (that is what the respawn kit is: `ArmHero`, `ArmInfected`, `ArmClass`,
+   `ArmHexed`, `ArmBazooka`, `ArmGlassCannon`, the `guntrain` rung, `DuelArm`, `ArmKnives`, and the
+   `one_bullet` ammo rule). The re-arm runs twice, at 0.3 s and 0.9 s, because the first pass can land
+   before `csdm_lite` arms the bot at all. A code that arms once and forgets this is over for every bot
+   that died during it - `one_bullet`, `glass_cannon` and `guntrain` were all in that state until
+   2026-10-31.
+9. **A blast draws its radius, and a hero cannot hold a weapon he was not given.** Two findings from the
+   first live checks, both measured:
+   - `Shockwave()` in `donation_events` builds a ring of `TE_BEAMPOINTS` on the blast's own radius, and every
+     event with a radius uses it (`bazooka_drop`, `freeze_nades`, `airstrike`). The ring is what turns "320
+     units" from a number in the catalogue into something on screen; `TE_BEAMCYLINDER` would be one message
+     instead of twelve segments, but its byte layout has never been verified on this server and a temp entity
+     with the wrong byte count desynchronises every client - a full server of disconnects is not a cosmetic
+     bug;
+   - the kit lock cannot ride on `CurWeapon`: that event is sent by the *client*, and YaPB bots never send it.
+     A `nemesis` with 13 500 HP killed with an AWP for a whole round before the lock was moved to a
+     server-side pass (`TaskKitSweep`, 0.5 s: kit back, dropped boxes removed) plus a `TraceAttack` refusal
+     for any bullet fired with a weapon that is not the bot's kit. Half a second is long enough for a kill,
+     which is why both exist.
 
 ## S1 — round modes (Zombie Plague)
 
@@ -42,17 +68,20 @@ with a beginning and an end, and the camera has a hero to follow.
 250 damage, ×1.3 speed; Hero Survivor 2 500 HP + 75 per opponent; Outbreak starts about 33 %
 infected; the Assassin is semi-invisible and fights with a knife. The constants are adapted to twenty
 bots and a 60 s clock — 30 000 HP does not die inside a minute, so the health is
-`baseHealth + perBot × alive bots` with the numbers from `catalogue.md`.
+`baseHealth + perBot × alive bots` with the numbers from `catalogue.md`. Our `sniper` is the one code of
+the system that is not a Zombie Plague mode: it is a hero with an AWP and a five round budget, because the
+knife hero with a target needs bot goals the pinned YaPB does not expose (see the note in `catalogue.md`).
 
 **Mechanic.** `cs_set_user_model` for the mode's model, `Ham_TakeDamage` for the boss knife,
 `set_user_maxspeed` for the speed, a clock task for the end, `amx_stcam lock` for the camera.
 Conversion in `outbreak` is `DeathMsg`: if the killer carries the infection flag, the victim rejoins
-on the infected side with the zombie model and the infected health.
+on the infected side with the zombie model and the infected health. `sniper` reads its budget from
+`rounds`, spends it in `Ham_Weapon_PrimaryAttack` and pays one back in `DeathMsg`.
 
-**Parameters.** `baseHealth`, `perBot`, `knife`, `speed`, `share`, `health`, `weapon`, `alpha`,
+**Parameters.** `baseHealth`, `perBot`, `knife`, `speed`, `share`, `health`, `weapon`, `alpha`, `rounds`,
 `chaos`.
 
-**Codes.** `nemesis`, `survivor`, `outbreak`, `juggernaut`, `assassin`, `chaos_plague`.
+**Codes.** `nemesis`, `survivor`, `outbreak`, `juggernaut`, `sniper`, `chaos_plague`.
 
 **Assets.** Zombie player models, knife hit sounds, an announcer sting (see `assets.md`).
 
@@ -97,16 +126,27 @@ hands, grenades that burn, mines on the ground. These are the clips people cut.
 fired from `Ham_Weapon_PrimaryAttack`, never `give_item`. Build the bazooka first and measure; if the
 entity path is unstable on ReGameDLL, downgrade to `weapon_m249` with a bigger radius and keep the
 model work for later. Fire and freeze are the easy half: an HE that sets a burn task (`60 damage a
-tick`, orange sprite) and a flashbang that applies `FL_FROZEN` plus an ice sprite.
+tick`, orange sprite) and a flashbang that applies `FL_FROZEN` plus an ice sprite. The two triggers are
+not the same: the engine labels an HE blast `DMG_BLAST` in `Ham_TakeDamage`, and a flashbang deals no
+damage at all, so `freeze_nades` reads the `grenade` entities itself - a 0.25 s scan that remembers each
+live flashbang with its last origin and `pev_dmgtime`, and fires on the one that is gone after its fuse.
+Both codes also carry a spark of their own (`SPARK_PERIOD`, 4 s): YaPB holds a grenade and never throws it,
+so a paid event that waits for a bot's arm is an event that never happens. The spark is a second *source* of
+the same fact, never a second implementation: the fire spark is a `Ham_TakeDamage` labelled `DMG_BLAST`, the
+freeze pulse calls the same `FlashBlast` the scan does.
 
 **Parameters.** `damage`, `radius`, `recharge`, `ammo`, `burn`, `freeze`, `count`, `period`.
 
 **Codes.** `fire_grenades`, `freeze_nades`, `bazooka_drop`, `plasma_rifle`, `laser_mines`.
 
 **Assets.** `v_`/`w_`/`p_` models for the bazooka and the plasma rifle, a mine sprite, fire and freeze
-sprites (`sprites/zerogxplode.spr` is already precached), burn and freeze sounds.
+sprites (`sprites/zerogxplode.spr` is already precached), burn and freeze sounds. The freeze does not wait
+for a pack: `src/sound.ts` renders `freeze/ice_crack.wav` at image build, the blast draws shard columns
+from the beams this set already runs, and the frozen bots wear an ice-white shell — a flashbang bang over a
+blue ring reads as a flash and a smoke ring, which is what the event used to sound and look like.
 
-**Claims.** weapon pool, the hero slot (camera), and for the mines their own entity list.
+**Claims.** weapon pool, the hero slot (camera), the freeze (`freeze_nades` and `red_light` are the two
+codes that want the field standing, and the newest claim wins), and for the mines their own entity list.
 
 **Measure.** Does the bazooka entity survive `csdm_lite` re-arming? A custom weapon and a respawn
 plugin fight over the weapon slots — that is the known failure mode, and it is why this system comes
@@ -145,11 +185,11 @@ name has to pass `file_exists` before it is precached.
 freeze-on-sight, a marked target, a contested point, a duel. All of them are rules the viewer can
 follow in three seconds — the best possible property for a stream nobody narrates.
 
-**Mechanic.** `guntrain` needs a per-bot kill counter and a ladder from `params.ladder`, re-arming the
-bot on `DeathMsg`; the panel prints the leader. `statues` traces between bots (`trace_line`) and
-freezes the one that is looked at. `head_hunter` marks a bot (glow + name) and hands the killer an AWP
-for `hold` seconds. `king_of_the_hill` is a distance check plus a 3 s hold timer, and `duel_bell`
-teleports two bots to the map centre every `period` seconds.
+**Mechanic.** `guntrain` needs a per-bot kill counter and a ladder from the command (`rung1=.. rung8=..`, one
+token per rung), re-arming the bot on `DeathMsg`; the leader is announced in chat and the AMXX log. `statues`
+traces between bots (`trace_line`) and freezes the one that is looked at. `head_hunter` marks a bot (glow +
+name) and hands the killer an AWP for `hold` seconds. `king_of_the_hill` is a distance check plus a 3 s hold
+timer, and `duel_bell` teleports two bots to the middle of the fight every `period` seconds.
 
 **Parameters.** `ladder`, `reward`, `hold`, `period`, `radius`, `health`.
 
@@ -192,6 +232,20 @@ comes from S8.
 layer, and `plugin_end` must restore the original even if the container is stopped mid-event. Check
 the restore by reading `sv_gravity` over RCON after `amx_de clear`.
 
+**Built (stage 7).** `airstrike` ends itself with its last blast instead of riding the catalogue clock
+out; `weapon_rain` creates `armoury_entity` boxes, sets the world model by hand (`cs_set_armoury_type`
+does not touch it), never holds more than five and removes them on the clock; `quake` caps a stacked
+shove at `QUAKE_MAX_SPEED`; `fire_ring` starts at the farthest bot so the first tick already has
+somebody to burn; `invert_velocity` flips x/y only (a negated fall reads as a crash), claims
+`CLAIM_VELOCITY` and flips once more in its undo when it is the newest owner; `low_gravity_knives`
+restores `sv_gravity` only when its claim is the top one, with `CleanupActive` as the fallback.
+
+**Live.** All six ran on `fy_iceworld` on 2026-10-31: 10/10 airstrike blasts (14 bots hit), 5 weapon
+boxes, 15 quake ticks and 200 shoves, 701 velocity flips, 10 bots caught by the ring, and
+`sv_gravity` 800 → 150 → 800 on both the effect clock and `amx_de clear`; no AMXX runtime errors.
+They stay `enabled: false` until the owner puts a price on them — the codes are ready, the shop is
+not.
+
 ## S7 — models
 
 **Idea.** A model swap is the cheapest way to change the whole picture: the same fight, but twenty
@@ -221,11 +275,12 @@ at 720p, and the stream can.
 before the strike, a laugh after a stupid death. It is also the cheapest system in the plan — no
 models, no engine tricks.
 
-**Mechanic.** Two paths, and they must not be mixed. *Game* sounds are `precache_sound` +
-`emit_sound(0, CHAN_AUTO, …)` — stock files only, because a missing custom file is silent. *Stream*
-sounds are files in `infra/sounds`, rendered to WAV at image build, played by `infra/stream/voice.sh`
-into the same null sink `ffmpeg` records. `params.sound` / `params.music` already exist in the
-catalogue and are dropped from the RCON line on purpose (`src/command.ts`).
+**Mechanic.** Two paths, and they must not be mixed. *Game* sounds are `precache_sound` plus `emit_sound`
+from an entity parked at the event (`PlaySoundAt`) — entity 0 is the world origin, not "everywhere", and
+the distance from `(0 0 0)` fades the sample out, which is how a grenade the whole field could see went
+unheard. *Stream* sounds are files in `infra/sounds`, rendered to WAV at image build, played by
+`infra/stream/voice.sh` into the same null sink `ffmpeg` records. `params.sound` / `params.music` already
+exist in the catalogue and are dropped from the RCON line on purpose (`src/command.ts`).
 
 **Parameters.** `sound`, `music`, `onlyMusic`, `maxPhraseLength`.
 
@@ -234,11 +289,34 @@ catalogue and are dropped from the RCON line on purpose (`src/command.ts`).
 **Assets.** Siren, countdown voice, TTS quotes — all through the existing `src/voice.ts` +
 `infra/stream/voice.sh` pipeline, peak-normalised at build time.
 
+**No narrator for donations and events.** The espeak line that read every donation out loud ("Петя, 900
+рублей. Выпало: …") is gone: it was louder than the game, half of it unreadable, and it talked over the
+cue it was announcing. `announcementFor` / `donationAnnouncement` now return the bed and the file cue only.
+Speech that a viewer pays for is still there (`quotes_pack`), and so is the countdown, which is a rhythm
+rather than a description of the event.
+
 **Claims.** the audio bed: one music bed at a time, cues may overlap it, but two `music_swap` events
 must not fight (newest wins, the older one is ended).
 
 **Measure.** Two events with sound in the same second must not double the loudness — check the audio
 levels with `node scripts/wav-levels.ts` and listen to the recorded `STREAM_OUTPUT` file.
+
+**Built (stage 8).** No game asset and no external MP3: `siren` and `music_swap` are two beds in
+`TRACKS` (`src/music.ts`), rendered at image build like the other seventeen, and the siren carries
+`gain: 2.5` because a track with no bass and no drums measured 8 dB under its neighbours.
+`announcer_countdown` is four TTS cues (`countdownCues`) on the same one-second ticks the plugin uses
+for its chat numbers; `quotes_pack` speaks the viewer's phrase after the announcement and prints the
+same ASCII line in chat; `media` paths never reach RCON. The game side owns `CLAIM_AUDIO`, the
+broadcast side owns the mix: `voice.sh` keeps exactly one bed at a time, so the newest sound event
+either replaces the previous one or is released by its own clock.
+
+**Live (plugin side).** On `fy_iceworld` the four codes printed their lines, the countdown logged 2,
+1 and FIGHT and ended on its own 10 s clock, `quotes_pack text=HELLO_WORLD` printed `said HELLO
+WORLD` (the RCON token's underscores become spaces), `amx_de status` listed `siren` and `music_swap`
+together and `amx_de clear` left `active=none`. The generated beds measure -18.3 / -18.7 dBFS against
+-19.7 for the default bed, and the rebuilt stream image carries both WAVs in
+`/usr/share/cs16/music` plus `espeak-ng` and `paplay`. A real broadcast was not started for this
+stage.
 
 ## S9 — stream meta effects (ffmpeg)
 

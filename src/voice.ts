@@ -123,7 +123,9 @@ export function writeVoiceRequest(
     if (request.musicStop === true) lines.push("musicStop=1");
     // A pure "cut the bed" request says nothing else: no voice line to ignore, no clock to keep.
     const bedOnly = request.musicStop === true && !hasMusic && text === "" && request.file === undefined;
-    if (!bedOnly) lines.push(`voice=${request.voice ?? "-"}`);
+    // `voice=` is only written for a spoken line: it names the espeak voice of `text`, so a bed or a cue on
+    // its own is not a voice request at all (the narrator removal left `voice=-` lines on every event).
+    if (!bedOnly && text !== "") lines.push(`voice=${request.voice ?? "-"}`);
     if (hasMusic) lines.push(`music=${music}`);
     if (hasMusic || hasSeconds) {
       // The bed is cut by the clock the player keeps: the music must end with the event.
@@ -168,32 +170,33 @@ function musicFor(activity: Activity): string {
   return typeof explicit === "string" && explicit.trim() !== "" ? explicit.trim() : activity.code;
 }
 
-/** What the event is called out loud: the catalogue's Russian line, or the English title. */
-function sayFor(activity: Activity): string {
-  const spoken = activity.params["say"];
-  return typeof spoken === "string" && spoken.trim() !== "" ? spoken.trim() : activity.title;
-}
-
-export function announcementFor(activity: Activity, random = Math.random): VoiceRequest {
+/**
+ * What a paid event sounds like: its bed and, when the catalogue names one, a ready-made cue file.
+ *
+ * THERE IS NO SPOKEN LINE ANY MORE. Every event used to be announced out loud ("Петя, 900 рублей. Выпало:
+ * СТЕКЛЯННАЯ ПУШКА") with espeak-ng mixed over the game, and it was the worst thing on the stream: a
+ * synthetic voice louder than the gunfight, half of it unreadable, and it talked over the cue it was
+ * announcing. The donation and the activity are already named by the overlay and by the game's own chat
+ * line. Music is kept - it is the event's soundtrack - and so are the file cues and the paid
+ * `quotes_pack` line, which is speech the viewer explicitly bought.
+ *
+ * `params.onlyMusic` still drops even the cue, for the codes whose soundtrack is the music.
+ */
+export function announcementFor(activity: Activity): VoiceRequest {
   const seconds = eventSeconds(activity);
   const music = musicFor(activity);
 
-  // `params.onlyMusic` keeps the bed and drops the voice. The duel's soundtrack is its music - a spoken
-  // line over the opera is a second narrator nobody asked for - and the same flag keeps the plugin's
-  // stock cues off the mix (`params.stock: 0`).
   if (activity.params["onlyMusic"] === true) {
     return { music, seconds };
   }
 
-  // A ready-made cue wins over speech: that is how the series cues are used, and it needs no rebuild.
+  // A ready-made cue: that is how the series cues are used, and it needs no rebuild. A file, not a voice.
   const file = activity.params["sound"];
   if (typeof file === "string" && file.trim() !== "") {
-    return { voice: pickVoice(activity.title, random), file: file.trim(), music, seconds };
+    return { file: file.trim(), music, seconds };
   }
 
-  const spoken = activity.params["say"];
-  const text = typeof spoken === "string" && spoken.trim() !== "" ? spoken.trim() : activity.title;
-  return { voice: pickVoice(text, random), text, music, seconds };
+  return { music, seconds };
 }
 
 /** Stop the bed and any cue: the panel's Stop button must leave the broadcast silent. */
@@ -202,44 +205,24 @@ export function silenceRequest(): VoiceRequest {
 }
 
 /**
- * What a paid donation sounds like: one bed for the whole batch, one line naming every effect.
+ * What a paid donation sounds like: one bed for the whole batch.
  *
- * A donation can buy several activities at once - a big sum rolls many units - and announcing each
- * one separately put six beds and six spoken lines on top of each other inside a second. Measured in
- * the stream log: five `music stopped` lines and a pile of phase cues in the same tick. The batch is
- * announced once now: the bed of its first effect, the clock of its longest one, so the music ends
- * with the last effect instead of outliving it.
+ * A donation can buy several activities at once - a big sum rolls many units - and a bed per effect put
+ * six tracks on top of each other inside a second. The batch gets the bed of its first effect and the clock
+ * of its longest one, so the music ends with the last effect instead of outliving it.
+ *
+ * The spoken credit ("Петя, 1000 рублей. Выпало: ...") is gone with the rest of the narrator - see
+ * `announcementFor`. The donor is still credited: the overlay, the panel and the game's own chat line name
+ * him, and the `quotes_pack` message is still spoken because that line is what the viewer paid for.
  */
-export function donationAnnouncement(
-  activities: readonly Activity[],
-  donor: { username: string; amount: number; currency: string },
-  random = Math.random,
-): VoiceRequest {
+export function donationAnnouncement(activities: readonly Activity[]): VoiceRequest {
   const withBed = activities.filter((activity) => phaseCues(activity).length === 0);
   // A batch of phase events has no soundtrack of its own: the cues are it.
   if (withBed.length === 0) return {};
 
   const first = withBed[0] as Activity;
   const seconds = activities.reduce((max, activity) => Math.max(max, eventSeconds(activity)), DEFAULT_EVENT_SECONDS);
-  const bed: VoiceRequest = { music: musicFor(first), seconds };
-
-  // A music-only batch keeps its soundtrack: a spoken line over the opera is what that flag forbids.
-  if (withBed.every((activity) => activity.params["onlyMusic"] === true)) return bed;
-
-  const nick = donor.username.replace(/\s+/gu, " ").trim() || "Аноним";
-  const sum = Math.round(donor.amount);
-  const money = donor.currency === "RUB" ? `${sum} рублей` : `${sum} ${donor.currency}`;
-  const names = activities.map((activity) => sayFor(activity));
-  // A batch of five read out in full is a fifteen second monologue over the next cue: three names and
-  // "и другие" say the same thing without taking the whole event's sound.
-  const spoken = names.length > 3 ? `${names.slice(0, 3).join(", ")}, и другие` : names.join(", ");
-  const text = `${nick}, ${money}. Выпало: ${spoken}`;
-  return { voice: pickVoice(text, random), text, ...bed };
-}
-
-/** The meter is full: `chaos_core` is about to force an effect on everyone. */
-export function chaosRequest(random = Math.random): VoiceRequest {
-  return { voice: pickVoice("хаос", random), text: "Копилка полна. ХАОС!" };
+  return { music: musicFor(first), seconds };
 }
 
 /**
@@ -268,6 +251,38 @@ export function phaseCues(activity: Activity, now = Date.now()): { at: number; r
     isRed = !isRed;
   }
   return cues;
+}
+
+/**
+ * Cue schedule for the countdown: the announcer says the numbers while the plugin prints them in chat.
+ *
+ * `announcer_countdown` is the one S8 event whose sound is a rhythm, not a bed: three numbers, one per
+ * second, then "в бой". espeak-ng reads Cyrillic with a Russian voice, and the API schedules the four
+ * requests on the same clock the plugin uses for its chat lines.
+ */
+export function countdownCues(
+  activity: Activity,
+  now = Date.now(),
+  random = Math.random,
+): { at: number; request: VoiceRequest }[] {
+  if (activity.code !== "announcer_countdown") return [];
+  const words = ["Три", "Два", "Один", "В бой!"];
+  return words.map((text, index) => ({
+    at: now + index * 1_000,
+    request: { voice: pickVoice(text, random), text },
+  }));
+}
+
+/**
+ * A line a bot "says": the viewer's phrase, in the same ASCII form the game chat shows.
+ *
+ * The quote is spoken here, not in the game: RCON cannot carry spaces, and a custom sound would have
+ * to be precached inside the client. `sanitizePhrase` turns spaces into underscores to keep the RCON
+ * line one token, so the voice turns them back: the subtitle and the speech read the same sentence.
+ */
+export function quoteRequest(phrase: string, random = Math.random): VoiceRequest {
+  const text = phrase.replace(/_/gu, " ").replace(/\s+/gu, " ").trim();
+  return { voice: pickVoice(text, random), text };
 }
 
 export function botSpeech(bot: string, text: string, random = Math.random): VoiceRequest {

@@ -395,8 +395,8 @@ test("the roulette hides its power until it fires, and the aura heals in the dam
   assert.match(roulette, /set_task\(delay, "TaskRoulette", TASK_ROULETTE\)/, "the power is never applied later");
   const pool = /stock RoulettePool\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
   assert.notEqual(pool, "", "RoulettePool is missing");
-  assert.match(pool, /ParamCopy\("pool"/, "the pool is not read from the command");
-  assert.match(pool, /containi\(pool, "deagle"\)/, "the pool names are not read one by one");
+  assert.match(pool, /format\(key, charsmax\(key\), "power%d"/, "the pool is not read one name at a time");
+  assert.match(pool, /equali\(value, name\)/, "a pool name is matched as a substring, not as a name");
 
   const fire = /stock RouletteFire\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
   assert.match(fire, /Announce\(/, "the reveal has no chat line");
@@ -442,6 +442,16 @@ test("fire grenades burn what a blast catches, and stop burning when the clock d
   assert.match(effect, /ParamInt\("burn", 15\)/, "the burn length is not read from the command");
   // The grenade is the trigger: the field has to be holding one for the blast to happen at all.
   assert.match(effect, /set_task\(0\.5, "TaskFireParty", TASK_FIRE_PARTY/, "nobody is ever handed a grenade");
+  // ...and since YaPB holds it and never throws it, the event also carries a blast of its own.
+  assert.match(effect, /set_task\(SPARK_PERIOD, "TaskFireSpark", TASK_FIRE_SPARK/, "the event waits for a bot that never throws");
+  assert.match(effect, /ParamInt\("radius", SPARK_RADIUS_DEFAULT\)/, "the spark's width is not read from the command");
+
+  // The spark is a real explosion - the same DMG_BLAST label a thrown HE carries - so ignition stays in the
+  // one damage hook the meteor path already proved.
+  const spark = /public TaskFireSpark\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(spark, "", "TaskFireSpark is missing");
+  assert.match(spark, /ExecuteHamB\(Ham_TakeDamage, id, 0, 0, float\(FIRE_SPARK_DAMAGE\), DMG_BLAST\)/, "the spark is not a blast");
+  assert.match(spark, /new radius = g_fireRadius/, "the spark reads the live parameter table");
 
   // DMG_BLAST is the engine's own label for an explosion, so the damage hook is where the ignition
   // belongs: a grenade entity scan would be a second guess at a fact the engine already resolved.
@@ -457,9 +467,564 @@ test("fire grenades burn what a blast catches, and stop burning when the clock d
   assert.notEqual(undo, "", "EndFireGrenades is missing");
   assert.match(undo, /remove_task\(TASK_FIRE_PARTY\)/, "the grenade party outlives its clock");
   assert.match(undo, /remove_task\(TASK_BURN\)/, "the fire outlives its clock");
+  assert.match(undo, /remove_task\(TASK_FIRE_SPARK\)/, "the spark outlives its clock");
   assert.match(undo, /g_fireTicks\[id\] = 0/, "the countdowns survive the event");
+});
+
+test("freeze grenades find a flashbang the damage hook cannot see", () => {
+  assert.match(source, /RegisterDonationEffect\("freeze_nades", "EffectFreezeNades"\)/);
+
+  const effect = /public EffectFreezeNades\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(effect, "", "EffectFreezeNades is missing");
+  assert.match(effect, /ParamInt\("freeze", 6\)/, "the freeze length is not read from the command");
+  assert.match(effect, /ParamInt\("radius", 300\)/, "the blast radius is not read from the command");
+  // A flashbang deals no damage, so the trigger cannot be DMG_BLAST, but a bot never throws one either: the
+  // event carries its own pulse as well as the scan.
+  assert.match(effect, /set_task\(FLASH_SCAN, "TaskFlashScan", TASK_FLASH_SCAN/, "nothing ever detects a flashbang");
+  assert.match(effect, /set_task\(SPARK_PERIOD, "TaskFlashSpark", TASK_FLASH_SPARK/, "the event waits for a bot that never throws");
+  assert.match(effect, /ClaimTake\(CLAIM_FREEZE, owner, 1\)/, "the freeze is taken without a claim");
+
+  const scan = /public TaskFlashScan\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(scan, "", "TaskFlashScan is missing");
+  assert.match(scan, /engfunc\(EngFunc_FindEntityByString, ent, "classname", "grenade"\)/, "the scan does not look for thrown grenades");
+  assert.match(scan, /pev\(ent, pev_dmgtime\)/, "the fuse of the grenade is never read");
+  assert.match(scan, /IsFlashGrenade\(ent\)/, "an HE would freeze the field as well");
+  // The entity is removed in the frame it goes off, so the last origin has to come from the previous pass.
+  assert.match(scan, /FlashStillThere\(i, seenEnt, seenFuse, seenCount\)/, "the scan cannot tell a blast from a grenade in the air");
+  assert.match(scan, /FlashBlast\(g_flashOrigin\[i\]\)/, "a detonation is detected but nothing freezes");
+
+  const flash = /stock bool:IsFlashGrenade\(ent\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(flash, /containi\(model, "flashbang"\)/, "the grenade model is not checked");
+
+  // The pulse is the half that makes the event happen: the freeze it applies is the same FlashBlast the
+  // scan calls, so there is one freeze path and two sources of it.
+  const pulse = /public TaskFlashSpark\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(pulse, "", "TaskFlashSpark is missing");
+  assert.match(pulse, /FlashBlast\(center\)/, "the pulse freezes nobody");
+  // The bang comes from the blast, as `PlaySoundAt` (an info_target parked at the origin), and it is the
+  // ice sample when the image has it. `emit_sound(0, ...)` puts the sample at the map origin, where the
+  // distance fades it to nothing: the event was audible in the log and silent on the stream.
+  assert.match(pulse, /PlaySoundAt\(center, g_freezeIce \? FREEZE_SOUND : FLASH_SOUND/, "the pulse has no bang the stream can hear");
+  assert.doesNotMatch(pulse, /emit_sound\(0, CHAN_AUTO, FLASH_SOUND/, "the bang is back at the world origin");
+
+  // The ice: a custom sample rendered by the image, and shards rather than a smoke puff on the blast.
+  assert.match(source, /#define FREEZE_SOUND "freeze\/ice_crack\.wav"/, "the freeze lost its own sample");
+  assert.match(source, /file_exists\(FREEZE_SOUND_PATH\)[\s\S]{0,120}precache_sound\(FREEZE_SOUND\)/, "the ice sample is never precached");
+  const blast = /stock FlashBlast\(const Float:center\[3\]\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(blast, /IceShards\(center, g_freezeRadius\)/, "the freeze draws no ice");
+  assert.match(blast, /set_user_rendering\(id, kRenderFxGlowShell, 170, 230, 255/, "the frozen bot is not frosted");
+
+  const thaw = /public TaskThaw\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(thaw, "", "TaskThaw is missing");
+  assert.match(thaw, /ThawBot\(id\)/, "a frozen bot never moves again");
+  assert.match(thaw, /if \(!IsBotAlive\(id\)\)/, "a dead bot keeps a freeze countdown");
+  // Thawing somebody else's freeze is the bug the claim layer exists to prevent.
+  assert.match(thaw, /ClaimTake\(CLAIM_FREEZE, owner, 1\)/, "the countdown thaws a freeze a newer event owns");
+
+  const undo = /stock EndFreezeNades\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(undo, "", "EndFreezeNades is missing");
+  assert.match(undo, /remove_task\(TASK_FLASH_PARTY\)/, "the grenade party outlives its clock");
+  assert.match(undo, /remove_task\(TASK_FLASH_SCAN\)/, "the scan outlives its clock");
+  assert.match(undo, /remove_task\(TASK_THAW\)/, "the countdown outlives its clock");
+  assert.match(undo, /remove_task\(TASK_FLASH_SPARK\)/, "the pulse outlives its clock");
+  assert.match(undo, /g_freezeTicks\[id\] = 0/, "the countdowns survive the event");
+  assert.match(undo, /ClaimRelease\(CLAIM_FREEZE, owner\)/, "the freeze is never given back");
+  assert.match(undo, /if \(top\)\s*\n\s*ThawBot\(id\)/, "the undo thaws a bot a newer event is holding");
+});
+
+test("the five S5 chases read the field, and each one gives its state back", () => {
+  for (const [code, handler] of [
+    ["guntrain", "EffectGunTrain"],
+    ["statues", "EffectStatues"],
+    ["head_hunter", "EffectHeadHunter"],
+    ["king_of_the_hill", "EffectKingOfTheHill"],
+    ["duel_bell", "EffectDuelBell"],
+  ]) {
+    assert.match(source, new RegExp(`RegisterDonationEffect\\("${code}", "${handler}"\\)`), `${code} is not registered`);
+  }
+
+  const damage = /public OnDeathMsg\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  // Both kill-feed rules live in the one event hook: the ladder promotes, the mark pays.
+  assert.match(damage, /GunTrainKill\(killer\)/, "a kill never moves anybody up the ladder");
+  assert.match(damage, /HeadHunterKill\(victim, killer\)/, "the mark never pays its killer");
+
+  const train = /public EffectGunTrain\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(train, /TrainReadLadder\(\)/, "the ladder is never read");
+  assert.match(train, /StartEffectTimer\("guntrain"/, "the ladder has no clock");
+  const parse = /stock TrainReadLadder\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  // One token per rung: a comma-joined list is split by the engine before the plugin ever sees it.
+  assert.match(parse, /format\(key, charsmax\(key\), "rung%d"/, "the rungs are not read one by one");
+  assert.match(parse, /IsSafeWeapon\(/, "a ladder rung reaches give_item unchecked");
+
+  const statues = /public TaskStatues\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(statues, /CanSee\(other, id\)/, "nothing is looked at");
+  assert.match(statues, /FreezeBot\(id\)/, "a seen bot keeps walking");
+  assert.match(statues, /ThawBot\(id\)/, "an unseen bot never walks again");
+  assert.match(statues, /ClaimTake\(CLAIM_FREEZE/, "the freeze is taken without the claim");
+
+  const hunter = /public EffectHeadHunter\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(hunter, /ParamCopy\("reward"/, "the reward is not read from the command");
+  assert.match(hunter, /IsSafeWeapon\(g_markReward\)/, "the reward reaches give_item unchecked");
+  assert.match(hunter, /set_task\(float\(period\), "TaskMark"/, "the mark never moves");
+  const paid = /stock HeadHunterKill\(victim, killer\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(paid, /g_markGlow\[killer\] = floatround/, "the gold shell has no clock");
+  assert.match(paid, /SetHamParamFloat|give_item\(killer, g_markReward\)/, "the killer is never paid");
+
+  const hill = /public EffectKingOfTheHill\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(hill, /ParamInt\("hold", 3\)/, "the hold is not read from the command");
+  assert.match(hill, /AliveBotCentre\(g_hillCentre\)/, "the hill is placed without asking where the fight is");
+  assert.match(hill, /ClaimTake\(CLAIM_HEALTH/, "the hill's health is taken without the claim");
+  const tick = /public TaskHill\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(tick, /g_hillDwell\[id\] = 0\.0/, "the hold survives leaving the hill");
+
+  const bell = /public EffectDuelBell\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(bell, /set_task\(float\(period\), "TaskDuelBell"/, "the bell never rings again");
+  const ring = /stock DuelBell\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  // A teleport into a wall is a bot the viewer never sees again, so the spot is checked first.
+  assert.match(ring, /SafeSpot\(placeA\) && SafeSpot\(placeB\)/, "the pair is teleported into solid space");
+  assert.match(ring, /DropForDuel\(first, placeA\)/, "the first bot never moves");
+});
+
+test("the six S6 physics codes move the world and give it back", () => {
+  const handlers = registered();
+  const codes: [string, string][] = [
+    ["airstrike", "EffectAirstrike"],
+    ["weapon_rain", "EffectWeaponRain"],
+    ["quake", "EffectQuake"],
+    ["fire_ring", "EffectFireRing"],
+    ["invert_velocity", "EffectInvertVelocity"],
+    ["low_gravity_knives", "EffectLowGravityKnives"],
+  ];
+
+  const body = (name: string) =>
+    new RegExp(`public ${name}\\(\\)\\s*\\{[\\s\\S]*?\\n\\}`).exec(source)?.[0] ?? "";
+  const stock = (name: string) =>
+    new RegExp(`stock ${name}\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}`).exec(source)?.[0] ?? "";
+
+  for (const [code, handler] of codes) {
+    assert.equal(handlers.get(code), handler, `${code} is not registered`);
+    const effect = body(handler);
+    assert.match(effect, /BeginEvent\("/, `${code} does not open an event`);
+    // A clock, not a round: csdm_lite respawns every bot, so Round_End almost never arrives.
+    assert.match(effect, new RegExp(`StartEffectTimer\\("${code}"`), `${code} has no clock`);
+  }
+
+  // Airstrike: the first blast is on the ring, the last one on the leader, and the barrage ends with its
+  // last blast instead of leaving a 20 second status line over four seconds of explosions.
+  const air = body("EffectAirstrike");
+  assert.match(air, /ParamInt\("strikes", 10\)/, "the strike count is not read from the command");
+  assert.match(air, /ParamInt\("damage", 120\)/, "the damage is not read from the command");
+  assert.match(air, /ParamInt\("radius", 300\)/, "the blast radius is not read from the command");
+  assert.match(air, /floatcos\(angle, degrees\) \* AIR_RING_RADIUS/, "the barrage does not start on the ring");
+  const airTick = body("TaskAirstrike");
+  assert.match(airTick, /float\(step\) \/ float\(g_airStrikes\)/, "the strikes do not converge");
+  assert.match(airTick, /Ham_TakeDamage, id, 0, 0, float\(g_airDamage\), DMG_BLAST/, "the blast deals no damage");
+  assert.match(airTick, /FinishEffect\("airstrike"\)/, "the barrage outlives its last strike");
+  assert.match(stock("EndAirstrike"), /remove_task\(TASK_AIRSTRIKE\)/, "the barrage outlives its clock");
+
+  // Weapon rain: the five-entity cap is the reason the code exists on a software renderer, and the boxes
+  // are removed with the event instead of staying on the map forever.
+  const rain = body("EffectWeaponRain");
+  assert.match(rain, /ParamInt\("count", 5\)/, "the drop count is not read from the command");
+  assert.match(rain, /if \(count > RAIN_MAX_DROPS\)/, "the five box cap is not enforced");
+  assert.match(rain, /DropRainWeapon\(\)/, "the first box waits for the timer");
+  const drop = stock("DropRainWeapon");
+  assert.match(drop, /armoury_entity/, "no weapon entity is created");
+  assert.match(drop, /cs_set_armoury_type\(ent, weaponId, 1\)/, "the entity has no weapon type");
+  assert.match(drop, /get_weaponname\(weaponId, name/, "the world model is not derived from the weapon");
+  const rainUndo = stock("EndWeaponRain");
+  assert.match(rainUndo, /EngFunc_RemoveEntity/, "a box outlives the event");
+  assert.match(rainUndo, /g_rainEnts\[i\] = 0/, "the box list survives the event");
+
+  // Quake: a random shove per tick, with a ceiling - a bot launched through the skybox is a missing player.
+  const quake = body("EffectQuake");
+  assert.match(quake, /ParamInt\("force", 400\)/, "the impulse is not read from the command");
+  assert.match(quake, /ParamFloat\("period", 0.7\)/, "the period is not read from the command");
+  const quakeTick = body("TaskQuake");
+  assert.match(quakeTick, /floatcos\(angle, degrees\) \* g_quakeForce/, "nothing is shoved");
+  assert.match(quakeTick, /if \(speed > QUAKE_MAX_SPEED\)/, "the shove has no ceiling");
+  assert.match(stock("EndQuake"), /remove_task\(TASK_QUAKE\)/, "the shove outlives its clock");
+
+  // Fire ring: the circle starts at the farthest bot and shrinks by `shrink` every `period`.
+  const ring = body("EffectFireRing");
+  assert.match(ring, /ParamInt\("shrink", 40\)/, "the shrink is not read from the command");
+  assert.match(ring, /AliveBotCentre\(g_ringCentre\)/, "the ring is placed without asking where the fight is");
+  assert.match(ring, /ParamInt\("damage", 5\)/, "the burn is not read from the command");
+  const ringTick = body("TaskFireRing");
+  assert.match(ringTick, /g_ringRadius -= g_ringShrink/, "the ring never shrinks");
+  assert.match(ringTick, /get_distance_f\(g_ringCentre, origin\) <= radius/, "everybody burns, inside or out");
+  assert.match(ringTick, /Ham_TakeDamage, id, 0, 0, float\(g_ringDamage\), DMG_BURN/, "the zone deals no damage");
+  assert.match(stock("EndFireRing"), /g_ringBurnt\[id\] = 0/, "a burn countdown outlives the event");
+});
+
+test("the six S6 physics codes give the world back", () => {
+  const stock = (name: string) =>
+    new RegExp(`stock ${name}\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}`).exec(source)?.[0] ?? "";
+  const body = (name: string) =>
+    new RegExp(`public ${name}\\(\\)\\s*\\{[\\s\\S]*?\\n\\}`).exec(source)?.[0] ?? "";
+
+  // Invert velocity: the claim is what lets one run hand the field back without flipping it under a newer one.
+  const invert = body("EffectInvertVelocity");
+  assert.match(invert, /ParamFloat\("period", 0.2\)/, "the flip period is not read from the command");
+  assert.match(invert, /ClaimTake\(CLAIM_VELOCITY/, "the velocity is taken without a claim");
+  const flip = stock("FlipVelocities");
+  assert.match(flip, /velocity\[0\] = -velocity\[0\]/, "the direction is never inverted");
+  const invertUndo = stock("EndInvertVelocity");
+  assert.match(invertUndo, /ClaimRelease\(CLAIM_VELOCITY/, "the field is never released");
+  assert.match(invertUndo, /FlipVelocities\(\)/, "the last flipped direction is never given back");
+
+  // Low gravity knives: the only cvar this system writes, plus the weapon pool. Both are claims, and the
+  // undo is the one path that puts sv_gravity back.
+  const knives = body("EffectLowGravityKnives");
+  assert.match(knives, /ParamInt\("gravity", 150\)/, "the gravity is not read from the command");
+  assert.match(knives, /ClaimGravity\(owner, g_knivesGravity\)/, "sv_gravity is written without a claim");
+  assert.match(knives, /ArmKnives\(id\)/, "the field keeps its rifles");
+  const arm = stock("ArmKnives");
+  assert.match(arm, /strip_user_weapons\(id\)/, "the guns are never taken away");
+  assert.match(arm, /give_item\(id, "weapon_knife"\)/, "the bot is left without a knife");
+  const knivesUndo = stock("EndLowGravityKnives");
+  assert.match(knivesUndo, /ClaimRelease\(CLAIM_GRAVITY, owner\)/, "the gravity claim is never released");
+  assert.match(knivesUndo, /RestoreGravity\(\)/, "sv_gravity stays at the donated value");
+  assert.match(knivesUndo, /remove_task\(TASK_GRAVITY_KNIVES\)/, "the re-arm outlives its clock");
+
+  // A full reset drops the flags as well: a dropped task with a live flag is a moon-walk on the next map.
+  const reset = /public ResetEventState\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(reset, /remove_task\(TASK_GRAVITY_KNIVES\)/);
+  assert.match(reset, /g_knivesActive = false/);
+  assert.match(reset, /g_invertActive = false/);
+  assert.match(reset, /g_ringBurnt\[id\] = 0/);
+});
+
+test("the four S8 sound codes print the line, claim the bed and give it back", () => {
+  const handlers = registered();
+  const codes: [string, string][] = [
+    ["announcer_countdown", "EffectAnnouncerCountdown"],
+    ["quotes_pack", "EffectQuotesPack"],
+    ["siren", "EffectSiren"],
+    ["music_swap", "EffectMusicSwap"],
+  ];
+  const body = (name: string) =>
+    new RegExp(`public ${name}\\(\\)\\s*\\{[\\s\\S]*?\\n\\}`).exec(source)?.[0] ?? "";
+  const stock = (name: string) =>
+    new RegExp(`stock ${name}\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}`).exec(source)?.[0] ?? "";
+
+  for (const [code, handler] of codes) {
+    assert.equal(handlers.get(code), handler, `${code} is not registered`);
+    const effect = body(handler);
+    assert.match(effect, /BeginEvent\("/, `${code} does not open an event`);
+    assert.match(effect, new RegExp(`StartEffectTimer\\("${code}"`), `${code} has no clock`);
+  }
+
+  // The countdown is a rhythm: one chat line per second, ending on FIGHT, and the task stops itself.
+  const countdown = body("EffectAnnouncerCountdown");
+  assert.match(countdown, /ClaimTake\(CLAIM_AUDIO/, "the countdown does not claim the bed");
+  assert.match(
+    countdown,
+    /set_task\(1\.0, "TaskCountdown", TASK_COUNTDOWN, "", 0, "b", COUNTDOWN_FROM \+ 1\)/,
+    "the numbers are not on a one second clock",
+  );
+  const tick = body("TaskCountdown");
+  assert.match(tick, /Announce\("%d", g_countdownLeft\)/, "the next number is never printed");
+  assert.match(tick, /Announce\("FIGHT!"\)/, "the countdown never ends on FIGHT");
+  assert.match(tick, /remove_task\(TASK_COUNTDOWN\)/, "the countdown keeps ticking after FIGHT");
+  assert.match(stock("EndAnnouncerCountdown"), /ClaimRelease\(CLAIM_AUDIO/, "the bed is never released");
+
+  // A quote is the viewer's phrase when there is one, the built-in pack otherwise, and always ASCII.
+  const quotes = body("EffectQuotesPack");
+  assert.match(quotes, /ParamCopy\("text"/, "the viewer's phrase is never read");
+  assert.match(quotes, /RandomQuote\(phrase/, "a panel run has no fallback line");
+  assert.match(quotes, /CleanPhrase\(phrase\)/, "the chat line is not forced to ASCII");
+  assert.match(quotes, /Announce\("%s says: '%s'"/, "the subtitle line changed");
+  const clean = stock("CleanPhrase");
+  assert.match(clean, /text\[i\] = '\?'/, "a non-ascii byte reaches the chat");
+
+  // The two beds and the countdown own the audio; the undo of each gives the claim back.
+  for (const [effectName, undoName] of [
+    ["EffectAnnouncerCountdown", "EndAnnouncerCountdown"],
+    ["EffectSiren", "EndSiren"],
+    ["EffectMusicSwap", "EndMusicSwap"],
+  ] as [string, string][]) {
+    assert.match(body(effectName), /ClaimTake\(CLAIM_AUDIO/, `${effectName} does not claim the bed`);
+    assert.match(stock(undoName), /ClaimRelease\(CLAIM_AUDIO/, `${undoName} never gives the bed back`);
+  }
+
+  // A full reset drops the countdown task: a dropped task with a live flag prints numbers on the next map.
+  const reset = /public ResetEventState\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(reset, /remove_task\(TASK_COUNTDOWN\)/);
+  assert.match(reset, /g_countdownActive = false/);
+  assert.match(reset, /g_sirenActive = false/);
+  assert.match(reset, /g_musicSwapActive = false/);
+});
+
+test("the bazooka is a weapon the bot fires, not a prop", () => {
+  const body = (name: string) =>
+    new RegExp(`public ${name}\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}`).exec(source)?.[0] ?? "";
+  const stock = (name: string) =>
+    new RegExp(`stock ${name}\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}`).exec(source)?.[0] ?? "";
+
+  // The launcher is a weapon the bot AI already knows, armed on the carrier, and its own trigger is the
+  // hook that launches the rocket: a classname of our own would never be pressed by YaPB.
+  assert.match(
+    source,
+    /RegisterHam\(Ham_Weapon_PrimaryAttack, BAZOOKA_WEAPON, "OnBazookaAttack"\)/,
+    "the carrier's trigger is not hooked",
+  );
+  const arm = stock("ArmBazooka");
+  assert.match(arm, /give_item\(id, BAZOOKA_WEAPON\)/, "the carrier is never given the launcher");
+  assert.match(arm, /cs_set_user_bpammo\(id, CSW_AWP, 90\)/, "the launcher runs dry mid-run");
+  assert.match(arm, /DressBazooka\(id\)/, "the carrier keeps the stock model in hand");
+
+  // The model in the hand is the player's own field, and the game rewrites it on every switch and spawn,
+  // so it is written from a tick and not once.
+  assert.match(
+    stock("DressBazooka"),
+    /set_pev\(id, pev_weaponmodel, g_bazookaModelString\)/,
+    "the in-hand model is not the one this repository makes",
+  );
+  const dress = body("TaskBazookaDress");
+  assert.match(dress, /ArmBazooka\(next\)/, "the role never moves to a living bot");
+  assert.match(dress, /ClaimTake\(CLAIM_WEAPONS/, "the launcher re-arms under a newer weapon rule");
+
+  // The trigger launches, the bullet is dropped: without that the hitscan does the killing and the rocket
+  // is decoration.
+  assert.match(body("OnBazookaAttack"), /LaunchRocket\(id\)/, "the trigger launches nothing");
+  assert.match(body("OnTraceAttack"), /return HAM_SUPERCEDE;/, "the launcher still lands AWP headshots");
+
+  // The rocket flies, explodes on what it touches, and the blast is what damages - with falloff, so one
+  // rocket does not kill the whole field at the rim.
+  const step = stock("StepRocket");
+  assert.match(step, /EngFunc_TraceLine/, "the rocket flies through walls");
+  assert.match(step, /BazookaBlast\(landing/, "the rocket never explodes");
+  const blast = stock("BazookaBlast");
+  assert.match(blast, /Ham_TakeDamage, id, 0, attacker, damage, DMG_BLAST/, "the blast deals no damage");
+  assert.match(blast, /float\(BAZOOKA_MIN_DAMAGE\)/, "the blast is a dud at the rim");
+  // Measured live: with the carrier inside its own blast the role moved six times in one 45 s run and the
+  // camera never held a shot. The owner is skipped on purpose.
+  assert.match(blast, /if \(id == owner\)\s*\n\s*continue;/, "the carrier is killed by its own rocket");
+
+  // A full reset drops the launcher: its tick, its rockets and the model field it rewrote.
+  const undo = stock("EndBazookaDrop");
+  assert.match(undo, /remove_task\(TASK_BAZOOKA_DRESS\)/, "the dress tick outlives the clock");
+  assert.match(undo, /EndBazookaRockets\(\)/, "a rocket stays in the air after the clock");
+  assert.match(
+    undo,
+    /set_pev\(g_bazookaBot, pev_weaponmodel, g_bazookaAwpModelString\)/,
+    "the launcher model stays on the bot",
+  );
+  const reset = /public ResetEventState\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(reset, /EndBazookaRockets\(\)/, "a map change keeps a rocket flying");
+
+  // And a respawn arms it again: csdm_lite hands the slot a random rifle half a second after the death.
+  assert.match(source, /g_bazookaActive && id == g_bazookaBot/, "a respawned carrier is never re-armed");
+});
+
+test("an event that arms a bot re-arms it after csdm_lite respawns the slot", () => {
+  const respawn = /public ReArmOnSpawn\(id\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  const spawn = /public OnPlayerSpawn\(id\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(respawn, "", "ReArmOnSpawn is missing");
+
+  // one_bullet: an ammo rule for the whole clock. It used to be applied once, so a bot that died came back
+  // with csdm_lite's full rifle and the event was over for that bot.
+  const one = /public EffectOneBullet\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(one, /g_oneBulletActive = true/, "the event never records that the rule is running");
+  assert.match(one, /OneBulletArm\(id\)/, "the handler keeps its own copy of the ammo rule");
+  assert.match(respawn, /if \(g_oneBulletActive\)\s*\n\s*OneBulletArm\(id\)/, "a respawned bot gets a full rifle");
+  assert.match(spawn, /g_oneBulletActive/, "a spawn during the event never schedules the re-arm");
+  const oneUndo = /if \(equal\(code, "one_bullet"\)\)\s*\{[\s\S]*?\n\t\}/.exec(source)?.[0] ?? "";
+  assert.match(oneUndo, /g_oneBulletActive = false/, "the ammo rule outlives its clock");
+  const reset = /public ResetEventState\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(reset, /g_oneBulletActive = false/, "the flag survives a full reset");
+
+  // glass_cannon is a role like a hero: the M249, the health and the glow are the paid picture, and a
+  // respawn puts csdm_lite's rifle in their place.
+  assert.match(
+    respawn,
+    /if \(g_cannonActive && id == g_cannonBot\)\s*\n\s*\{[\s\S]*?ArmGlassCannon\(id\)/,
+    "the cannon comes back as a plain bot",
+  );
+  assert.match(spawn, /g_cannonActive && id == g_cannonBot/, "the cannon's respawn never schedules the re-arm");
+
+  // guntrain: the rung is per slot, so the bot comes back where it climbed to - unless a newer event owns
+  // the weapon pool, which ClaimTake is asked about.
+  const train =
+    /if \(g_trainActive && ClaimTake\(CLAIM_WEAPONS, FindEffect\("guntrain"\), 1\)\)\s*\{[\s\S]*?\n\t\}/.exec(source)?.[0] ?? "";
+  assert.match(train, /give_item\(id, g_trainLadder\[level\]\)/, "a respawned climber drops to the bottom rung");
+  assert.match(train, /level >= g_trainCount/, "a stale rung index reaches the ladder array");
+  assert.match(spawn, /g_trainActive/, "a climber's respawn never schedules the re-arm");
+});
+
+test("the sniper spends five rounds and earns them back", () => {
+  assert.equal(registered().get("sniper"), "EffectSniper", "the sniper is not registered");
+  assert.equal(registered().has("assassin"), false, "the silhouette mode is still registered as well");
+
+  const body = (name: string) =>
+    new RegExp(`public ${name}\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}`).exec(source)?.[0] ?? "";
+  const stock = (name: string) =>
+    new RegExp(`stock ${name}\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}`).exec(source)?.[0] ?? "";
+
+  // The role is the shared hero machine - one bot, the camera, a clock - plus the AWP and a budget.
+  const effect = body("EffectSniper");
+  assert.match(effect, /ParamInt\("rounds", SNIPER_ROUNDS_DEFAULT\)/, "the budget is not read from the command");
+  assert.match(effect, /StartHero\("sniper", SNIPER_WEAPON\)/, "the sniper is not a hero role");
+  assert.match(effect, /StartEffectTimer\("sniper"/, "the sniper has no clock");
+
+  // The budget is counted in shots, not in ammo: csdm_lite refills every reserve once a second, so the
+  // launcher is taken away when the fifth shot is spent instead of being left dry.
+  assert.match(
+    source,
+    /RegisterHam\(Ham_Weapon_PrimaryAttack, SNIPER_WEAPON, "OnSniperAttack"\)/,
+    "a shot spends nothing",
+  );
+  const shot = body("OnSniperAttack");
+  assert.match(shot, /g_sniperLeft--/, "a shot does not spend a round");
+  assert.match(shot, /StripWeapons\(g_heroBot\)/, "the AWP stays in hand after the last round");
+  assert.match(
+    stock("SniperTopUp"),
+    /cs_set_user_bpammo\(id, CSW_AWP, 0\)/,
+    "the reserve is left full, which csdm_lite would refill into infinite rounds",
+  );
+  assert.match(stock("ArmHero"), /SniperArm\(id\)/, "a respawned sniper comes back without rounds");
+
+  // A kill pays one round back, and the budget goes with the role.
+  assert.match(body("OnDeathMsg"), /SniperReward\(\)/, "a kill pays nothing back");
+  assert.match(stock("EndHero"), /g_sniperArmed = false/, "the budget outlives the role");
+  const reset = /public ResetEventState\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(reset, /g_sniperArmed = false/, "a full reset keeps a sniper armed");
+});
+
+test("an event that arms a bot keeps the weapon, the floor and the switch", () => {
+  const body = (name: string) =>
+    new RegExp(`public ${name}\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}`).exec(source)?.[0] ?? "";
+  const stock = (name: string) =>
+    new RegExp(`stock (?:[A-Za-z_]+:)?${name}\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}`).exec(source)?.[0] ?? "";
+
+  // One place answers "what should this bot hold", and every code that arms a bot is a branch there.
+  const kit = stock("KitWeapon");
+  for (const holder of ["g_heroActive", "g_bazookaActive", "g_cannonActive", "g_trainActive", "g_duelActive", "g_knivesActive", "g_hePartyActive"]) {
+    assert.match(kit, new RegExp(holder), `${holder} never locks its kit`);
+  }
+  assert.match(kit, /copy\(out, len, BAZOOKA_WEAPON\)/, "the carrier's launcher is not the locked weapon");
+
+  // A weapon switch puts the kit back, and the respawn-driven rifle csdm_lite hands out goes with it.
+  assert.match(stock("EnforceKit"), /get_user_weapon\(id\) == wantId/, "the switch is never checked");
+  assert.match(stock("EnforceKit"), /engclient_cmd\(id, wanted\)/, "the bot is never told to hold the kit");
+  const cur = /public OnCurWeapon\(id\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(cur, /EnforceKit\(id\)/, "a weapon switch is never enforced");
+
+  // Nothing is picked up off the floor while a kit is locked, and the boxes are swept.
+  const touch = /public OnWeaponBoxTouch\(ent, id\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(touch, /IsKitLocked\(id\)/, "a bot can pick up a dropped weapon during an event");
+  const sweep = body("TaskKitSweep");
+  assert.match(sweep, /EngFunc_FindEntityByString, ent, "classname", "weaponbox"/, "the floor is never swept");
+  assert.match(sweep, /EngFunc_RemoveEntity/, "a swept box is left in the world");
+  assert.match(sweep, /remove_task\(TASK_KIT_SWEEP\)/, "the sweep outlives the last locked bot");
+  // The enforcement cannot live in the weapon-switch event alone: `CurWeapon` is a client event and YaPB
+  // never sends it - a nemesis killed with an AWP for a whole round before this loop existed.
+  assert.match(sweep, /if \(IsBotAlive\(id\) && IsKitLocked\(id\)\)\s*\n\s*\{?\s*\n?\s*EnforceKit\(id\)/, "the kit is only enforced on a client event");
+  const awp = /public OnBazookaAttack\(weapon\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(awp, /IsKitWeapon\(id, BAZOOKA_WEAPON\)/, "a locked bot can fire an AWP it is not supposed to hold");
+  const reset = /public ResetEventState\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(reset, /remove_task\(TASK_KIT_SWEEP\)/, "the sweep survives a full reset");
+});
+
+test("every blast draws its radius, and the rocket is visible", () => {
+  const stock = (name: string) =>
+    new RegExp(`stock ${name}\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}`).exec(source)?.[0] ?? "";
+  const body = (name: string) =>
+    new RegExp(`public ${name}\\(\\)\\s*\\{[\\s\\S]*?\\n\\}`).exec(source)?.[0] ?? "";
+
+  // The shockwave is built from TE_BEAMPOINTS, the one beam message this set already runs live; a ring of
+  // segments on the blast's own radius.
+  const wave = stock("Shockwave");
+  assert.match(wave, /SHOCKWAVE_SEGMENTS/, "the ring has no segments");
+  assert.match(wave, /DrawBeamColour\(from, to/, "the ring draws nothing");
+  assert.match(stock("DrawBeamColour"), /TE_BEAMPOINTS/, "the ring uses an unverified temp entity");
+
+  // The three places a paid radius is drawn.
+  assert.match(stock("BazookaBlast"), /Shockwave\(origin, radius/, "the rocket blast has no radius on screen");
+  assert.match(stock("FlashBlast"), /Shockwave\(center, g_freezeRadius/, "the freeze pulse has no radius on screen");
+  assert.match(body("TaskAirstrike"), /Shockwave\(pos, float\(radius\)/, "an airstrike has no radius on screen");
+
+  // The rocket itself: a beam streak it leaves behind and a flash at the muzzle - and no sprite. The first
+  // version carried `sprites/zerogxplode.spr` on the entity and drew as a black square on the stream (an
+  // entity does not animate a sprite, and frame 0 of that file is black), so the sprite and the TE_SMOKE
+  // puffs are gone and the rocket is drawn from the one beam message this set runs live.
+  const step = stock("StepRocket");
+  assert.match(step, /DrawBeamColour\(from, to, 255, 140, 40/, "the rocket leaves no trail");
+  assert.match(step, /DrawBeamColour\(from, to, 255, 230, 150/, "the trail has no bright core");
+  const launch = stock("LaunchRocket");
+  assert.doesNotMatch(launch, /SetModel, ent, "sprites\//, "the rocket wears a sprite again - that is the black square");
+  assert.match(launch, /TE_EXPLOSION/, "the launch has no flash");
+  assert.doesNotMatch(source, /RocketSmoke|write_byte\(TE_SMOKE\)/, "the smoke puffs are back - they drew as black squares");
 });
 
 test("no unfinished markers left in the plugin source", () => {
   assert.equal(/\/\/\s*PART[0-9]/.test(source), false, "the file still contains a PART marker");
+});
+
+test("the hero modes wear their own model and give it back", () => {
+  const stock = (name: string) =>
+    new RegExp(`stock ${name}\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}`).exec(source)?.[0] ?? "";
+  // `infra/models/player/{nemesis,survivor}`: two re-skins of stock soldiers, applied for the length of the
+  // role. Both are checked before they are precached, because `Mod_LoadModel: not found` is a FATAL ERROR in
+  // GoldSrc, not a warning - an image built from an older tree must not take the server into a restart loop.
+  const precache = /public plugin_precache\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(precache, /g_nemesisLook = file_exists\(NEMESIS_MODEL_PATH\) != 0/, "the nemesis model is precached blind");
+  assert.match(precache, /precache_model\(NEMESIS_MODEL_PATH\)/, "the nemesis model is never precached");
+  assert.match(precache, /g_survivorLook = file_exists\(SURVIVOR_MODEL_PATH\) != 0/, "the survivor model is precached blind");
+  assert.match(precache, /precache_model\(SURVIVOR_MODEL_PATH\)/, "the survivor model is never precached");
+
+  // ArmHero is the only way into the role (start, role moving to another bot, respawn), so the look goes on
+  // there and cannot be lost by a death.
+  assert.match(stock("ArmHero"), /DressHeroModel\(id\)/, "the hero wears the stock soldier");
+
+  const dress = stock("DressHeroModel");
+  assert.notEqual(dress, "", "DressHeroModel is missing");
+  assert.match(dress, /cs_set_user_model\(id, NEMESIS_MODEL, true\)/, "the nemesis model is never put on a bot");
+  assert.match(dress, /cs_set_user_model\(id, SURVIVOR_MODEL, true\)/, "the survivor model is never put on a bot");
+  assert.match(dress, /g_heroLookSet = true/, "the undo cannot tell whether the model is this file's");
+
+  // The undo, three ways: the effect's own clock, a full reset that drops the tasks without running them,
+  // and the role moving to another bot when the carrier dies.
+  const undress = stock("UndressHeroModel");
+  assert.notEqual(undress, "", "UndressHeroModel is missing");
+  assert.match(undress, /cs_reset_user_model\(g_heroBot\)/, "the hero keeps the nemesis skin after the event");
+  // Only when this file set it: `cs_reset_user_model` lifts the model lock of anybody, and the hex_wave
+  // chicken on the same slot must not be taken off by a hero's clock.
+  assert.match(undress, /if \(g_heroLookSet && g_heroBot > 0/, "the undo resets a model it never set");
+
+  assert.match(stock("EndHero"), /UndressHeroModel\(\)/, "the effect clock never takes the skin off");
+  const reset = /public ResetEventState\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(reset, /UndressHeroModel\(\)/, "a full reset keeps the hero skin");
+  const guard = /public TaskHeroGuard\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(guard, /UndressHeroModel\(\)/, "a carrier that dies keeps the skin into its respawn");
+});
+
+test("the camera follows the bot an event landed on", () => {
+  const stock = (name: string) =>
+    new RegExp(`stock ${name}\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}`).exec(source)?.[0] ?? "";
+  const body = (name: string) =>
+    new RegExp(`public ${name}\\(\\)\\s*\\{[\\s\\S]*?\\n\\}`).exec(source)?.[0] ?? "";
+  // The lock goes out as `#userid`. A nickname is resolved by stream_cam against its own player list, and a
+  // name is not stable: spaces arrive as underscores, the donor tag renames the top bot, and a bot with an
+  // underscore in its own nick never matches - the event ran, the lock logged, the picture stayed elsewhere.
+  const lock = stock("LockCameraOn");
+  assert.notEqual(lock, "", "LockCameraOn is missing");
+  assert.match(lock, /server_cmd\("amx_stcam lock #%d %d", userid, seconds\)/, "the lock still travels as a nickname");
+  assert.doesNotMatch(lock, /name\[i\] == ' '/, "the nickname is still being mangled for the command");
+  // The lock has to expire with the event even when no undo runs.
+  assert.match(lock, /if \(seconds < 1\)\s*\n\s*seconds = 1;/, "a lock can be taken for zero seconds");
+  assert.match(source, /new g_heroSeconds = 60;/, "the hero clock is not snapshotted for the camera");
+  assert.match(stock("ArmHero"), /LockCameraOn\(id, g_heroSeconds\)/, "the hero is never put on camera");
+
+  // Every event that lands on one bot puts the camera there, with its own clock.
+  assert.match(stock("ArmGlassCannon"), /LockCameraOn\(id, g_cannonSeconds\)/, "the cannon is off camera");
+  assert.match(stock("ArmHexed"), /LockCameraOn\(id, g_hexSeconds\)/, "the chicken is off camera");
+  assert.match(body("EffectHeroRoulette"), /LockCameraOn\(bot, /, "the roulette candidate is off camera");
+  assert.match(body("EffectBazookaDrop"), /LockCameraOn\(bot, floatround\(EffectSeconds/, "the launcher carrier is off camera");
+
+  // And a respawn takes the camera back: the role is re-applied through the same stocks, which is where the
+  // lock is taken - a hero whose picture went to its killer stayed off camera until the next event.
+  const rearm = /public ReArmOnSpawn\(id\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(rearm, /ArmHero\(id\)/, "a respawned hero does not get its own camera back");
 });

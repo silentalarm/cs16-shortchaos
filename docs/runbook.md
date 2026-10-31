@@ -381,10 +381,24 @@ string literal glued to a string `#define`: `log_amx("loaded " PLUGIN_VERSION ":
 compiler. Use a format string and pass the macro as an argument instead. `plugins/team_war` hit this
 on its first build; the fix is one line and the compiler says nothing useful, so it is listed here.
 
-To iterate on a plugin without rebuilding the image, take `amxxpc` + `amxxpc32.so` out of
-`infra/.cache/amxmodx-*-base-linux.tar.gz`, run them inside the `cs16-hlds:local` container (it has
-the 32-bit libs and the headers) and compile one `.sma`. A full image build takes half a minute, this
-takes three seconds.
+A second trigger is an **escaped double quote inside a `log_amx`/`Announce` format string**:
+`log_amx("said \"%s\"", name)` aborts the same way. Use single quotes in the format
+(`Announce("%s says: '%s'", ...)`) or log the value unquoted. Found while adding `quotes_pack`
+(stage 8); the trap is also noted in the `donation_events` header.
+
+To check a plugin without deploying it, build the compiler stage on its own and read what it produced.
+`build-plugin.sh` deletes `amxxpc` when it is done, so the runtime image has no compiler at all:
+
+```powershell
+$b = @('buildx','build','-f','infra/Dockerfile','--target','build','--load','-t','cs16-de-compile')
+foreach ($line in Get-Content infra/checksums.env) { if ($line -match '^\s*([A-Za-z0-9_]+)=(.*)$') { $b += '--build-arg'; $b += "$($matches[1])=$($matches[2])" } }
+docker @b .
+docker run --rm --entrypoint bash cs16-de-compile -c 'ls -l /hlds/cstrike/addons/amxmodx/plugins'
+```
+
+The layers are cached after the first run, so this is seconds, and a compile error fails the build instead of
+leaving a stale `.amxx` behind. The `.amxx` itself is compressed, so grepping it for a function name proves
+nothing: compare its mtime with the `.sma` (`ls -l --time-style=full-iso` inside the image) instead.
 
 ## Phase 0: what the bot plugin actually exposes
 

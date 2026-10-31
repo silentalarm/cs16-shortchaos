@@ -32,6 +32,11 @@ export interface TrackSpec {
   bass: readonly string[];
   /** Drum channel level, 0 disables it. */
   drums?: number;
+  /**
+   * Output trim, linear gain, default 1. The mix gains are fixed, so a track with no bass and no
+   * drums (the siren) measures ~8 dB under its neighbours; `wav-levels` is what catches it.
+   */
+  gain?: number;
 }
 
 const SEMITONE: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
@@ -128,8 +133,8 @@ export const TRACKS: Record<string, TrackSpec> = {
     bass: "E2 E2 E2 E2 C2 C2 C2 C2 D2 D2 D2 D2 B1 B1 B1 B1".split(" "),
     drums: 1,
   },
-  assassin: {
-    // Faster and thinner: somebody is running behind the leader, and the round is shorter.
+  sniper: {
+    // Faster and thinner: one bot is being hunted by twenty, and the round is shorter.
     bpm: 164,
     wave: "square",
     duty: 0.125,
@@ -205,13 +210,35 @@ export const TRACKS: Record<string, TrackSpec> = {
     bass: "D2 D2 D2 D2 E2 E2 E2 E2".split(" "),
     drums: 0.8,
   },
+  // S8 sound. The air-raid siren is synthesised here instead of shipped as `infra/sounds/siren.mp3`:
+  // a note table cannot sweep, but alternating A5/E5 every two seconds reads as wee-woo on a phone
+  // speaker, and the repository stays free of audio binaries and licences (docs/activities/assets.md).
+  siren: {
+    bpm: 60,
+    wave: "saw",
+    seconds: 15,
+    gain: 2.5,
+    lead: "A5 A5 A5 A5 E5 E5 E5 E5".split(" "),
+    bass: "- - - - - - - -".split(" "),
+    drums: 0,
+  },
+  // A second, obviously different song: `music_swap` is the listener noticing the bed changed.
+  music_swap: {
+    bpm: 96,
+    wave: "square",
+    duty: 0.5,
+    seconds: 20,
+    lead: "C4 E4 G4 B4 C5 B4 G4 E4 A3 C4 E4 A4 C5 A4 E4 C4".split(" "),
+    bass: "C2 C2 A1 A1 F1 F1 G1 G1".split(" "),
+    drums: 0.7,
+  },
 };
 
 export const MUSIC_CODES: readonly string[] = Object.keys(TRACKS).sort();
 
 
 /** Deterministic noise, so the same build produces byte-identical tracks. */
-function mulberry32(seed: number): () => number {
+export function mulberry32(seed: number): () => number {
   let state = seed >>> 0;
   return () => {
     state = (state + 0x6d2b_79f5) >>> 0;
@@ -275,7 +302,7 @@ function addNoise(mix: Float32Array, startSec: number, durationSec: number, gain
 }
 
 /** 16-bit mono PCM in a RIFF container: the format the null-sink player always takes. */
-function toWav(mix: Float32Array): Buffer {
+export function toWav(mix: Float32Array): Buffer {
   const samples = mix.length;
   const buffer = Buffer.alloc(44 + samples * 2);
 
@@ -341,6 +368,13 @@ export function renderTrack(code: string): Buffer {
       if (beat % 2 === 1) addNoise(mix, beat * quarter, 0.12, 0.1 * drums, random);
       addNoise(mix, beat * quarter + eighth, 0.03, 0.035 * drums, random);
     }
+  }
+
+  // Output trim after the mix: a level change is not a composition change, and the renderer clamps in
+  // `toWav`, so a trim that would clip is a bug the level check sees.
+  const gain = Math.max(0.1, Math.min(4, spec.gain ?? 1));
+  if (gain !== 1) {
+    for (let index = 0; index < mix.length; index += 1) mix[index] = (mix[index] ?? 0) * gain;
   }
 
   return toWav(mix);

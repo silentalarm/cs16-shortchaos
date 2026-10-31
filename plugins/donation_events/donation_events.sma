@@ -21,6 +21,10 @@
  *
  * Adding an activity = write a handler, claim what it touches, add one RegisterDonationEffect line
  * and one branch in EndEffectState.
+ *
+ * Compiler trap: this amxxpc build (1.10.0.5487) aborts with std::bad_alloc instead of a readable error
+ * on an escaped double quote inside a log_amx/Announce format string. Use single quotes in the format,
+ * or log the value unquoted.
  */
 #include <amxmodx>
 #include <fakemeta>
@@ -55,9 +59,13 @@
    the alternative is a version-specific include. */
 #define OFFSET_ACTIVE_ITEM 373
 #define MAX_PARAMS 12
+/* 32, not 24: the registry copies handler names with `copy(dest, CODE_LEN - 1, ...)`, and `copy`
+   keeps a terminator, so a 24 byte buffer truncated `EffectAnnouncerCountdown` (23) to 22 and
+   `callfunc_begin` failed with "callfunc_end called without callfunc_begin". */
 #define CODE_LEN 32
-#define KEY_LEN 24
-#define VALUE_LEN 64
+#define KEY_LEN 20
+/* 48 holds a `text=` phrase of 40 characters (the catalogue's `maxPhraseLength`) with room to spare. */
+#define VALUE_LEN 48
 #define NICK_LEN 32
 /* The `active` field of the status line: a '+'-joined list of running codes. Five codes of up to 20
    characters plus separators fit; the list is capped, not truncated mid-code. */
@@ -99,7 +107,10 @@ new bool:g_donorActive;
 #define CLAIM_FREEZE 5
 #define CLAIM_AUDIO 6
 #define CLAIM_CAMERA 7
-#define CLAIM_COUNT 8
+/* The per-bot velocity `invert_velocity` rewrites every tick. The claim is what tells the undo of one
+   run that a newer run owns the field, so it may not flip the direction back under it. */
+#define CLAIM_VELOCITY 8
+#define CLAIM_COUNT 9
 #define MAX_CLAIMS 3
 new g_claimOwner[CLAIM_COUNT][MAX_CLAIMS];
 new g_claimValue[CLAIM_COUNT][MAX_CLAIMS];
@@ -161,15 +172,24 @@ new bool:g_hePartyActive;
 #if !defined TE_EXPLOSION
 #define TE_EXPLOSION 3
 #endif
+#if !defined TE_SMOKE
+#define TE_SMOKE 5
+#endif
 
 new g_cannonBot;
 new bool:g_cannonActive;
+/* `one_bullet` is a rule about every bot's ammo and it holds for the whole clock, so the respawn has to know
+   it is still running: a bot that dies mid-event comes back with csdm_lite's full rifle otherwise. */
+new bool:g_oneBulletActive;
 /* The health the cannon bot had before it was buffed: "restore what it was" is part of what the
    viewer buys, and a 1000 HP bot that keeps the number after the clock is a bug you can see.
    `g_cannonHealth` is the buff itself, captured from the command: ArmGlassCannon runs again from the
    ammo task when the hero dies, and by then the parameter table belongs to another donation. */
 new g_cannonSavedHealth;
 new g_cannonHealth = 1000;
+/* The clock of the run, snapshotted for the camera lock for the same reason the health is: ArmGlassCannon
+   runs again from the ammo task when the carrier dies, and by then the parameter table has moved on. */
+new g_cannonSeconds = 15;
 
 /* The hero modes (`nemesis`, `survivor`): one bot carries the round. The state is shared by both codes
    on purpose - two hero events at the same time would fight over the same claims anyway, and the claim
@@ -184,13 +204,47 @@ new g_heroSavedHealth;
 new g_heroKnife;
 new g_heroWeapon[VALUE_LEN];
 new Float:g_heroSpeed;
-/* 0 = draw the red glow, 1..255 = semi-transparent (255 is invisible). `assassin` is the code that
-   needs this: a hero the viewer cannot see is not a hero, a hero they barely see is a hunter. */
+/* 0 = draw the red glow, 1..255 = semi-transparent (255 is invisible). No code uses the alpha right now
+   (`assassin` was the silhouette and `sniper` replaced it): the machinery stays because a hero the viewer
+   cannot see is not a hero, and the next mode that needs a silhouette should not re-invent this. */
 new g_heroAlpha;
 /* Where the role goes when the hero dies: 0 = a random bot, 1 = the killer (`juggernaut`: the bot that
    killed the boss becomes the boss, which is the whole point of the mode). */
 new bool:g_heroToKiller;
 new g_heroNext;
+
+/* The hero's own look (`infra/models/player/`): a re-skin of a stock soldier per mode, written as new
+   files by the model builders in `infra/models/build`. GoldSrc dies on a precache of a missing .mdl
+   (`Mod_LoadModel: ... not found` is a FATAL ERROR and the server restarts in a loop), so each file is
+   checked before it is precached and the mode then runs on the stock soldier instead of taking the server
+   down. `g_heroLookSet` is what tells the undo whether the model on the slot is this file's:
+   `cs_reset_user_model` lifts the model lock of *anybody*, and the hex_wave chicken on the same bot must
+   not be taken off by a hero's clock. */
+#define NEMESIS_MODEL "nemesis"
+#define SURVIVOR_MODEL "survivor"
+#define NEMESIS_MODEL_PATH "models/player/nemesis/nemesis.mdl"
+#define SURVIVOR_MODEL_PATH "models/player/survivor/survivor.mdl"
+new bool:g_nemesisLook;
+new bool:g_survivorLook;
+new bool:g_heroLookSet;
+/* The clock the hero event took, in seconds. The camera lock is handed the same number, so the picture
+   stays on the hero for exactly as long as the role exists even when the undo never runs. */
+new g_heroSeconds = 60;
+
+/* `sniper` is a hero mode with a budget instead of a knife: one bot, an AWP, `rounds` shots, a kill pays
+   one back. The budget is counted in *shots*, not in ammo, because csdm_lite refills every bot's reserve
+   once a second (`csdm_lite_ammo_reserve`) - a "five rounds" promise kept in the clip would be refilled
+   inside a second and the promise would be a lie. When the budget is gone the launcher is taken away, so
+   the viewer sees the knife fight start instead of an AWP that never runs dry. */
+#define SNIPER_ROUNDS_DEFAULT 5
+#define SNIPER_ROUNDS_MAX 10
+/* The same classname the bazooka uses as its trigger: one AWP, two paid uses. */
+#define SNIPER_WEAPON "weapon_awp"
+new g_sniperRounds = SNIPER_ROUNDS_DEFAULT;
+new g_sniperLeft;
+new bool:g_sniperArmed;
+new g_sniperShots;
+new g_sniperKills;
 
 /* Outbreak: every bot carries a flag, a knife kill converts the victim and the respawn hook re-arms it.
    A flag and not a health value: csdm_lite re-arms on every spawn, so the only thing that has to survive
@@ -276,6 +330,9 @@ new g_hexModel[VALUE_LEN];
    (`Mod_LoadModel: not found` is a FATAL ERROR), so the costume is opt-in on the file existing and the
    hex works without it. */
 new bool:g_hexCostume;
+/* The clock of the run, for the camera lock: ArmHexed runs again on every respawn, and by then the
+   parameter table belongs to another donation. */
+new g_hexSeconds = 20;
 
 new g_beamSprite;
 
@@ -309,18 +366,299 @@ new g_auraShare = 50;
    a single bot. */
 #define TASK_FIRE_PARTY 4814
 #define TASK_BURN 4815
+#define TASK_FIRE_SPARK 4819
 #define BURN_TICK 1.0
 #define FIRE_MAX_DAMAGE 500
 #define FIRE_MAX_BURN 60
 
+/* Both grenade codes have the same open half: YaPB keeps a grenade in hand and never throws it (measured
+   with an HE over 30 s - nobody burned). So neither event can wait for a bot's arm. Each gets a spark of its
+   own: one blast every SPARK_PERIOD next to a random bot, so what the viewer paid for happens on the field
+   whether or not a bot decides to throw. The real path stays wired in both - a thrown HE still arrives as
+   `DMG_BLAST`, a thrown flashbang still arrives through the grenade scan - the spark is only a second source
+   of the same fact, never a second implementation of the effect. */
+#define SPARK_PERIOD 4.0
+#define SPARK_RADIUS_DEFAULT 300
+#define SPARK_MAX_RADIUS 512
+#define FIRE_SPARK_DAMAGE 10
+#define SPARK_SOUND "weapons/hegrenade-1.wav"
+
 new bool:g_fireActive;
 new g_fireDamage = 60;
 new g_fireBurn = 15;
+/* The radius of the spark's blast, snapshotted from the command for the same reason as g_meteorRadius: the
+   timer fires long after the parameter table belongs to somebody else. */
+new g_fireRadius = SPARK_RADIUS_DEFAULT;
 new g_fireTicks[MAX_SLOTS];
 /* Counted for the same reason the knockback and the blinks are: "nothing caught fire" and "the fire did
    nothing" are the same log line otherwise. */
 new g_fireIgnited;
 new g_fireTicksApplied;
+
+/* Freeze grenades: a flashbang deals no damage, so `DMG_BLAST` in OnTakeDamage - the trigger the fire
+   event leans on - never sees it. The engine leaves one trace instead: a thrown grenade is a `grenade`
+   entity whose `pev_dmgtime` is its own detonation, and it is removed in the same frame it goes off. So a
+   quarter-second scan remembers every live flashbang with its last origin, and a remembered one that is
+   gone *after* its fuse is a detonation at that origin. The detection is therefore up to 0.25 s late, which
+   the effect hides: the freeze is a state the viewer reads a second later, not a frame. */
+#define TASK_FLASH_PARTY 4816
+#define TASK_FLASH_SCAN 4817
+#define TASK_THAW 4818
+#define TASK_FLASH_SPARK 4820
+#define FLASH_SCAN 0.25
+#define THAW_TICK 0.5
+#define FLASH_SOUND "weapons/flashbang-1.wav"
+/* The freeze's own sample, rendered at image build time (`src/sound.ts` + `infra/sounds/generate.ts`) and
+   shipped in `cstrike/sound/freeze/`. A flashbang bang is a flash, not ice, and the event sells ice; the
+   stock sample stays as the fallback, because a tree built without the generator must still have a bang. */
+#define FREEZE_SOUND "freeze/ice_crack.wav"
+#define FREEZE_SOUND_PATH "sound/freeze/ice_crack.wav"
+new bool:g_freezeIce;
+/* More grenades in the air than this at once would need twenty bots throwing inside one stride; the scan
+   looks at the first sixteen and the rest are still tracked on the next pass. */
+#define FLASH_MAX_TRACKED 16
+#define FREEZE_MAX_SECONDS 30
+#define FREEZE_MAX_RADIUS 512
+
+new bool:g_freezeActive;
+new g_freezeSeconds = 6;
+new Float:g_freezeRadius = 300.0;
+/* A per-slot countdown in THAW_TICK steps, like the burn: a second blast catches an overlapping group, and
+   a bot re-frozen while it still stands must not thaw on the older countdown. */
+new g_freezeTicks[MAX_SLOTS];
+/* Counted for the same reason the burns, the blinks and the bolts are: a flashbang nobody threw and a blast
+   that caught nobody read as the same silent event otherwise. */
+new g_freezeBlasts;
+new g_freezeCaught;
+/* What the previous scan saw: entity index, last origin, and the fuse it held. The fuse is part of the
+   identity - the engine hands the slot of a detonated grenade to the next one. */
+new g_flashEnt[FLASH_MAX_TRACKED];
+new Float:g_flashOrigin[FLASH_MAX_TRACKED][3];
+new Float:g_flashFuse[FLASH_MAX_TRACKED];
+new g_flashCount;
+
+/* ---------- S3 items: the bazooka, a weapon the bot fires ----------
+   A custom weapon entity (`zp_extra_bazooka`, docs/activities/assets.md) is not reachable from a plugin:
+   YaPB picks what to shoot from its own weapon list, and nothing in that list is ours, so an entity of our
+   own would sit in the inventory and never be pressed. The launcher is therefore a stock weapon the bot AI
+   already knows - `weapon_awp`, one shot per bolt cycle - with three changes on top of it:
+
+     - the model in the hand. The engine draws a player's third-person weapon from the player's own
+       `weaponmodel` field (the `p_` model), so that field is rewritten to `models/p_bazooka.mdl` from a
+       tick. One write is not enough: the game puts the real model back on every switch and every spawn,
+       and the launcher would be off the screen the first time the bot reaches for its knife;
+     - the trigger: the engine's own `Ham_Weapon_PrimaryAttack`, so the bot aims and fires by itself;
+     - the shell: the AWP's bullet is thrown away (`Ham_TraceAttack` is superceded for the carrier) and a
+       rocket flies from the muzzle along the bot's view instead - it explodes on the first thing it meets
+       and the blast does the killing. Without that the bot is a sniper holding a prop.
+
+   Both models are made in this repository (`infra/models/build/bazooka.mjs`), so there is no pack and no
+   licence to chase. Task ids stay in the 48xx block. */
+#define TASK_BAZOOKA_DRESS 4826
+#define TASK_BAZOOKA_ROCKET 4827
+#define BAZOOKA_MODEL "models/p_bazooka.mdl"
+#define BAZOOKA_WEAPON "weapon_awp"
+/* What the model field has to be put back to when the clock runs out. The game precaches every weapon
+   model when it starts, so this name is the one its own arming would have written. */
+#define BAZOOKA_AWP_MODEL "models/p_awp.mdl"
+/* Four times a second: fast enough that a weapon switch is corrected before the viewer reads it, slow
+   enough that rewriting one field costs nothing. */
+#define BAZOOKA_DRESS_TICK 0.25
+/* Flight step. 0.05 s at BAZOOKA_SPEED is 45 units a step - the length of a bot - so nothing is skipped. */
+#define BAZOOKA_ROCKET_TICK 0.05
+#define BAZOOKA_SPEED 900.0
+/* 40 steps is two seconds of flight; a rocket still in the air after that has crossed the whole map. */
+#define BAZOOKA_TICKS 40
+#define MAX_ROCKETS 4
+#define BAZOOKA_DAMAGE_DEFAULT 500
+#define BAZOOKA_RADIUS_DEFAULT 320
+#define BAZOOKA_RADIUS_MAX 512
+/* The blast weakens with distance but never to nothing: a rocket that lands and leaves everybody standing
+   is a dud the viewer sees. */
+#define BAZOOKA_MIN_DAMAGE 40
+#define BAZOOKA_BLAST_SOUND "weapons/c4_explode1.wav"
+
+new g_bazookaModel;
+/* `pev_weaponmodel` is a *string* index (ALLOC_STRING in the game DLL), not a precache index, and an
+   AllocString per tick would keep growing the engine's string table: both indexes are taken once, at
+   precache. */
+new g_bazookaModelString;
+new g_bazookaAwpModelString;
+new bool:g_bazookaActive;
+new g_bazookaBot;
+new g_rocketEnt[MAX_ROCKETS];
+new Float:g_rocketVelocity[MAX_ROCKETS][3];
+new g_rocketOwner[MAX_ROCKETS];
+new g_rocketTicks[MAX_ROCKETS];
+/* Counted for the same reason the knockback and the blinks are: without them "the bot never fired" and
+   "the rocket hit a wall" are the same empty log line. */
+new g_rocketFired;
+new g_rocketBlasts;
+new g_rocketHits;
+/* A repeating task on a fixed id cannot be started twice on some AMXX builds, so the tick is started by the
+   first rocket in the air and removes itself when the last one is gone. */
+new bool:g_rocketTick;
+/* The damage and the radius of one rocket, snapshotted from the command: the tick fires long after the
+   parameter table belongs to somebody else. */
+new g_rocketDamage = BAZOOKA_DAMAGE_DEFAULT;
+new g_rocketRadius = BAZOOKA_RADIUS_DEFAULT;
+
+/* ---------- S5 chases: five rules the viewer reads in three seconds ----------
+   Four of them need no state beyond the field itself; `guntrain` and `head_hunter` keep a per-slot number,
+   and both are cleared by a full reset because a slot is not a person. Task ids stay in the 48xx block. */
+#define TASK_HILL 4821
+#define TASK_MARK 4822
+#define TASK_MARK_GLOW 4823
+#define TASK_DUEL 4824
+#define TASK_STATUE 4825
+/* Both sights need a pass fast enough that a freeze reads as "he looked at him", and slow enough that the
+   double loop of traces (N x N, twenty bots) never costs a frame. */
+#define SIGHT_TICK 0.5
+#define HILL_TICK 0.5
+#define TRAIN_MAX_LADDER 8
+#define TRAIN_NAME_LEN 16
+#define HILL_MAX_RADIUS 512
+#define MARK_MAX_HOLD 60
+#define DUEL_MAX_HEALTH 100
+#define DUEL_GAP 64.0
+
+new bool:g_trainActive;
+new g_trainLadder[TRAIN_MAX_LADDER][TRAIN_NAME_LEN];
+new g_trainCount;
+new g_trainLevel[MAX_SLOTS];
+/* A bot that reached the knife keeps its announcement: the winner check alone repeated it every time another
+   bot got there first and this one killed again. */
+new g_trainTop[MAX_SLOTS];
+new g_trainPromotions;
+new g_trainWinner;
+
+new bool:g_statueActive;
+new g_statueHeld[MAX_SLOTS];
+new g_statueFrozen;
+
+new bool:g_markActive;
+new g_markBot;
+new g_markHold = 15;
+new g_markReward[VALUE_LEN];
+/* Countdown in SIGHT_TICK steps for the gold shell of a bot that took the mark: the weapon goes with the
+   body, the glow is render state and has to be taken off by hand. */
+new g_markGlow[MAX_SLOTS];
+new g_markRewards;
+
+new bool:g_hillActive;
+new Float:g_hillCentre[3];
+new Float:g_hillRadius = 200.0;
+new Float:g_hillHold = 3.0;
+new g_hillHealth = 300;
+new Float:g_hillDwell[MAX_SLOTS];
+new g_hillBuffed[MAX_SLOTS];
+new g_hillTaken;
+
+new bool:g_duelBellActive;
+new g_bellHealth = 1;
+new g_duels;
+
+/* ---------- S6 physics: rules of the world, not of a bot ----------
+   Six codes, one stage (docs/activities/roadmap.md, stage 7). They are the cheapest effects on the
+   server - no model, no costume, two stock sounds - and the easiest to leave behind: a gravity cvar
+   and a per-tick velocity flip outlive every round if their task is dropped without an undo. Task
+   ids stay in the 48xx block, and every number a timer needs is snapshotted in the handler. */
+#define TASK_AIRSTRIKE 4830
+#define TASK_WEAPON_RAIN 4831
+#define TASK_QUAKE 4832
+#define TASK_FIRE_RING 4833
+#define TASK_INVERT 4834
+#define TASK_GRAVITY_KNIVES 4835
+
+/* Airstrike: ten blasts walk in from a ring 600 units out, one every 0.4 s, so the last one lands on
+   the leader the first one was aimed at. */
+#define AIR_TICK 0.4
+#define AIR_RING_RADIUS 600.0
+#define AIR_MAX_STRIKES 20
+#define AIR_MAX_DAMAGE 500
+#define AIR_MAX_RADIUS 512
+#define AIR_MIN_RADIUS 50
+#define AIR_SOUND "ambience/thunder_clap.wav"
+
+/* Weapon rain: five boxes is the hard cap - llvmpipe renders every extra model on the CPU. */
+#define RAIN_MAX_DROPS 5
+#define RAIN_MAX_ENTITIES 5
+#define RAIN_HEIGHT 220.0
+
+#define QUAKE_MAX_FORCE 1200
+#define QUAKE_MIN_FORCE 50
+#define QUAKE_MAX_SPEED 900.0
+#define QUAKE_MIN_PERIOD 0.2
+#define QUAKE_MAX_PERIOD 5.0
+
+#define RING_MIN_RADIUS 50.0
+#define RING_MAX_RADIUS 1024.0
+#define RING_MAX_DAMAGE 100
+#define RING_MAX_SHRINK 200
+#define RING_MIN_SHRINK 1
+#define RING_MIN_PERIOD 0.2
+#define RING_MAX_PERIOD 5.0
+
+#define INVERT_MIN_PERIOD 0.05
+#define INVERT_MAX_PERIOD 2.0
+
+#define KNIVES_MIN_GRAVITY 50
+#define KNIVES_MAX_GRAVITY 800
+
+new bool:g_airActive;
+new g_airStrikes;
+new g_airLeft;
+new g_airDamage;
+new g_airRadius;
+new Float:g_airFrom[3];
+new Float:g_airTarget[3];
+new g_airBursts;
+new g_airHits;
+
+new bool:g_rainActive;
+new g_rainLeft;
+new g_rainSpawned;
+new g_rainEnts[RAIN_MAX_ENTITIES];
+
+new bool:g_quakeActive;
+new Float:g_quakeForce;
+new Float:g_quakePeriod;
+new g_quakeTicks;
+new g_quakeShoves;
+
+new bool:g_ringActive;
+new Float:g_ringCentre[3];
+new Float:g_ringRadius;
+new Float:g_ringShrink;
+new Float:g_ringPeriod;
+new g_ringDamage;
+new g_ringScorched;
+new g_ringBurnt[MAX_SLOTS];
+
+new bool:g_invertActive;
+new Float:g_invertPeriod;
+new g_invertFlips;
+
+new bool:g_knivesActive;
+new g_knivesGravity;
+
+/* ---------- S8 sound: the broadcast's own audio ----------
+   These four codes do not live in the game's sound system: GoldSrc plays only precached files, so a
+   custom cue would have to ship inside the client. The game side prints the line and takes the
+   `CLAIM_AUDIO` so two paid sound events cannot own the bed at once; the actual audio is a request
+   file for `infra/stream/voice.sh` (`src/voice.ts`), which is the only place the mix exists. */
+#define TASK_COUNTDOWN 4840
+#define COUNTDOWN_FROM 3
+#define QUOTE_MAX_LEN 60
+
+new bool:g_countdownActive;
+new g_countdownLeft;
+
+new bool:g_quotesActive;
+
+new bool:g_sirenActive;
+new bool:g_musicSwapActive;
+
 new bool:g_classActive;
 /* Which of the five codes shapes the field right now. A newer class event ends the running one before it
    takes over, and the ended run's clock still fires later: without this code that stale clock would
@@ -361,11 +699,23 @@ public plugin_init()
 	// The nemesis knife: the hero's swipe is rewritten per hit, every other hit keeps its damage.
 	RegisterHam(Ham_TakeDamage, "player", "OnTakeDamage");
 
+	// The spawn hook a bot also goes through. ResetHUD above is the event path, and on the stream it was not
+	// enough: a hero came back holding csdm_lite's rifle. Both paths schedule the same re-arm, and a repeated
+	// schedule only replaces its own countdown.
+	RegisterHam(Ham_Spawn, "player", "OnSpawnHam");
+
+	// The bazooka (S3): the bot's own trigger launches the rocket, and the hitscan behind that trigger is
+	// dropped - a 500 damage blast plus an AWP headshot is a sniper with a prop, not a launcher.
+	RegisterHam(Ham_Weapon_PrimaryAttack, BAZOOKA_WEAPON, "OnBazookaAttack");
+	RegisterHam(Ham_TraceAttack, "player", "OnTraceAttack");
+	// The sniper (S1): the same AWP, and the shot that spends one of its five rounds.
+	RegisterHam(Ham_Weapon_PrimaryAttack, SNIPER_WEAPON, "OnSniperAttack");
+
 	// The hero modes (S1 of docs/activities/systems.md): one bot carries the round.
 	RegisterDonationEffect("nemesis", "EffectNemesis");
 	RegisterDonationEffect("survivor", "EffectSurvivor");
 	RegisterDonationEffect("juggernaut", "EffectJuggernaut");
-	RegisterDonationEffect("assassin", "EffectAssassin");
+	RegisterDonationEffect("sniper", "EffectSniper");
 	RegisterDonationEffect("outbreak", "EffectOutbreak");
 	RegisterDonationEffect("chaos_plague", "EffectChaosPlague");
 
@@ -397,6 +747,32 @@ public plugin_init()
 	// S3 items, in the roadmap's order: the two grenade codes first, the custom weapons once their
 	// entities and models exist.
 	RegisterDonationEffect("fire_grenades", "EffectFireGrenades");
+	RegisterDonationEffect("freeze_nades", "EffectFreezeNades");
+	RegisterDonationEffect("bazooka_drop", "EffectBazookaDrop");
+
+	// S5 chases: rules the viewer reads in three seconds, no model and no sound of their own.
+	RegisterDonationEffect("guntrain", "EffectGunTrain");
+	RegisterDonationEffect("statues", "EffectStatues");
+	RegisterDonationEffect("head_hunter", "EffectHeadHunter");
+	RegisterDonationEffect("king_of_the_hill", "EffectKingOfTheHill");
+	RegisterDonationEffect("duel_bell", "EffectDuelBell");
+
+	// S6 physics: six codes that change the world's rules instead of a bot's numbers
+	// (docs/activities/systems.md, S6). Two of them own a server-level resource, so they are the first
+	// codes whose undo has to restore a cvar rather than a per-bot value.
+	RegisterDonationEffect("airstrike", "EffectAirstrike");
+	RegisterDonationEffect("weapon_rain", "EffectWeaponRain");
+	RegisterDonationEffect("quake", "EffectQuake");
+	RegisterDonationEffect("fire_ring", "EffectFireRing");
+	RegisterDonationEffect("invert_velocity", "EffectInvertVelocity");
+	RegisterDonationEffect("low_gravity_knives", "EffectLowGravityKnives");
+
+	// S8 sound: the game prints and claims, the broadcast container speaks (src/voice.ts). No game
+	// asset is needed by any of the four, which is why they are the cheapest codes in the catalogue.
+	RegisterDonationEffect("announcer_countdown", "EffectAnnouncerCountdown");
+	RegisterDonationEffect("quotes_pack", "EffectQuotesPack");
+	RegisterDonationEffect("siren", "EffectSiren");
+	RegisterDonationEffect("music_swap", "EffectMusicSwap");
 
 	log_amx("loaded, API %d, %d activities", API_VERSION, g_effectCount);
 }
@@ -421,6 +797,18 @@ public plugin_precache()
 	precache_sound("ambience/lv_neon.wav");
 	precache_sound("ambience/Opera.wav");
 	precache_sound("events/enemy_died.wav");
+	// The two grenade sparks play the stock bang of the grenade they stand in for; a file missing here is a
+	// silent blast, and both were checked against the image (sound/weapons/flashbang-1.wav, hegrenade-1.wav).
+	precache_sound(SPARK_SOUND);
+	precache_sound(FLASH_SOUND);
+
+	// The freeze's own sample. `precache_sound` on a missing file is not fatal in GoldSrc, so the file is
+	// checked and the event falls back to the stock bang it was using before the ice existed.
+	g_freezeIce = file_exists(FREEZE_SOUND_PATH) != 0;
+	if (g_freezeIce)
+		precache_sound(FREEZE_SOUND);
+	else
+		log_amx("freeze_nades: %s is not in the image, the blast uses the stock flashbang bang", FREEZE_SOUND_PATH);
 
 	// S4: the bolt between chained bots is a stock sprite. The hex costume is a different case - a missing
 	// .mdl is not a soft failure in GoldSrc, it is `FATAL ERROR (shutting down): Mod_LoadModel: ... not
@@ -434,6 +822,36 @@ public plugin_precache()
 		precache_model(HEX_MODEL_PATH);
 	else
 		log_amx("hex_wave: %s is not in the image, the hex runs without the costume", HEX_MODEL_PATH);
+
+	// The two hero looks, checked the same way and for the same reason. These are files this repository
+	// makes, so a missing one means the image was built from an older tree: the event says so once, here,
+	// and then runs with the soldier the game already has.
+	g_nemesisLook = file_exists(NEMESIS_MODEL_PATH) != 0;
+	if (g_nemesisLook)
+		precache_model(NEMESIS_MODEL_PATH);
+	else
+		log_amx("nemesis: %s is not in the image, the hero wears the stock soldier", NEMESIS_MODEL_PATH);
+
+	g_survivorLook = file_exists(SURVIVOR_MODEL_PATH) != 0;
+	if (g_survivorLook)
+		precache_model(SURVIVOR_MODEL_PATH);
+	else
+		log_amx("survivor: %s is not in the image, the hero wears the stock soldier", SURVIVOR_MODEL_PATH);
+
+	// The launcher's own model, made here rather than bought. Same rule as the costume above: a missing .mdl
+	// is `Mod_LoadModel: ... not found` at precache, which takes the server into a restart loop, so the file
+	// is checked first and the event then says it has nothing to carry.
+	g_bazookaModel = file_exists(BAZOOKA_MODEL) != 0 ? precache_model(BAZOOKA_MODEL) : 0;
+	if (!g_bazookaModel)
+		log_amx("bazooka_drop: %s is not in the image, the launcher has no model in hand", BAZOOKA_MODEL);
+	else
+	{
+		g_bazookaModelString = engfunc(EngFunc_AllocString, BAZOOKA_MODEL);
+		g_bazookaAwpModelString = engfunc(EngFunc_AllocString, BAZOOKA_AWP_MODEL);
+	}
+
+	// The rocket's blast. A sample that is not precached is a silent explosion, so it goes here.
+	precache_sound(BAZOOKA_BLAST_SOUND);
 }
 
 stock RegisterDonationEffect(const code[], const handler[])
@@ -899,7 +1317,7 @@ stock EndEffectState(const code[])
 		return;
 	}
 
-	if (equal(code, "nemesis") || equal(code, "survivor") || equal(code, "juggernaut") || equal(code, "assassin"))
+	if (equal(code, "nemesis") || equal(code, "survivor") || equal(code, "juggernaut") || equal(code, "sniper"))
 	{
 		// Every hero mode shares one state; EndHero asks the claim layer whether this event still owns it.
 		EndHero(code);
@@ -964,6 +1382,108 @@ stock EndEffectState(const code[])
 		return;
 	}
 
+	if (equal(code, "freeze_nades"))
+	{
+		EndFreezeNades();
+		return;
+	}
+
+	if (equal(code, "bazooka_drop"))
+	{
+		EndBazookaDrop();
+		return;
+	}
+
+	if (equal(code, "guntrain"))
+	{
+		EndGunTrain();
+		return;
+	}
+
+	if (equal(code, "statues"))
+	{
+		EndStatues();
+		return;
+	}
+
+	if (equal(code, "head_hunter"))
+	{
+		EndHeadHunter();
+		return;
+	}
+
+	if (equal(code, "king_of_the_hill"))
+	{
+		EndKingOfTheHill();
+		return;
+	}
+
+	if (equal(code, "duel_bell"))
+	{
+		EndDuelBell();
+		return;
+	}
+
+	if (equal(code, "airstrike"))
+	{
+		EndAirstrike();
+		return;
+	}
+
+	if (equal(code, "weapon_rain"))
+	{
+		EndWeaponRain();
+		return;
+	}
+
+	if (equal(code, "quake"))
+	{
+		EndQuake();
+		return;
+	}
+
+	if (equal(code, "fire_ring"))
+	{
+		EndFireRing();
+		return;
+	}
+
+	if (equal(code, "invert_velocity"))
+	{
+		EndInvertVelocity();
+		return;
+	}
+
+	if (equal(code, "low_gravity_knives"))
+	{
+		EndLowGravityKnives();
+		return;
+	}
+
+	if (equal(code, "announcer_countdown"))
+	{
+		EndAnnouncerCountdown();
+		return;
+	}
+
+	if (equal(code, "quotes_pack"))
+	{
+		EndQuotesPack();
+		return;
+	}
+
+	if (equal(code, "siren"))
+	{
+		EndSiren();
+		return;
+	}
+
+	if (equal(code, "music_swap"))
+	{
+		EndMusicSwap();
+		return;
+	}
+
 	if (equal(code, "he_party"))
 	{
 		// The party owns its own repeating task instead of a generic clock, so its undo is explicit.
@@ -976,7 +1496,9 @@ stock EndEffectState(const code[])
 
 	if (equal(code, "one_bullet"))
 	{
-		// One round in the clip and nothing in reserve: the next spawn hands the normal kit back.
+		// One round in the clip and nothing in reserve: the next spawn hands the normal kit back, so there is
+		// nothing to undo - only the flag that arms a respawn has to stop arming one.
+		g_oneBulletActive = false;
 		return;
 	}
 
@@ -1091,6 +1613,13 @@ public plugin_end()
 	CleanupActive();
 }
 
+/* A respawn is armed twice: at 0.3 s, and again at 0.9 s, because csdm_lite hands the bot its rifle about
+   half a second after the death and would undo the first pass. The late schedule carries a shifted task id so
+   the two countdowns do not overwrite each other. Declared here, before both users: a pawn symbol has to be
+   defined above the line that reads it. */
+#define REARM_LATE 100
+#define REARM_LATE_DELAY 0.9
+
 /* A player id is a slot, not a person: the engine reuses the slot of a bot that dropped, so every
    piece of state keyed by id is dropped here. Without this the next occupant inherits somebody else's
    glow or donor tag.
@@ -1104,9 +1633,14 @@ public client_disconnected(id, bool:drop, message[], maxlen)
 	if (id <= 0 || id > get_maxplayers())
 		return;
 
-	// The 0.3 s re-arm the duel schedules for this spawn.
+	// The 0.3 s re-arm the duel schedules for this spawn, and its late pass.
 	remove_task(id);
+	remove_task(id + REARM_LATE);
 	ClearGlow(id);
+
+	// A slot is not a person: a freeze countdown left on it would thaw, or strip the glow of, the next
+	// occupant, which never stood in the blast.
+	g_freezeTicks[id] = 0;
 
 	if (g_donorBot == id)
 	{
@@ -1240,7 +1774,7 @@ stock bool:HasGun(id)
    drop it with the same `remove_task(id)`. */
 public OnPlayerSpawn(id)
 {
-	if (!g_duelActive && !g_outbreakActive && !g_classActive && !g_hexActive)
+	if (!g_duelActive && !g_outbreakActive && !g_classActive && !g_hexActive && !g_knivesActive && !g_heroActive)
 		return;
 
 	if (!is_user_connected(id) || !is_user_bot(id))
@@ -1249,17 +1783,51 @@ public OnPlayerSpawn(id)
 	// The infection is the reason this hook now fires on every respawn: csdm_lite hands the bot a rifle
 	// half a second after it died, and an infected bot has to come back with a knife. A class bot has
 	// the same problem on another axis: health, speed and gravity are per-spawn values. The hex is the
-	// third case - csdm_lite gives the chicken a rifle and the server's own run speed back.
-	if (g_duelActive || IsInfected(id) || IsClassed(id) || (g_hexActive && id == g_hexBot))
+	// third case - csdm_lite gives the chicken a rifle and the server's own run speed back. Low gravity
+	// knives is the fourth: a rifle on the field ends that event for the bot holding it.
+	// The hero is the fifth and the one the stream complained about: a boss that comes back holding
+	// csdm_lite's rifle is not the boss the viewer paid for. The launcher is the sixth and the same story
+	// on another axis: the bazooka is a weapon now, so the respawn has to arm it again or the bot comes
+	// back holding the rifle and the event has nothing to fire.
+	if (g_duelActive || IsInfected(id) || IsClassed(id) || (g_hexActive && id == g_hexBot) || g_knivesActive || (g_heroActive && id == g_heroBot) || (g_bazookaActive && id == g_bazookaBot) || (g_cannonActive && id == g_cannonBot) || g_trainActive || g_oneBulletActive)
+	{
 		set_task(0.3, "ReArmOnSpawn", id);
+		// And again before the moment csdm_lite re-arms the bot: its rifle arrives about half a second after
+		// the death, so a single pass can be undone by the plugin that respawned it.
+		set_task(REARM_LATE_DELAY, "ReArmOnSpawn", id + REARM_LATE);
+	}
+}
+
+/* The engine's own spawn, which a bot goes through every time csdm_lite respawns it. Same scheduling as the
+   HUD event above; the two together cover a client that resets its HUD late and one that does not. */
+public OnSpawnHam(id)
+{
+	OnPlayerSpawn(id);
+	return HAM_IGNORED;
 }
 
 public ReArmOnSpawn(id)
 {
+	// The late pass carries its own task id: a player id is 1..32 and these are 1..32 shifted, so the two
+	// schedules cannot overwrite each other's countdown.
+	if (id > REARM_LATE)
+		id -= REARM_LATE;
+
 	if (!IsBotAlive(id))
 		return;
+	// The hero's kit outranks everything below it: that bot was armed by the newest paid rule, and the
+	// role (and its weapon) is what the viewer is watching. ArmHero re-locks the camera as well, which the
+	// death released.
+	if (g_heroActive && id == g_heroBot)
+	{
+		ArmHero(id);
+		// Counted, like every other "cannot be seen in the log" fact: a hero that comes back with csdm_lite's
+		// rifle and one that comes back with its own look the same in a kill line.
+		log_amx("%s: bot %d re-armed after respawn", g_heroCode, id);
+		return;
+	}
 
-	// The infection outranks everything: an infected bot keeps its knife and its health even mid-duel,
+	// The infection outranks everything below: an infected bot keeps its knife and its health even mid-duel,
 	// and the claim layer decides whose numbers win when both events are running.
 	if (g_outbreakActive && IsInfected(id))
 	{
@@ -1281,8 +1849,225 @@ public ReArmOnSpawn(id)
 		return;
 	}
 
+	// The cannon is a role like the hero: one bot with the M249, the health and the glow. A respawn puts
+	// csdm_lite's random rifle and 100 HP in its place, and `g_cannonHealth` was snapshotted at the start
+	// because by now the parameter table belongs to somebody else.
+	if (g_cannonActive && id == g_cannonBot)
+	{
+		ArmGlassCannon(id);
+		return;
+	}
+
+	// The launcher: the bazooka is a stock weapon with our model and our rocket on top, so the re-arm is
+	// the same one the first spawn gets. csdm_lite's random rifle would otherwise be what the camera sees.
+	if (g_bazookaActive && id == g_bazookaBot)
+	{
+		ArmBazooka(id);
+		return;
+	}
+
+	// The ladder: the rung is per slot, so the bot comes back on the rung it earned instead of the bottom
+	// one. `ClaimTake` answers whether the ladder still owns the weapon pool at all - a newer weapon event
+	// takes it, and then re-arming would be two paid rules fighting over one bot.
+	if (g_trainActive && ClaimTake(CLAIM_WEAPONS, FindEffect("guntrain"), 1))
+	{
+		new level = g_trainLevel[id];
+		if (level < 0 || level >= g_trainCount)
+			level = 0;
+
+		StripWeapons(id);
+		give_item(id, g_trainLadder[level]);
+		give_item(id, "weapon_knife");
+		return;
+	}
+
+	// `one_bullet` is an ammo rule, not a kit, and it holds for the whole clock: a bot that died and came
+	// back gets the one round it would have had if it had stayed alive.
+	if (g_oneBulletActive)
+		OneBulletArm(id);
+
 	if (g_duelActive)
 		DuelArm(id);
+
+	// The knife rule of the running physics event outranks the duel's: the newest paid rule wins.
+	if (g_knivesActive)
+		ArmKnives(id);
+}
+
+/* ---------- the kit lock: an event that armed a bot keeps that weapon ----------
+   Three things break a paid weapon on a csdm_lite server, and they are one rule: csdm_lite hands the bot
+   a random rifle on every respawn, the bot picks one off the floor, and the boxes the dead leave behind
+   are there to be picked up. While an event owns a bot's kit, the weapon in its hands is the event's, a
+   weaponbox cannot be taken, and the boxes are swept off the floor. A nemesis with an AWP is a nemesis
+   the viewer will not read.
+   `KitWeapon` is the only place that answers "what should this bot be holding": a new code that arms a bot
+   adds one branch there and inherits the lock, the sweep and the pickup refusal. */
+#define TASK_KIT_SWEEP 4829
+#define KIT_SWEEP_TICK 0.5
+new bool:g_kitSweep;
+/* Counted like every other unseen fact: "the field obeyed" and "nobody noticed" look the same in a log. */
+new g_kitRestored;
+new g_kitSwept;
+
+/* What the running events say this bot holds, if anything. */
+stock bool:KitWeapon(id, out[], len)
+{
+	// The knife rules of the field: the duel, the physics event and the grenade party (which strips the
+	// field twice a second, so a rifle is a rifle its own task already removes).
+	if (g_duelActive || g_knivesActive || g_hePartyActive)
+	{
+		copy(out, len, "weapon_knife");
+		return true;
+	}
+
+	if (g_heroActive && id == g_heroBot)
+	{
+		copy(out, len, g_heroWeapon);
+		return true;
+	}
+
+	if (g_bazookaActive && id == g_bazookaBot)
+	{
+		copy(out, len, BAZOOKA_WEAPON);
+		return true;
+	}
+
+	if (g_cannonActive && id == g_cannonBot)
+	{
+		copy(out, len, "weapon_m249");
+		return true;
+	}
+
+	// The ladder is per slot and the rung is the weapon: a climber that picks up somebody else's rifle is
+	// back at the bottom of the ladder in the viewer's eyes.
+	if (g_trainActive)
+	{
+		new level = g_trainLevel[id];
+		if (level < 0 || level >= g_trainCount)
+			level = 0;
+
+		copy(out, len, g_trainLadder[level]);
+		return true;
+	}
+
+	out[0] = '^0';
+	return false;
+}
+
+stock bool:IsKitLocked(id)
+{
+	new wanted[VALUE_LEN];
+	return KitWeapon(id, wanted, charsmax(wanted));
+}
+
+/* Whether the bot's locked kit is exactly this weapon class. The AWP handlers ask this before letting a
+   shot through: a bot on a locked kit may not fire anything else, and an AWP is the one weapon where
+   waiting for the sweep costs a kill. */
+stock bool:IsKitWeapon(id, const weapon[])
+{
+	new wanted[VALUE_LEN];
+	if (!KitWeapon(id, wanted, charsmax(wanted)))
+		return false;
+
+	return equali(wanted, weapon) != 0;
+}
+
+/* Whether the bot is on a locked kit and holds something else right now. The damage hook asks this: a
+   rifle csdm_lite handed out must not be able to kill while the half-second sweep counts down. */
+stock bool:KitMismatch(id)
+{
+	new wanted[VALUE_LEN];
+	if (!KitWeapon(id, wanted, charsmax(wanted)))
+		return false;
+
+	new wantId = get_weaponid(wanted);
+	if (wantId <= 0)
+		return false;
+
+	return get_user_weapon(id) != wantId;
+}
+
+/* Puts the event's weapon back in the bot's hands. Called from the weapon-switch event (the engine's own
+   signal that the bot now holds something else) and from the respawn hook. */
+stock EnforceKit(id)
+{
+	new wanted[VALUE_LEN];
+	if (!KitWeapon(id, wanted, charsmax(wanted)))
+		return;
+
+	StartKitSweep();
+
+	new wantId = get_weaponid(wanted);
+	if (wantId <= 0)
+		return;
+
+	if (get_user_weapon(id) == wantId)
+		return;
+
+	StripWeapons(id);
+	give_item(id, "weapon_knife");
+	if (wantId != CSW_KNIFE)
+		give_item(id, wanted);
+	engclient_cmd(id, wanted);
+
+	g_kitRestored++;
+	// The knife rules fire on every respawn of twenty bots, so they are counted instead of logged; a role
+	// weapon is rare enough that the line is worth reading.
+	if (wantId != CSW_KNIFE)
+		log_amx("kit lock: bot %d back on %s", id, wanted);
+}
+
+stock StartKitSweep()
+{
+	if (g_kitSweep)
+		return;
+
+	g_kitSweep = true;
+	set_task(KIT_SWEEP_TICK, "TaskKitSweep", TASK_KIT_SWEEP, "", 0, "b");
+}
+
+/* Sweeps the dropped weapons off the floor while any bot is on a locked kit, and stops itself the moment
+   nobody is: twenty bots leave a box per death, and a box on the floor is a rifle one walk away from the
+   event. */
+public TaskKitSweep()
+{
+	new locked;
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (IsBotAlive(id) && IsKitLocked(id))
+			locked++;
+	}
+
+	if (!locked)
+	{
+		g_kitSweep = false;
+		remove_task(TASK_KIT_SWEEP);
+		log_amx("kit lock: over, %d weapon(s) put back, %d box(es) swept", g_kitRestored, g_kitSwept);
+		g_kitRestored = 0;
+		g_kitSwept = 0;
+		return;
+	}
+
+	// The kit is enforced from here, not from the weapon-switch event: `CurWeapon` is a *client* event and
+	// YaPB bots never send it - measured live on 2026-10-31, a `nemesis` with 13 500 HP killed with an AWP
+	// forty seconds into its own knife round. A server-side pass over the locked bots is the only thing that
+	// sees a rifle the engine handed out.
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (IsBotAlive(id) && IsKitLocked(id))
+			EnforceKit(id);
+	}
+
+	// The list is walked with a cap: an entity removed inside `FindEntityByString` can hand the same slot
+	// back, and an uncapped loop on a map full of boxes is a server stall.
+	new ent = -1;
+	new steps;
+	while ((ent = engfunc(EngFunc_FindEntityByString, ent, "classname", "weaponbox")) > 0 && steps < 64)
+	{
+		engfunc(EngFunc_RemoveEntity, ent);
+		g_kitSwept++;
+		steps++;
+	}
 }
 
 /* ---------- helpers ---------- */
@@ -1322,6 +2107,10 @@ stock AnnounceEventSound(const code[])
 		copy(sound, charsmax(sound), "weapons/awp1.wav");
 	else if (equal(code, "red_light"))
 		copy(sound, charsmax(sound), "ambience/lv_neon.wav");
+	else if (equal(code, "airstrike") || equal(code, "quake"))
+		// The air raid and the earthquake open on the stock thunder: S8 will give them a siren of their
+		// own, and until then a paid physics event still has an opener the stream can hear.
+		copy(sound, charsmax(sound), "ambience/thunder_clap.wav");
 	else
 		copy(sound, charsmax(sound), "events/task_complete.wav");
 
@@ -1347,13 +2136,20 @@ public ResetEventState()
 	remove_task(TASK_RED_STOP);
 	remove_task(TASK_RED_GO);
 
-	// A hero mode holds a bot's health and the camera; a full reset gives both back, and
-	// `amx_stcam unlock` is idempotent when nothing was held.
+	// A hero mode holds a bot's health, its model and the camera; a full reset gives all three back, and
+	// `amx_stcam unlock` is idempotent when nothing was held. The look is taken off here as well as in
+	// EndHero, because a reset drops every task without running the effects' own undos.
 	remove_task(TASK_HERO_GUARD);
+	UndressHeroModel();
 	g_heroActive = false;
 	g_heroBot = 0;
 	g_heroSavedHealth = 0;
 	g_heroCode[0] = '^0';
+	// The sniper's budget lives with the hero: a flag left on would spend rounds of an event nobody bought.
+	g_sniperLeft = 0;
+	g_sniperArmed = false;
+	g_sniperShots = 0;
+	g_sniperKills = 0;
 	server_cmd("amx_stcam unlock");
 
 	// The infection is a flag per bot, so a reset has to walk the slots or an infected bot comes back
@@ -1400,11 +2196,101 @@ public ResetEventState()
 	// second on the next map with no event on the field to explain it.
 	remove_task(TASK_FIRE_PARTY);
 	remove_task(TASK_BURN);
+	remove_task(TASK_FIRE_SPARK);
 	g_fireActive = false;
 	g_fireIgnited = 0;
 	g_fireTicksApplied = 0;
 	for (new id = 0; id < MAX_SLOTS; id++)
 		g_fireTicks[id] = 0;
+
+	// The freeze is the same shape: a dropped task with a live flag is a bot that cannot move on the next
+	// map with nothing on the field to thaw it, and a remembered grenade from the old map would fire at its
+	// old origin.
+	remove_task(TASK_FLASH_PARTY);
+	remove_task(TASK_FLASH_SCAN);
+	remove_task(TASK_THAW);
+	remove_task(TASK_FLASH_SPARK);
+	g_freezeActive = false;
+	g_freezeBlasts = 0;
+	g_freezeCaught = 0;
+	g_flashCount = 0;
+	for (new id = 0; id < MAX_SLOTS; id++)
+		g_freezeTicks[id] = 0;
+
+	// The five chases: a dropped task with a live flag is a mark that follows a bot onto the next map, a hill
+	// that keeps paying out, or a freeze on sight nobody can undo. ThawAll and the glow reset below cover the
+	// two that write render state and FL_FROZEN; the numbers are dropped here.
+	remove_task(TASK_HILL);
+	remove_task(TASK_MARK);
+	remove_task(TASK_MARK_GLOW);
+	remove_task(TASK_DUEL);
+	remove_task(TASK_STATUE);
+	g_trainActive = false;
+	g_trainPromotions = 0;
+	g_trainWinner = 0;
+	g_statueActive = false;
+	g_statueFrozen = 0;
+	g_markActive = false;
+	g_markBot = 0;
+	g_markRewards = 0;
+	g_markReward[0] = '^0';
+	g_hillActive = false;
+	g_hillTaken = 0;
+	g_duelBellActive = false;
+	g_duels = 0;
+	for (new id = 0; id < MAX_SLOTS; id++)
+	{
+		g_trainLevel[id] = 0;
+		g_trainTop[id] = 0;
+		g_statueHeld[id] = 0;
+		g_markGlow[id] = 0;
+		g_hillDwell[id] = 0.0;
+		g_hillBuffed[id] = 0;
+	}
+
+	// S6 physics: every one of these writes a cvar, a velocity or an entity, so a dropped task with a
+	// live flag is a permanent moon-walk or a weapon box nobody removes. The claims were dropped by
+	// CleanupActive before this call, and RestoreGravity already ran there.
+	if (g_rainActive)
+		EndWeaponRain();
+	remove_task(TASK_AIRSTRIKE);
+	remove_task(TASK_WEAPON_RAIN);
+	remove_task(TASK_QUAKE);
+	remove_task(TASK_FIRE_RING);
+	remove_task(TASK_INVERT);
+	remove_task(TASK_GRAVITY_KNIVES);
+	g_airActive = false;
+	g_airStrikes = 0;
+	g_airLeft = 0;
+	g_airBursts = 0;
+	g_airHits = 0;
+	g_quakeActive = false;
+	g_quakeTicks = 0;
+	g_quakeShoves = 0;
+	g_ringActive = false;
+	g_ringScorched = 0;
+	for (new id = 0; id < MAX_SLOTS; id++)
+		g_ringBurnt[id] = 0;
+	g_invertActive = false;
+	g_invertFlips = 0;
+	g_knivesActive = false;
+	g_knivesGravity = 0;
+
+	// S8 sound: a dropped countdown task with a live flag would keep printing numbers on the next map.
+	remove_task(TASK_COUNTDOWN);
+	g_countdownActive = false;
+	g_countdownLeft = 0;
+	g_quotesActive = false;
+	g_sirenActive = false;
+	g_musicSwapActive = false;
+
+	// The launcher: its dress tick, its rockets in the air and the model field it rewrote are the event's. A
+	// map change with the tick still running would leave a bot wearing a launcher model on the next map, and
+	// a rocket entity would stay in the air forever.
+	if (g_bazookaActive)
+		EndBazookaDrop();
+	remove_task(TASK_BAZOOKA_DRESS);
+	EndBazookaRockets();
 
 	if (g_cannonBot > 0 && g_cannonSavedHealth > 0 && is_user_alive(g_cannonBot))
 		set_user_health(g_cannonBot, g_cannonSavedHealth);
@@ -1423,6 +2309,15 @@ public ResetEventState()
 	g_cannonActive = false;
 	g_cannonBot = 0;
 	g_cannonSavedHealth = 0;
+	// The kit lock's sweep: a dropped weapon on the next map is a box nobody sweeps, and its task would
+	// walk the entity list for ever.
+	remove_task(TASK_KIT_SWEEP);
+	g_kitSweep = false;
+	g_kitRestored = 0;
+	g_kitSwept = 0;
+
+	// The ammo rule of `one_bullet`: a flag left on would arm every respawn on the next map.
+	g_oneBulletActive = false;
 	g_meteorActive = false;
 	g_redLightActive = false;
 	g_redFrozen = false;
@@ -1504,6 +2399,9 @@ public EffectGlassCannon()
 	}
 
 	g_cannonActive = true;
+	// Read before the bot is armed: ArmGlassCannon hands the camera its lock, and the parameter table is
+	// only this donation's inside this call.
+	g_cannonSeconds = floatround(EffectSeconds(EVENT_SECONDS));
 	ArmGlassCannon(g_cannonBot);
 	set_task(0.2, "TaskCannonAmmo", TASK_CANNON_AMMO, "", 0, "b");
 
@@ -1531,6 +2429,10 @@ stock ArmGlassCannon(id)
 	give_item(id, "weapon_knife");
 	set_user_health(id, g_cannonHealth);
 	set_user_rendering(id, kRenderFxGlowShell, 255, 0, 0, kRenderNormal, 22);
+
+	// The camera follows the cannon, and follows it again after a death: the lock the role took went out
+	// with the body it was taken for.
+	LockCameraOn(id, g_cannonSeconds);
 
 	log_amx("glass_cannon: bot %d armed with %d hp (was %d)", id, g_cannonHealth, g_cannonSavedHealth);
 }
@@ -1775,30 +2677,41 @@ stock Float:DuelSpeed()
 	return speed * 1.4;
 }
 
-/* A weapon switch that is not the knife: the duel is knives, so the weapon goes and the knife comes
-   back. Bots pick weapons up from the ground and csdm_lite re-arms on respawn; both end here. */
+/* A weapon switch that is not the event's weapon. The engine tells us the bot now holds something else,
+   and the answer is the same for every code that arms a bot: the kit goes back. `lightsaber_duel` keeps
+   its own branch because its log line is what the live checks read. */
 public OnCurWeapon(id)
 {
-	if (!g_duelActive || !is_user_alive(id))
+	if (!is_user_alive(id))
 		return;
 
-	new weapon = read_data(2);
-	if (weapon == CSW_KNIFE || weapon == 0)
-		return;
+	if (g_duelActive)
+	{
+		new weapon = read_data(2);
+		if (weapon == CSW_KNIFE || weapon == 0)
+			return;
 
-	StripWeapons(id);
-	give_item(id, "weapon_knife");
-	engclient_cmd(id, "weapon_knife");
-	log_amx("lightsaber_duel: weapon %d taken from bot %d", weapon, id);
+		StripWeapons(id);
+		give_item(id, "weapon_knife");
+		engclient_cmd(id, "weapon_knife");
+		log_amx("lightsaber_duel: weapon %d taken from bot %d", weapon, id);
+		return;
+	}
+
+	EnforceKit(id);
 }
 
-/* `weaponbox` is a dropped weapon. During the duel it is not picked up: HAM_SUPERCEDE leaves it on
-   the ground untouched. Players (the spectator camera) are not affected. */
+/* `weaponbox` is a dropped weapon. While any event owns a bot's kit it is not picked up: HAM_SUPERCEDE
+   leaves it on the ground untouched, and the sweep removes it a moment later. Players (the spectator
+   camera) are not affected. */
 public OnWeaponBoxTouch(ent, id)
 {
-	if (!g_duelActive || id <= 0 || id > get_maxplayers())
+	if (id <= 0 || id > get_maxplayers())
 		return HAM_IGNORED;
 	if (!is_user_bot(id) || !is_user_alive(id))
+		return HAM_IGNORED;
+
+	if (!IsKitLocked(id))
 		return HAM_IGNORED;
 
 	return HAM_SUPERCEDE;
@@ -1810,33 +2723,42 @@ public EffectOneBullet()
 {
 	BeginEvent("one_bullet");
 
+	g_oneBulletActive = true;
+
 	new bots;
 	for (new id = 1; id <= get_maxplayers(); id++)
 	{
 		if (!IsBotAlive(id))
 			continue;
 
-		new weapons[32];
-		new count;
-		get_user_weapons(id, weapons, count);
-
-		for (new i = 0; i < count; i++)
-		{
-			if (weapons[i] == CSW_KNIFE)
-				continue;
-			cs_set_user_bpammo(id, weapons[i], 0);
-		}
-
-		new active = get_pdata_cbase(id, OFFSET_ACTIVE_ITEM, 5);
-		if (active > 0)
-			cs_set_weapon_ammo(active, 1);
-
+		OneBulletArm(id);
 		bots++;
 	}
 
 	StartEffectTimer("one_bullet", EffectSeconds(EVENT_SECONDS));
 	log_amx("one_bullet: %d bots down to one round", bots);
 	DonorSay("ONE BULLET EACH");
+}
+
+/* One round in the clip and nothing in reserve, for one bot. A stock of its own because two paths apply the
+   same rule: the handler for every bot alive when the money arrives, and the respawn for a bot csdm_lite
+   arms again half a second after it died. */
+stock OneBulletArm(id)
+{
+	new weapons[32];
+	new count;
+	get_user_weapons(id, weapons, count);
+
+	for (new i = 0; i < count; i++)
+	{
+		if (weapons[i] == CSW_KNIFE)
+			continue;
+		cs_set_user_bpammo(id, weapons[i], 0);
+	}
+
+	new active = get_pdata_cbase(id, OFFSET_ACTIVE_ITEM, 5);
+	if (active > 0)
+		cs_set_weapon_ammo(active, 1);
 }
 
 /* ---------- the hero modes: nemesis and survivor (S1 of docs/activities/systems.md) ---------- */
@@ -1891,18 +2813,118 @@ public EffectJuggernaut()
 	DonorSay("THE JUGGERNAUT: KILL HIM AND YOU BECOME HIM");
 }
 
-public EffectAssassin()
+public EffectSniper()
 {
-	BeginEvent("assassin");
+	BeginEvent("sniper");
 
-	if (!StartHero("assassin", "weapon_knife"))
+	// The budget is read before the hero is armed: ArmHero puts the role on the bot, and the rounds are a
+	// part of the role - a bot that respawns gets a fresh five, exactly like a fresh magazine.
+	g_sniperRounds = ParamInt("rounds", SNIPER_ROUNDS_DEFAULT);
+	if (g_sniperRounds < 1)
+		g_sniperRounds = SNIPER_ROUNDS_DEFAULT;
+	if (g_sniperRounds > SNIPER_ROUNDS_MAX)
+		g_sniperRounds = SNIPER_ROUNDS_MAX;
+
+	if (!StartHero("sniper", SNIPER_WEAPON))
 	{
-		log_amx("assassin: no bots are connected");
+		log_amx("sniper: no bots are connected");
 		return;
 	}
 
-	StartEffectTimer("assassin", EffectSeconds(45.0));
-	DonorSay("AN ASSASSIN IS HUNTING THE FIELDS");
+	StartEffectTimer("sniper", EffectSeconds(45.0));
+	log_amx("sniper: bot %d, %d round(s), %d hp, camera locked", g_heroBot, g_sniperRounds, g_heroHealth);
+	DonorSay("ONE BOT, ONE AWP, FIVE ROUNDS");
+}
+
+/* The launcher in the sniper's hands: the budget as clip ammo and an empty reserve. Two callers - the start
+   of the event, and every respawn, because the role is a weapon and csdm_lite re-arms the slot after a
+   death. */
+stock SniperArm(id)
+{
+	if (!IsBotAlive(id))
+		return;
+
+	g_sniperLeft = g_sniperRounds;
+	g_sniperArmed = true;
+	SniperTopUp(id);
+}
+
+/* The clip follows the budget and the reserve stays empty. The reserve is the number that matters:
+   csdm_lite tops it up once a second, so a budget kept only in the reserve would be a full AWP before the
+   viewer saw the first reload. */
+stock SniperTopUp(id)
+{
+	new weapon = FindWeaponEntity(id, SNIPER_WEAPON);
+	if (weapon <= 0)
+		return;
+
+	cs_set_user_bpammo(id, CSW_AWP, 0);
+	if (g_sniperLeft > 0)
+		cs_set_weapon_ammo(weapon, g_sniperLeft);
+}
+
+/* The trigger of the AWP. The shot is the engine's business - the bolt cycle, the bang and the damage are
+   what an AWP does; what the event adds is the budget. */
+public OnSniperAttack(weapon)
+{
+	new owner = pev(weapon, pev_owner);
+	if (owner > 0 && IsBotAlive(owner) && IsKitLocked(owner) && !IsKitWeapon(owner, SNIPER_WEAPON))
+	{
+		EnforceKit(owner);
+		return HAM_SUPERCEDE;
+	}
+
+	if (!g_sniperArmed || !g_heroActive || !equali(g_heroCode, "sniper"))
+		return HAM_IGNORED;
+
+	if (pev(weapon, pev_owner) != g_heroBot)
+		return HAM_IGNORED;
+
+	g_sniperShots++;
+	g_sniperLeft--;
+
+	if (g_sniperLeft > 0)
+	{
+		SniperTopUp(g_heroBot);
+		return HAM_IGNORED;
+	}
+
+	// Out of rounds: the launcher goes and the rest of the event is a knife fight. Taking the AWP away is
+	// what makes the promise hold - left dry, csdm_lite would refill it inside a second.
+	g_sniperArmed = false;
+	StripWeapons(g_heroBot);
+	give_item(g_heroBot, "weapon_knife");
+	engclient_cmd(g_heroBot, "weapon_knife");
+	Announce("THE SNIPER IS OUT OF ROUNDS");
+	log_amx("sniper: %d shot(s) spent, the AWP is off the field", g_sniperShots);
+	return HAM_IGNORED;
+}
+
+/* A kill buys a round back: five shots that have to count are the loop of the mode, and the count in the
+   log is what says whether the trap worked. */
+stock SniperReward()
+{
+	g_sniperKills++;
+
+	if (!g_sniperArmed || g_sniperLeft >= g_sniperRounds)
+		return;
+
+	g_sniperLeft++;
+	SniperTopUp(g_heroBot);
+	Announce("A KILL BUYS A ROUND");
+	log_amx("sniper: kill %d, %d round(s) left", g_sniperKills, g_sniperLeft);
+}
+
+/* The weapon entity a bot carries: `pev_owner` is the player, and the classname is the weapon class. */
+stock FindWeaponEntity(id, const classname[])
+{
+	new ent = -1;
+	while ((ent = engfunc(EngFunc_FindEntityByString, ent, "classname", classname)) > 0)
+	{
+		if (pev(ent, pev_owner) == id)
+			return ent;
+	}
+	return 0;
 }
 
 public EffectOutbreak()
@@ -1965,6 +2987,10 @@ stock bool:StartHero(const code[], const weapon[])
 
 	g_heroKnife = ParamInt("knife", 0);
 
+	// The clock is read here, once: the guard task, the camera lock and the replay of the role on another
+	// bot all need it long after the parameter table belongs to the next donation.
+	g_heroSeconds = floatround(EffectSeconds(60.0));
+
 	g_heroSpeed = ParamFloat("speed", 1.3);
 	if (g_heroSpeed < 1.0)
 		g_heroSpeed = 1.0;
@@ -2025,35 +3051,80 @@ stock ArmHero(id)
 		speed = 320.0;
 	set_user_maxspeed(id, speed * g_heroSpeed);
 
-	// Semi-transparent instead of a glow: the assassin is a silhouette in the frame, which reads as
-	// "somebody is hunting" without hiding the bot from the viewer the way full invisibility would.
+	// Semi-transparent instead of a glow: `alpha` was the silhouette of the assassin mode, and the machinery
+	// stays for the next hero that has to be hard to see without being invisible. No code sets it today, so
+	// every hero on sale draws the red shell the viewer can follow.
 	if (g_heroAlpha > 0)
 		set_user_rendering(id, kRenderFxNone, 0, 0, 0, kRenderTransAlpha, g_heroAlpha);
 	else
 		set_user_rendering(id, kRenderFxGlowShell, 255, 0, 0, kRenderNormal, 20);
 
-	LockCameraOn(id);
+	// The sniper's budget is a part of the role like the health: a hero that comes back from a death (or a
+	// role that moves to another bot) carries a fresh five, or the event ends with its first kill.
+	if (equali(g_heroCode, "sniper"))
+		SniperArm(id);
+
+	// The look comes after the weapons: cs_set_user_model rebuilds the player model around the weapon the
+	// bot holds, so a model set before the kit arrives is a body the engine redraws with the wrong hand.
+	DressHeroModel(id);
+	LockCameraOn(id, g_heroSeconds);
 }
 
-/* Hands the camera to the hero for the rest of the clock: the money bought that bot's shots, and the
-   director follows whoever looks busiest (docs/activities/roadmap.md, stage 1). The nickname goes out
-   the way `stream_cam status` publishes it - spaces as underscores - and the plugin reads it back. */
-stock LockCameraOn(id)
+/* Puts the hero's own look on the bot. ArmHero is the only way into the role - the event start, the role
+   moving to another bot and every respawn all go through it - so the look survives a death for the same
+   reason the health does. */
+stock DressHeroModel(id)
 {
 	if (id <= 0 || !is_user_connected(id))
 		return;
 
+	if (equali(g_heroCode, "nemesis") && g_nemesisLook)
+		cs_set_user_model(id, NEMESIS_MODEL, true);
+	else if (equali(g_heroCode, "survivor") && g_survivorLook)
+		cs_set_user_model(id, SURVIVOR_MODEL, true);
+	else
+		return;
+
+	g_heroLookSet = true;
+	log_amx("%s: bot %d wears the %s model", g_heroCode, id, g_heroCode);
+}
+
+/* Takes the hero's look off the bot that wears it. One stock for the three ways out - the effect's clock,
+   a full reset, and the role moving to another bot - because a player model is render state on the slot:
+   the bot that was the nemesis keeps the skin after it respawns, and resetting only the *new* hero leaves
+   a second nemesis on the field for the rest of the map. */
+stock UndressHeroModel()
+{
+	if (g_heroLookSet && g_heroBot > 0 && is_user_connected(g_heroBot))
+		cs_reset_user_model(g_heroBot);
+
+	g_heroLookSet = false;
+}
+
+/* Hands the camera to the bot an event landed on: the money bought that bot's shots, and the director
+   follows whoever looks busiest (docs/activities/roadmap.md, stage 1).
+
+   The target goes out as `#userid`, not as a nickname. `amx_stcam lock` resolves a name against the player
+   list of the *other* plugin, and a name is not stable: a space arrives as an underscore, the donor tag
+   renames the bot at the top of the board, and a bot whose own nick has an underscore never matches at all.
+   The measured consequence on the stream was an event that ran, a lock in the log, and a picture that
+   stayed on the director's bot: the camera "ignoring" a paid hero. The userid is one token that cannot be
+   mangled. `seconds` is the event's own clock, so a lock whose undo never runs expires by itself instead of
+   holding somebody else's hero off the screen. */
+stock LockCameraOn(id, seconds)
+{
+	if (id <= 0 || !is_user_connected(id))
+		return;
+
+	if (seconds < 1)
+		seconds = 1;
+
+	new userid = get_user_userid(id);
+	server_cmd("amx_stcam lock #%d %d", userid, seconds);
+
 	new name[VALUE_LEN];
 	get_user_name(id, name, charsmax(name));
-	for (new i = 0, len = strlen(name); i < len; i++)
-	{
-		if (name[i] == ' ')
-			name[i] = '_';
-	}
-
-	new seconds = ParamInt("seconds", 60);
-	server_cmd("amx_stcam lock %s %d", name, seconds);
-	log_amx("hero camera lock: %s for %d s", name, seconds);
+	log_amx("camera lock: %s (#%d) for %d s", name, userid, seconds);
 }
 
 public TaskHeroGuard()
@@ -2071,6 +3142,11 @@ public TaskHeroGuard()
 	new next = 0;
 	if (g_heroToKiller && g_heroNext > 0 && IsBotAlive(g_heroNext))
 		next = g_heroNext;
+
+	// The dead bot loses the look before the role moves: `cs_set_user_model` is per slot and survives a
+	// respawn, so a carrier that dies mid-event would come back wearing the nemesis skin with no event
+	// left to take it off.
+	UndressHeroModel();
 
 	g_heroNext = 0;
 	g_heroBot = next > 0 ? next : PickRandomBot();
@@ -2098,6 +3174,12 @@ stock EndHero(const code[])
 
 	remove_task(TASK_HERO_GUARD);
 
+	// The look goes with the role. A player model is render state on the slot and outlives a clock on its
+	// own, and a bot that keeps the nemesis' skin after the event is the bug the costume rule exists for.
+	// Only when this file set it: the reset lifts the model lock of anybody, and the hex_wave chicken on
+	// the same slot must not be taken off by a hero's clock.
+	UndressHeroModel();
+
 	if (ClaimRelease(CLAIM_HEALTH, owner) && g_heroBot > 0 && g_heroSavedHealth > 0 && is_user_alive(g_heroBot))
 		set_user_health(g_heroBot, g_heroSavedHealth);
 
@@ -2117,10 +3199,20 @@ stock EndHero(const code[])
 	if (ClaimRelease(CLAIM_CAMERA, owner))
 		server_cmd("amx_stcam unlock");
 
+	// The counts go out with the role: "five rounds spent, one kill" and "five rounds spent, five kills"
+	// look the same on the kill feed, and only the log can say which trap the viewer watched.
+	if (equal(code, "sniper"))
+		log_amx("sniper ended: %d shot(s) spent, %d kill(s), %d round(s) left",
+			g_sniperShots, g_sniperKills, g_sniperLeft);
+
 	g_heroActive = false;
 	g_heroBot = 0;
 	g_heroSavedHealth = 0;
 	g_heroCode[0] = '^0';
+	g_sniperLeft = 0;
+	g_sniperArmed = false;
+	g_sniperShots = 0;
+	g_sniperKills = 0;
 }
 
 /* ---------- outbreak: a knife kill converts the victim (S1) ---------- */
@@ -2607,6 +3699,7 @@ public EffectHexWave()
 
 	g_hexActive = true;
 	g_hexBot = bot;
+	g_hexSeconds = floatround(EffectSeconds(20.0));
 
 	new owner = FindEffect("hex_wave");
 	ClaimTake(CLAIM_SPEED, owner, floatround(HEX_SPEED * 100.0));
@@ -2635,6 +3728,10 @@ stock ArmHexed(id, bool:first)
 	StripWeapons(id);
 	set_user_maxspeed(id, HexSpeed());
 	set_user_rendering(id, kRenderFxGlowShell, 255, 255, 0, kRenderNormal, 18);
+
+	// The chicken is the joke, and a joke off camera is a line in the log: the lock follows the bot the
+	// event landed on, and follows it again after a respawn.
+	LockCameraOn(id, g_hexSeconds);
 
 	if (first)
 	{
@@ -2799,8 +3896,10 @@ stock FindNearestUnhit(id, hit[])
 }
 
 /* TE_BEAMPOINTS with the stock laser sprite, precached in plugin_precache(). A zero index means the
-   sprite is missing and the bolt would be invisible, so it is skipped instead of drawn as nothing. */
-stock DrawBeam(const Float:start[3], const Float:end[3])
+   sprite is missing and the bolt would be invisible, so it is skipped instead of drawn as nothing.
+   The colour is a parameter because one helper draws three things: the chain lightning bolt (blue), the
+   rocket's own trail (orange) and the shockwave ring of an explosion. */
+stock DrawBeamColour(const Float:start[3], const Float:end[3], red, green, blue, life = 8, width = 8)
 {
 	if (!g_beamSprite)
 		return;
@@ -2816,15 +3915,115 @@ stock DrawBeam(const Float:start[3], const Float:end[3])
 	write_short(g_beamSprite);
 	write_byte(0);
 	write_byte(0);
-	write_byte(8);
-	write_byte(8);
+	write_byte(life);
+	write_byte(width);
 	write_byte(0);
-	write_byte(180);
-	write_byte(220);
-	write_byte(255);
+	write_byte(red);
+	write_byte(green);
+	write_byte(blue);
 	write_byte(200);
 	write_byte(0);
 	message_end();
+}
+
+stock DrawBeam(const Float:start[3], const Float:end[3])
+{
+	DrawBeamColour(start, end, 180, 220, 255);
+}
+
+/* ---------- sound anchors: entity 0 is the world origin, not "everywhere" ----------
+   `emit_sound(0, ...)` emits from the world and ATTN_NORM then fades the sample with the distance from
+   (0 0 0) - on a fight-yard map the grenade bang arrived quieter than a footstep, while the stream log
+   showed it as played. A sound therefore comes from a small invisible entity parked where the thing
+   happened. Four are created on first use and reused in a ring: removing an entity cuts its own sample, and
+   one per bang would churn the entity list for the whole event. */
+#define SOUND_ANCHORS 4
+new g_soundAnchor[SOUND_ANCHORS];
+new g_soundAnchorNext;
+
+stock PlaySoundAt(const Float:origin[3], const sample[], channel = CHAN_AUTO, pitch = PITCH_NORM)
+{
+	new slot = g_soundAnchorNext;
+	g_soundAnchorNext = (g_soundAnchorNext + 1) % SOUND_ANCHORS;
+
+	new ent = g_soundAnchor[slot];
+	if (ent <= 0)
+	{
+		// Created on first use: an entity made in plugin_init exists before the world has its own, and on
+		// some builds that is an edict which never emits a sample.
+		ent = engfunc(EngFunc_CreateNamedEntity, engfunc(EngFunc_AllocString, "info_target"));
+		if (ent <= 0)
+		{
+			// No anchor: the world origin is wrong, but silence is worse than a quiet bang.
+			emit_sound(0, channel, sample, VOL_NORM, ATTN_NORM, 0, pitch);
+			return;
+		}
+
+		set_pev(ent, pev_solid, SOLID_NOT);
+		set_pev(ent, pev_movetype, MOVETYPE_NONE);
+		g_soundAnchor[slot] = ent;
+	}
+
+	// SetOrigin rather than `pev_origin`: the engine relinks the edict, and `emit_sound` reads the origin the
+	// entity was linked at.
+	engfunc(EngFunc_SetOrigin, ent, origin);
+	emit_sound(ent, channel, sample, VOL_NORM, ATTN_NORM, 0, pitch);
+}
+
+/* The shockwave of an explosion: a ring of beams on the blast's own radius, so the viewer reads how far
+   the damage reaches instead of guessing at it from the sprite. Built from `TE_BEAMPOINTS` - the one beam
+   message this set already uses live - and not from `TE_BEAMCYLINDER`, whose byte layout has never been
+   verified on this server: a temp entity with the wrong byte count desynchronises every client, which is
+   a full server of disconnected players, not a cosmetic bug. */
+#define SHOCKWAVE_SEGMENTS 12
+#define SHOCKWAVE_LIFE 8
+stock Shockwave(const Float:origin[3], Float:radius, red, green, blue)
+{
+	new Float:step = 360.0 / float(SHOCKWAVE_SEGMENTS);
+	new Float:from[3], Float:to[3];
+	new Float:angle;
+
+	for (new i = 0; i < SHOCKWAVE_SEGMENTS; i++)
+	{
+		angle = step * float(i);
+		from[0] = origin[0] + floatcos(angle, degrees) * radius;
+		from[1] = origin[1] + floatsin(angle, degrees) * radius;
+		from[2] = origin[2] + 8.0;
+
+		angle += step;
+		to[0] = origin[0] + floatcos(angle, degrees) * radius;
+		to[1] = origin[1] + floatsin(angle, degrees) * radius;
+		to[2] = from[2];
+
+		DrawBeamColour(from, to, red, green, blue, SHOCKWAVE_LIFE, 10);
+	}
+}
+
+/* The ice of the freeze: shard columns standing in the blast, pale blue and leaning inwards, plus the ring
+   that says how far it reaches. Beams and not sprites - a sprite hung on an entity draws as a black square
+   (docs/activities/assets.md) - and no new asset: the laser sprite is already precached. Without this the
+   freeze reads as "the bots stopped", which is also what a stuck server looks like. */
+#define ICE_SHARDS 6
+stock IceShards(const Float:center[3], Float:radius)
+{
+	new Float:step = 360.0 / float(ICE_SHARDS);
+	new Float:reach = radius * 0.45;
+
+	for (new i = 0; i < ICE_SHARDS; i++)
+	{
+		new Float:angle = step * float(i) + 12.0;
+		new Float:from[3], Float:to[3];
+
+		from[0] = center[0] + floatcos(angle, degrees) * reach;
+		from[1] = center[1] + floatsin(angle, degrees) * reach;
+		from[2] = center[2] - 34.0;
+
+		to[0] = center[0] + floatcos(angle, degrees) * (reach * 0.55);
+		to[1] = center[1] + floatsin(angle, degrees) * (reach * 0.55);
+		to[2] = center[2] + 30.0 + float(i) * 6.0;
+
+		DrawBeamColour(from, to, 200, 240, 255, 12, 14);
+	}
 }
 
 stock EndChainLightning()
@@ -2980,6 +4179,10 @@ public EffectHeroRoulette()
 	g_rouletteBot = bot;
 	g_rouletteSavedHealth = 0;
 
+	// The camera goes on the candidate when it is picked, not when the power fires: the reveal is the
+	// product, and a cut ten seconds later shows the aftermath instead of the moment.
+	LockCameraOn(bot, floatround(EffectSeconds(45.0)));
+
 	new Float:delay = random_float(6.0, 12.0);
 	set_task(delay, "TaskRoulette", TASK_ROULETTE);
 	StartEffectTimer("hero_roulette", EffectSeconds(45.0));
@@ -3057,22 +4260,40 @@ stock RouletteFire()
 	log_amx("hero_roulette: '%s' fired on bot %d", power, g_rouletteBot);
 }
 
-/* `pool` is a list of names, not an index: the catalogue can turn a power off without a recompile, and
-   an unknown word is skipped instead of turning into a power nobody asked for. */
+/* `pool` is a list of names, not an index: the catalogue can turn a power off without a recompile, and an
+   unknown word is skipped instead of turning into a power nobody asked for. The list arrives as
+   `power1=.. power4=..`, one token per name, because the engine splits an RCON line at commas - the
+   comma-joined string this used to read only ever arrived as its first entry. */
 stock RoulettePool()
 {
-	new pool[VALUE_LEN];
-	ParamCopy("pool", pool, charsmax(pool), "invisible,speed,health,deagle");
-
 	new mask;
-	if (containi(pool, "invisible") >= 0)
-		mask |= (1 << ROULETTE_INVISIBLE);
-	if (containi(pool, "speed") >= 0)
-		mask |= (1 << ROULETTE_SPEED);
-	if (containi(pool, "health") >= 0)
-		mask |= (1 << ROULETTE_HEALTH);
-	if (containi(pool, "deagle") >= 0)
-		mask |= (1 << ROULETTE_DEAGLE);
+	new key[KEY_LEN];
+	new value[KEY_LEN];
+
+	for (new i = 1; i <= ROULETTE_POWERS; i++)
+	{
+		format(key, charsmax(key), "power%d", i);
+		if (!ParamCopy(key, value, charsmax(value), ""))
+			continue;
+
+		for (new power = 0; power < ROULETTE_POWERS; power++)
+		{
+			new name[16];
+			RouletteName(power, name, charsmax(name));
+			if (!equali(value, name))
+				continue;
+			mask |= (1 << power);
+			break;
+		}
+	}
+
+	// No list at all is "the whole pool": an event that pays for a random power and then names no power is a
+	// donation that shows nothing.
+	if (mask == 0)
+	{
+		log_amx("hero_roulette: no power list in the command, the whole pool is in");
+		mask = (1 << ROULETTE_POWERS) - 1;
+	}
 
 	return mask;
 }
@@ -3222,6 +4443,12 @@ public EffectFireGrenades()
 	if (g_fireBurn > FIRE_MAX_BURN)
 		g_fireBurn = FIRE_MAX_BURN;
 
+	g_fireRadius = ParamInt("radius", SPARK_RADIUS_DEFAULT);
+	if (g_fireRadius < 50)
+		g_fireRadius = 50;
+	if (g_fireRadius > SPARK_MAX_RADIUS)
+		g_fireRadius = SPARK_MAX_RADIUS;
+
 	if (!PickRandomBot())
 	{
 		log_amx("fire_grenades: no bots are alive");
@@ -3242,9 +4469,13 @@ public EffectFireGrenades()
 	// them, and a thrown grenade is gone from the inventory the moment it leaves the hand.
 	set_task(0.5, "TaskFireParty", TASK_FIRE_PARTY, "", 0, "b");
 	set_task(BURN_TICK, "TaskBurn", TASK_BURN, "", 0, "b");
+	// The field's own blast: the grenade in a bot's hand is the premise, this is what makes the event happen
+	// when the bot never lets go of it.
+	set_task(SPARK_PERIOD, "TaskFireSpark", TASK_FIRE_SPARK, "", 0, "b");
 
 	StartEffectTimer("fire_grenades", EffectSeconds(30.0));
-	log_amx("fire_grenades: HE on the field, %d damage a tick for %d s", g_fireDamage, g_fireBurn);
+	log_amx("fire_grenades: HE on the field, %d damage a tick for %d s, a blast every %.1f s in %d units",
+		g_fireDamage, g_fireBurn, SPARK_PERIOD, g_fireRadius);
 	DonorSay("EVERYTHING BURNS");
 }
 
@@ -3263,6 +4494,55 @@ public TaskFireParty()
 
 		if (!user_has_weapon(id, CSW_HEGRENADE))
 			give_item(id, "weapon_hegrenade");
+	}
+}
+
+/* One blast of the event's own, every SPARK_PERIOD, next to a bot the camera is already on. The damage is
+   small and `DMG_BLAST` is the same label a thrown HE carries, so the burn comes from OnTakeDamage - the
+   path that was measured with meteor_shower providing the blasts, not a second ignition of its own. */
+public TaskFireSpark()
+{
+	if (!g_fireActive)
+	{
+		remove_task(TASK_FIRE_SPARK);
+		return;
+	}
+
+	new pivot = PickRandomBot();
+	if (!pivot)
+		return;
+
+	new Float:center[3];
+	pev(pivot, pev_origin, center);
+
+	message_begin(MSG_BROADCAST, SVC_TEMPENTITY);
+	write_byte(TE_EXPLOSION);
+	write_coord(floatround(center[0]));
+	write_coord(floatround(center[1]));
+	write_coord(floatround(center[2]));
+	write_short(g_meteorSprite);
+	write_byte(30);
+	write_byte(15);
+	write_byte(0);
+	message_end();
+
+	// Emitted from the blast, not from the world: `emit_sound(0, ...)` plays at the map origin and the
+	// distance from there fades the bang out, which is why a grenade the whole field could see went unheard.
+	PlaySoundAt(center, SPARK_SOUND, CHAN_AUTO, PITCH_NORM);
+
+	// Read from the snapshot, not from the parameter table: this runs from a timer, long after the command.
+	new radius = g_fireRadius;
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (!IsBotAlive(id))
+			continue;
+
+		new Float:where[3];
+		pev(id, pev_origin, where);
+		if (get_distance_f(center, where) > float(radius))
+			continue;
+
+		ExecuteHamB(Ham_TakeDamage, id, 0, 0, float(FIRE_SPARK_DAMAGE), DMG_BLAST);
 	}
 }
 
@@ -3314,6 +4594,7 @@ stock EndFireGrenades()
 {
 	remove_task(TASK_FIRE_PARTY);
 	remove_task(TASK_BURN);
+	remove_task(TASK_FIRE_SPARK);
 
 	new owner = FindEffect("fire_grenades");
 	ClaimRelease(CLAIM_WEAPONS, owner);
@@ -3328,12 +4609,2258 @@ stock EndFireGrenades()
 		g_fireTicks[id] = 0;
 	}
 
-	if (g_fireIgnited > 0)
-		log_amx("fire_grenades ended: %d bot(s) burned, %d tick(s) of fire", g_fireIgnited, g_fireTicksApplied);
+	// Always, not only on a hit: "nothing caught fire" is a result the operator has to be able to read, the
+	// same reason `freeze_nades` reports its own count unconditionally.
+	log_amx("fire_grenades ended: %d bot(s) burned, %d tick(s) of fire", g_fireIgnited, g_fireTicksApplied);
 
 	g_fireActive = false;
 	g_fireIgnited = 0;
 	g_fireTicksApplied = 0;
+}
+
+/* FREEZE GRENADES. The field keeps flashbangs in hand, and a flashbang that goes off freezes every bot
+   inside `radius` for `freeze` seconds under a blue shell. There is no damage hook to lean on here - a
+   flashbang never reaches OnTakeDamage - so the trigger is the grenade entity itself, scanned on a clock:
+   see the TASK_FLASH_SCAN block above for why that is the only fact the engine leaves behind. */
+public EffectFreezeNades()
+{
+	BeginEvent("freeze_nades");
+
+	g_freezeSeconds = ParamInt("freeze", 6);
+	if (g_freezeSeconds < 1)
+		g_freezeSeconds = 1;
+	if (g_freezeSeconds > FREEZE_MAX_SECONDS)
+		g_freezeSeconds = FREEZE_MAX_SECONDS;
+
+	new radius = ParamInt("radius", 300);
+	if (radius < 50)
+		radius = 50;
+	if (radius > FREEZE_MAX_RADIUS)
+		radius = FREEZE_MAX_RADIUS;
+	g_freezeRadius = float(radius);
+
+	if (!PickRandomBot())
+	{
+		log_amx("freeze_nades: no bots are alive");
+		return;
+	}
+
+	g_freezeActive = true;
+	g_freezeBlasts = 0;
+	g_freezeCaught = 0;
+	g_flashCount = 0;
+	for (new id = 0; id < MAX_SLOTS; id++)
+		g_freezeTicks[id] = 0;
+
+	new owner = FindEffect("freeze_nades");
+	ClaimTake(CLAIM_FREEZE, owner, 1);
+	ClaimTake(CLAIM_WEAPONS, owner, 1);
+
+	// Half a second, like the HE party: a thrown flashbang leaves the inventory, so the field has to be
+	// re-armed for a blast to be possible at all.
+	set_task(0.5, "TaskFlashParty", TASK_FLASH_PARTY, "", 0, "b");
+	set_task(FLASH_SCAN, "TaskFlashScan", TASK_FLASH_SCAN, "", 0, "b");
+	set_task(THAW_TICK, "TaskThaw", TASK_THAW, "", 0, "b");
+	// Same reason as the fire spark: the flashbang in a bot's hand is the premise, the pulse is the event.
+	set_task(SPARK_PERIOD, "TaskFlashSpark", TASK_FLASH_SPARK, "", 0, "b");
+
+	StartEffectTimer("freeze_nades", EffectSeconds(30.0));
+	log_amx("freeze_nades: flashbangs on the field, %d s of freeze in %.0f units", g_freezeSeconds, g_freezeRadius);
+	DonorSay("EVERYTHING FREEZES");
+}
+
+public TaskFlashParty()
+{
+	if (!g_freezeActive)
+	{
+		remove_task(TASK_FLASH_PARTY);
+		return;
+	}
+
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (!IsBotAlive(id))
+			continue;
+
+		if (!user_has_weapon(id, CSW_FLASHBANG))
+			give_item(id, "weapon_flashbang");
+	}
+}
+
+/* One pulse of the event's own, every SPARK_PERIOD, on a random bot. The bang is the flashbang's own sound
+   played from that bot, because without a grenade in the picture the sound is what says "something went
+   off"; the freeze itself is the same FlashBlast a real flashbang calls. */
+public TaskFlashSpark()
+{
+	if (!g_freezeActive)
+	{
+		remove_task(TASK_FLASH_SPARK);
+		return;
+	}
+
+	new pivot = PickRandomBot();
+	if (!pivot)
+		return;
+
+	new Float:center[3];
+	pev(pivot, pev_origin, center);
+
+	// The bang is the freeze's own ice, played from the point of the blast: the event sells ice, not a flash,
+	// and entity 0 would put the sample at the map origin where nobody stands (see PlaySoundAt). The pitch is
+	// varied so four pulses in one run do not read as one sample on repeat.
+	PlaySoundAt(center, g_freezeIce ? FREEZE_SOUND : FLASH_SOUND, CHAN_AUTO, 88 + random_num(0, 24));
+	FlashBlast(center);
+}
+
+/* The trigger. Each pass does two things: it records what is in the air (entity index, origin, fuse), and it
+   compares that with the previous pass. A remembered flashbang that is no longer there, with a fuse that has
+   run out within this stride, is a detonation at the last origin it was seen at. */
+public TaskFlashScan()
+{
+	if (!g_freezeActive)
+	{
+		remove_task(TASK_FLASH_SCAN);
+		return;
+	}
+
+	new Float:now = get_gametime();
+
+	new seenEnt[FLASH_MAX_TRACKED];
+	new Float:seenOrigin[FLASH_MAX_TRACKED][3];
+	new Float:seenFuse[FLASH_MAX_TRACKED];
+	new seenCount;
+
+	new ent;
+	while (seenCount < FLASH_MAX_TRACKED && (ent = engfunc(EngFunc_FindEntityByString, ent, "classname", "grenade")) > 0)
+	{
+		if (!IsFlashGrenade(ent))
+			continue;
+
+		new Float:fuse = Float:pev(ent, pev_dmgtime);
+		// Without a fuse the grenade is not armed yet; with a fuse in the future it is still in the air.
+		if (fuse <= 0.0)
+			continue;
+
+		new Float:origin[3];
+		pev(ent, pev_origin, origin);
+
+		seenEnt[seenCount] = ent;
+		seenOrigin[seenCount][0] = origin[0];
+		seenOrigin[seenCount][1] = origin[1];
+		seenOrigin[seenCount][2] = origin[2];
+		seenFuse[seenCount] = fuse;
+		seenCount++;
+	}
+
+	for (new i = 0; i < g_flashCount; i++)
+	{
+		if (FlashStillThere(i, seenEnt, seenFuse, seenCount))
+			continue;
+
+		// Gone at or within one stride of its own fuse: the entity left the world for some other reason (a
+		// round restart, a map change, a plugin clearing grenades) if its fuse was still further out, and
+		// freezing the field for that would be a lie.
+		if (g_flashFuse[i] > now + FLASH_SCAN)
+			continue;
+
+		FlashBlast(g_flashOrigin[i]);
+	}
+
+	g_flashCount = seenCount;
+	for (new i = 0; i < seenCount; i++)
+	{
+		g_flashEnt[i] = seenEnt[i];
+		g_flashOrigin[i][0] = seenOrigin[i][0];
+		g_flashOrigin[i][1] = seenOrigin[i][1];
+		g_flashOrigin[i][2] = seenOrigin[i][2];
+		g_flashFuse[i] = seenFuse[i];
+	}
+}
+
+/* Same entity index *and* the same fuse. The index alone is not enough: the engine reuses the slot of a
+   detonated grenade for the next one, and that one carries a fuse of its own. */
+stock bool:FlashStillThere(index, const seenEnt[], const Float:seenFuse[], seenCount)
+{
+	for (new j = 0; j < seenCount; j++)
+	{
+		if (seenEnt[j] != g_flashEnt[index])
+			continue;
+		if (floatabs(seenFuse[j] - g_flashFuse[index]) > 0.1)
+			continue;
+		return true;
+	}
+	return false;
+}
+
+stock bool:IsFlashGrenade(ent)
+{
+	if (!pev_valid(ent))
+		return false;
+
+	new model[64];
+	pev(ent, pev_model, model, charsmax(model));
+	return containi(model, "flashbang") >= 0;
+}
+
+/* Everything inside `radius` of the blast stops moving for `freeze` seconds. The freeze is a resource: a
+   newer event that owns it (red_light wants the whole field standing) is not touched here, the blast is
+   dropped and the log says so. */
+stock FlashBlast(const Float:center[3])
+{
+	new owner = FindEffect("freeze_nades");
+	if (!ClaimTake(CLAIM_FREEZE, owner, 1))
+	{
+		log_amx("freeze_nades: the freeze belongs to a newer event, blast ignored");
+		return;
+	}
+
+	new ticks = floatround(float(g_freezeSeconds) / THAW_TICK);
+	if (ticks < 1)
+		ticks = 1;
+
+	new caught;
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (!IsBotAlive(id))
+			continue;
+
+		new Float:where[3];
+		pev(id, pev_origin, where);
+		if (get_distance_f(center, where) > g_freezeRadius)
+			continue;
+
+		FreezeBot(id);
+		// Re-armed, not stacked: two timeouts for one bot would thaw it on the first and leave the second
+		// one to undo a freeze the bot no longer has.
+		g_freezeTicks[id] = ticks;
+		// Ice-white shell with a thin radius: the shell has to read as frost on the body, not as a red hero
+		// glow, because the two are on screen at the same time in a chaos run.
+		set_user_rendering(id, kRenderFxGlowShell, 170, 230, 255, kRenderNormal, 24);
+		caught++;
+	}
+
+	g_freezeBlasts++;
+	g_freezeCaught += caught;
+
+	// The shockwave is the part that says "this far and no further": the freeze is invisible otherwise -
+	// a bot that stops moving looks like a bot thinking. Ice blue, on the blast's own radius.
+	Shockwave(center, g_freezeRadius, 120, 200, 255);
+	// And the shards that make it ice instead of a smoke ring (IceShards).
+	IceShards(center, g_freezeRadius);
+
+	// And a white flash at the point of the bang, so the moment of the pulse is on screen even when the
+	// bots it catches are off camera.
+	message_begin(MSG_BROADCAST, SVC_TEMPENTITY);
+	write_byte(TE_EXPLOSION);
+	write_coord(floatround(center[0]));
+	write_coord(floatround(center[1]));
+	write_coord(floatround(center[2]));
+	write_short(g_meteorSprite);
+	write_byte(20);
+	write_byte(18);
+	write_byte(0);
+	message_end();
+
+	log_amx("freeze_nades: blast at %.0f %.0f %.0f froze %d bot(s)", center[0], center[1], center[2], caught);
+}
+
+/* The countdown. Every pass it also asks the claim layer who owns the freeze: if a newer event took the
+   resource, the countdown stops thawing - the bots standing still are that event's rule, not this one's. */
+public TaskThaw()
+{
+	if (!g_freezeActive)
+	{
+		remove_task(TASK_THAW);
+		return;
+	}
+
+	new owner = FindEffect("freeze_nades");
+	new bool:owns = ClaimTake(CLAIM_FREEZE, owner, 1);
+
+	for (new id = 1; id < MAX_SLOTS; id++)
+	{
+		if (g_freezeTicks[id] <= 0)
+			continue;
+
+		// A dead bot stops being frozen: the countdown belongs to the body that stood in the blast, and
+		// csdm_lite hands the slot a fresh bot half a second later.
+		if (!IsBotAlive(id))
+		{
+			g_freezeTicks[id] = 0;
+			continue;
+		}
+
+		g_freezeTicks[id]--;
+		if (g_freezeTicks[id] > 0)
+			continue;
+
+		ClearGlow(id);
+		if (owns)
+			ThawBot(id);
+	}
+}
+
+stock EndFreezeNades()
+{
+	remove_task(TASK_FLASH_PARTY);
+	remove_task(TASK_FLASH_SCAN);
+	remove_task(TASK_THAW);
+	remove_task(TASK_FLASH_SPARK);
+
+	new owner = FindEffect("freeze_nades");
+	ClaimRelease(CLAIM_WEAPONS, owner);
+	g_flashCount = 0;
+
+	// The bots go back to moving only if this event still owns the freeze. A newer event that took the
+	// resource thaws its own bots on its own clock; thawing them here would end somebody else's rule.
+	new bool:top = ClaimRelease(CLAIM_FREEZE, owner);
+	for (new id = 1; id < MAX_SLOTS; id++)
+	{
+		if (g_freezeTicks[id] > 0 && is_user_connected(id))
+		{
+			ClearGlow(id);
+			if (top)
+				ThawBot(id);
+		}
+		g_freezeTicks[id] = 0;
+	}
+
+	// Always, not only on a hit: "no blast was ever seen" is the measurement this half of the item needs,
+	// because YaPB holds a flashbang exactly the way it holds an HE.
+	log_amx("freeze_nades ended: %d blast(s) seen, %d bot(s) frozen", g_freezeBlasts, g_freezeCaught);
+
+	g_freezeActive = false;
+	g_freezeBlasts = 0;
+	g_freezeCaught = 0;
+}
+
+/* BAZOOKA DROP. One bot, one launcher, the camera on it - and the launcher is a weapon the bot fires: see
+   the note above TASK_BAZOOKA_DRESS for what "a weapon" means here and why an entity of our own is not it.
+   The clock is the catalogue's 30 s, and the role moves to another bot when the carrier dies, so one
+   purchase keeps a launcher on screen for the whole run. */
+public EffectBazookaDrop()
+{
+	BeginEvent("bazooka_drop");
+
+	if (!g_bazookaModel || !g_bazookaModelString)
+	{
+		log_amx("bazooka_drop: %s is not in the image, nothing to carry", BAZOOKA_MODEL);
+		return;
+	}
+
+	new bot = PickRandomBot();
+	if (!bot)
+	{
+		log_amx("bazooka_drop: no bots are alive");
+		return;
+	}
+
+	// A newer run takes the field from the older one: the rockets in the air are cleared, the clock is
+	// replaced below, and the older run's own clock ends it without touching the new carrier.
+	EndBazookaRockets();
+
+	// The numbers are the command's, read once: the rockets fly long after the parameter table belongs to
+	// somebody else.
+	g_rocketDamage = ParamInt("damage", BAZOOKA_DAMAGE_DEFAULT);
+	if (g_rocketDamage < 1)
+		g_rocketDamage = BAZOOKA_DAMAGE_DEFAULT;
+	g_rocketRadius = ParamInt("radius", BAZOOKA_RADIUS_DEFAULT);
+	if (g_rocketRadius < 1)
+		g_rocketRadius = BAZOOKA_RADIUS_DEFAULT;
+	if (g_rocketRadius > BAZOOKA_RADIUS_MAX)
+		g_rocketRadius = BAZOOKA_RADIUS_MAX;
+
+	g_bazookaActive = true;
+	g_bazookaBot = bot;
+	g_rocketFired = 0;
+	g_rocketBlasts = 0;
+	g_rocketHits = 0;
+
+	ArmBazooka(bot);
+	// One repeating task for the whole run: a resubmitted `set_task` on the same id is silently dropped by
+	// some AMXX builds, so the dress tick is started once and only removed by the undo.
+	remove_task(TASK_BAZOOKA_DRESS);
+	set_task(BAZOOKA_DRESS_TICK, "TaskBazookaDress", TASK_BAZOOKA_DRESS, "", 0, "b");
+
+	// The weapon pool and the camera are both taken. A field-wide rule that arrives later (the HE party's
+	// disarm) keeps the bots it disarms: the dress tick only re-arms the carrier while this event still
+	// owns the pool, which is the same rule every other event follows.
+	new owner = FindEffect("bazooka_drop");
+	ClaimTake(CLAIM_WEAPONS, owner, 1);
+	ClaimTake(CLAIM_CAMERA, owner, 1);
+	// The event's own clock, so the lock expires with the run even if the undo never fires.
+	LockCameraOn(bot, floatround(EffectSeconds(30.0)));
+
+	StartEffectTimer("bazooka_drop", EffectSeconds(30.0));
+	log_amx("bazooka_drop: %s on bot %d, %d damage in %d units", BAZOOKA_WEAPON, bot, g_rocketDamage, g_rocketRadius);
+	DonorSay("BAZOOKA ON THE FIELD");
+}
+
+/* The launcher's mechanics: the engine's own AWP, so the bot aims it and pulls the trigger by itself, plus
+   enough spare rounds that a 30 second run cannot go dry in the middle. The model in the hand and the
+   rocket on the trigger are this file's, not the weapon's - see the note above TASK_BAZOOKA_DRESS. */
+stock ArmBazooka(id)
+{
+	if (!IsBotAlive(id))
+		return;
+
+	StripWeapons(id);
+	give_item(id, "weapon_knife");
+	give_item(id, BAZOOKA_WEAPON);
+	cs_set_user_bpammo(id, CSW_AWP, 90);
+
+	DressBazooka(id);
+}
+
+/* The in-hand model is the player's `weaponmodel` field, and the game rewrites it on every weapon switch and
+   every spawn. Writing it here, and again every BAZOOKA_DRESS_TICK, is what makes the bot *hold* the
+   launcher instead of wearing a prop that floats next to it. */
+stock DressBazooka(id)
+{
+	if (!g_bazookaModelString || !IsBotAlive(id))
+		return;
+
+	set_pev(id, pev_weaponmodel, g_bazookaModelString);
+}
+
+public TaskBazookaDress()
+{
+	if (!g_bazookaActive)
+	{
+		remove_task(TASK_BAZOOKA_DRESS);
+		return;
+	}
+
+	// The role moves to a living bot: a launcher on a corpse is a weapon nobody paid for. The new carrier is
+	// armed here as well, because csdm_lite hands a respawned bot a random rifle.
+	if (!IsBotAlive(g_bazookaBot))
+	{
+		new next = PickRandomBot();
+		if (!next)
+			return;
+
+		log_amx("bazooka_drop: bot %d is gone, the launcher moves to %d", g_bazookaBot, next);
+		g_bazookaBot = next;
+		ArmBazooka(next);
+		return;
+	}
+
+	// A field-wide weapon rule that arrived later owns the pool: re-arming under it would put two paid
+	// events on screen fighting over one bot, and the newer one wins by design.
+	if (!ClaimTake(CLAIM_WEAPONS, FindEffect("bazooka_drop"), 1))
+		return;
+
+	if (!user_has_weapon(g_bazookaBot, CSW_AWP))
+	{
+		// csdm_lite re-armed the slot, or the bot threw the launcher away for a pickup.
+		ArmBazooka(g_bazookaBot);
+		return;
+	}
+
+	// The launcher in hand and nothing else: a bot that reached for its knife keeps the knife.
+	if (get_user_weapon(g_bazookaBot) == CSW_AWP)
+		DressBazooka(g_bazookaBot);
+}
+
+/* The trigger. Registered on the one weapon the carrier is armed with, so the whole check is "is this the
+   carrier": YaPB presses the button through the engine, the engine calls the weapon's PrimaryAttack, and
+   that is this hook. The attack itself is left alone - the bolt cycle, the sound and the ammo are what give
+   the launcher its rhythm; only the bullet it fires is dropped, in OnTraceAttack. */
+public OnBazookaAttack(weapon)
+{
+	new id = pev(weapon, pev_owner);
+	if (id <= 0 || !IsBotAlive(id))
+		return HAM_IGNORED;
+
+	// Any bot on a locked kit cannot fire a weapon that is not its kit. An AWP is the one that matters:
+	// one shot from a nemesis with an AWP is a whole kill, and the half-second sweep would be half a second
+	// too late for it.
+	if (IsKitLocked(id) && !IsKitWeapon(id, BAZOOKA_WEAPON))
+	{
+		EnforceKit(id);
+		return HAM_SUPERCEDE;
+	}
+
+	if (!g_bazookaActive || id != g_bazookaBot)
+		return HAM_IGNORED;
+
+	LaunchRocket(id);
+	return HAM_IGNORED;
+}
+
+/* A rocket in the air: an `info_target` wearing the explosion sprite, additively blended, so it reads as a
+   fireball without a projectile model of its own. It flies along the bot's view and explodes on the first
+   thing its path meets. */
+stock LaunchRocket(id)
+{
+	new slot = FreeRocketSlot();
+	if (slot < 0)
+		return;
+
+	new Float:view[3], Float:origin[3], Float:direction[3];
+	pev(id, pev_v_angle, view);
+	pev(id, pev_origin, origin);
+	angle_vector(view, ANGLEVECTOR_FORWARD, direction);
+
+	// From the muzzle, not from the body: a rocket spawned inside the bot traces its own carrier first, and
+	// the blast lands on the bot that fired it.
+	origin[0] += direction[0] * 32.0;
+	origin[1] += direction[1] * 32.0;
+	origin[2] += direction[2] * 32.0 + 8.0;
+
+	new ent = engfunc(EngFunc_CreateNamedEntity, engfunc(EngFunc_AllocString, "info_target"));
+	if (ent <= 0)
+	{
+		log_amx("bazooka_drop: the engine refused the rocket entity");
+		return;
+	}
+
+	// No model on the entity: it is the collider, and the rocket on screen is drawn from temp entities below.
+	// It carried `sprites/zerogxplode.spr` first, and on the stream that sprite's first frame is a black
+	// square - an entity does not animate a sprite unless the frame is driven, and the frame was left at 0.
+	set_pev(ent, pev_solid, SOLID_NOT);
+	set_pev(ent, pev_movetype, MOVETYPE_FLY);
+	engfunc(EngFunc_SetOrigin, ent, origin);
+
+	// The launch itself: a flash at the muzzle, so the shot is visible from the frame the trigger is
+	// pressed and not from the moment the rocket is far enough away to be seen again.
+	message_begin(MSG_BROADCAST, SVC_TEMPENTITY);
+	write_byte(TE_EXPLOSION);
+	write_coord(floatround(origin[0]));
+	write_coord(floatround(origin[1]));
+	write_coord(floatround(origin[2]));
+	write_short(g_meteorSprite);
+	write_byte(12);
+	write_byte(20);
+	write_byte(0);
+	message_end();
+
+	// And a beam along the launch direction: the muzzle streak of a rocket leaving the tube.
+	new Float:ahead[3];
+	ahead[0] = origin[0] + direction[0] * 96.0;
+	ahead[1] = origin[1] + direction[1] * 96.0;
+	ahead[2] = origin[2] + direction[2] * 96.0;
+	DrawBeamColour(origin, ahead, 255, 190, 90, 4, 18);
+
+	g_rocketEnt[slot] = ent;
+	g_rocketVelocity[slot][0] = direction[0] * BAZOOKA_SPEED;
+	g_rocketVelocity[slot][1] = direction[1] * BAZOOKA_SPEED;
+	g_rocketVelocity[slot][2] = direction[2] * BAZOOKA_SPEED;
+	g_rocketOwner[slot] = id;
+	g_rocketTicks[slot] = BAZOOKA_TICKS;
+	g_rocketFired++;
+
+	// The tick runs only while a rocket is in the air: a timer alive for the whole event would spin on an
+	// empty list twenty times a second for thirty seconds.
+	if (!g_rocketTick)
+	{
+		g_rocketTick = true;
+		set_task(BAZOOKA_ROCKET_TICK, "TaskBazookaRocket", TASK_BAZOOKA_ROCKET, "", 0, "b");
+	}
+}
+
+stock FreeRocketSlot()
+{
+	for (new slot = 0; slot < MAX_ROCKETS; slot++)
+	{
+		if (g_rocketEnt[slot] <= 0)
+			return slot;
+	}
+	return -1;
+}
+
+public TaskBazookaRocket()
+{
+	new left;
+
+	for (new slot = 0; slot < MAX_ROCKETS; slot++)
+	{
+		if (g_rocketEnt[slot] <= 0)
+			continue;
+
+		if (!StepRocket(slot))
+			left++;
+	}
+
+	if (left > 0)
+		return;
+
+	// Nothing in the air: the tick stops here, and the next shot starts it again.
+	g_rocketTick = false;
+	remove_task(TASK_BAZOOKA_ROCKET);
+}
+
+/* One flight step. Answers 1 when the rocket is gone - it exploded or ran out of fuel - and 0 while it is
+   still flying. */
+stock StepRocket(slot)
+{
+	new ent = g_rocketEnt[slot];
+	new Float:from[3], Float:to[3];
+	pev(ent, pev_origin, from);
+
+	to[0] = from[0] + g_rocketVelocity[slot][0] * BAZOOKA_ROCKET_TICK;
+	to[1] = from[1] + g_rocketVelocity[slot][1] * BAZOOKA_ROCKET_TICK;
+	to[2] = from[2] + g_rocketVelocity[slot][2] * BAZOOKA_ROCKET_TICK;
+
+	new trace = create_tr2();
+	engfunc(EngFunc_TraceLine, from, to, IGNORE_GLASS, ent, trace);
+
+	new Float:fraction;
+	get_tr2(trace, TR_flFraction, fraction);
+	new hit = get_tr2(trace, TR_pHit);
+
+	new Float:landing[3];
+	get_tr2(trace, TR_vecEndPos, landing);
+	free_tr2(trace);
+
+	// The carrier's own body is where the flight starts: the first trace can end on him, and a blast on the
+	// bot that fired is not what the buyer paid for.
+	if (hit == g_rocketOwner[slot])
+		fraction = 1.0;
+
+	if (fraction < 1.0)
+	{
+		BazookaBlast(landing, g_rocketOwner[slot]);
+		RemoveRocket(slot);
+		return 1;
+	}
+
+	engfunc(EngFunc_SetOrigin, ent, to);
+
+	// The trail: a beam from where the rocket was to where it is now, drawn in the same step. This is the
+	// rocket the viewer follows - an orange streak made of the one beam message this set already runs live,
+	// with no sprite in it, because a sprite on a moving entity drew as a black square on the stream.
+	DrawBeamColour(from, to, 255, 140, 40, 6, 14);
+	// A second, thinner and brighter core, so the streak reads as a flame and not as a thin line.
+	DrawBeamColour(from, to, 255, 230, 150, 4, 6);
+
+	g_rocketTicks[slot]--;
+	if (g_rocketTicks[slot] <= 0)
+	{
+		// Out of fuel over the map: it still goes off, or the viewer watches a rocket disappear.
+		BazookaBlast(to, g_rocketOwner[slot]);
+		RemoveRocket(slot);
+		return 1;
+	}
+
+	return 0;
+}
+
+/* The blast: the sprite the rest of the set already uses, the stock C4 bang, and damage that falls off with
+   distance. Ham_TakeDamage is the door every other event uses, and the attacker is the bot that fired, so the
+   kill lands on its row of the scoreboard instead of on nobody. */
+stock BazookaBlast(Float:origin[3], owner)
+{
+	message_begin(MSG_BROADCAST, SVC_TEMPENTITY);
+	write_byte(TE_EXPLOSION);
+	write_coord(floatround(origin[0]));
+	write_coord(floatround(origin[1]));
+	write_coord(floatround(origin[2]));
+	write_short(g_meteorSprite);
+	write_byte(30);
+	write_byte(15);
+	write_byte(0);
+	message_end();
+
+	// Emitted from the world: the capture client listens from one position, and a sample a bot 400 units away
+	// emits is a sample the stream never hears.
+	emit_sound(0, CHAN_AUTO, BAZOOKA_BLAST_SOUND, VOL_NORM, ATTN_NORM, 0, PITCH_NORM);
+
+	new attacker = owner > 0 && is_user_connected(owner) ? owner : 0;
+	new Float:radius = float(g_rocketRadius);
+
+	// The radius in the catalogue, drawn on the ground: the ring is what makes "320 units" a thing the
+	// viewer can see instead of a number in the panel.
+	Shockwave(origin, radius, 255, 130, 30);
+
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (!IsBotAlive(id))
+			continue;
+
+		// The carrier is not caught by its own rocket. Measured on the stream (2026-10-31): with the owner in
+		// the blast, a 45 s run moved the role six times - the bot fires at bot range, the explosion lands 40
+		// units from him, and 500 damage inside 320 units kills him before the viewer sees a second shot. The
+		// camera follows the carrier, so the paid picture has to survive its own weapon.
+		if (id == owner)
+			continue;
+
+		new Float:where[3];
+		pev(id, pev_origin, where);
+		new Float:distance = get_distance_f(origin, where);
+		if (distance > radius)
+			continue;
+
+		// Linear falloff down to BAZOOKA_MIN_DAMAGE at the rim: a flat 500 within 320 units kills the whole
+		// field with one rocket, while a blast that does nothing at the rim is a dud the viewer sees.
+		new Float:damage = float(g_rocketDamage) * (1.0 - distance / radius);
+		if (damage < float(BAZOOKA_MIN_DAMAGE))
+			damage = float(BAZOOKA_MIN_DAMAGE);
+
+		ExecuteHamB(Ham_TakeDamage, id, 0, attacker, damage, DMG_BLAST);
+		g_rocketHits++;
+	}
+
+	g_rocketBlasts++;
+}
+
+stock RemoveRocket(slot)
+{
+	if (g_rocketEnt[slot] > 0)
+	{
+		engfunc(EngFunc_RemoveEntity, g_rocketEnt[slot]);
+		g_rocketEnt[slot] = 0;
+	}
+
+	g_rocketTicks[slot] = 0;
+	g_rocketOwner[slot] = 0;
+}
+
+stock EndBazookaRockets()
+{
+	remove_task(TASK_BAZOOKA_ROCKET);
+	g_rocketTick = false;
+
+	for (new slot = 0; slot < MAX_ROCKETS; slot++)
+		RemoveRocket(slot);
+}
+
+stock EndBazookaDrop()
+{
+	remove_task(TASK_BAZOOKA_DRESS);
+	EndBazookaRockets();
+
+	new owner = FindEffect("bazooka_drop");
+	ClaimRelease(CLAIM_WEAPONS, owner);
+	if (ClaimRelease(CLAIM_CAMERA, owner))
+		server_cmd("amx_stcam unlock");
+
+	// The model field belongs to the player, not to the event: a bot that keeps the launcher model after the
+	// clock is a bazooka the viewer still sees. The engine's own value for the weapon in hand goes back, and
+	// the next respawn would have done the same.
+	if (g_bazookaBot > 0 && g_bazookaAwpModelString && is_user_connected(g_bazookaBot))
+		set_pev(g_bazookaBot, pev_weaponmodel, g_bazookaAwpModelString);
+
+	log_amx("bazooka_drop ended: %d rocket(s) fired, %d blast(s), %d bot(s) hit",
+		g_rocketFired, g_rocketBlasts, g_rocketHits);
+
+	g_bazookaActive = false;
+	g_bazookaBot = 0;
+	g_rocketFired = 0;
+	g_rocketBlasts = 0;
+	g_rocketHits = 0;
+}
+
+/* GUNTRAIN. A kill moves a bot one rung up the ladder in `params.ladder`: the bottom rung is handed out at
+   the start with the old kit stripped, and every promotion replaces the whole kit, because a bot that keeps
+   its rifle while "climbing" is a bot the viewer cannot read. The rung is per slot, so a bot that dies comes
+   back on the rung it earned. */
+public EffectGunTrain()
+{
+	BeginEvent("guntrain");
+
+	g_trainCount = TrainReadLadder();
+	if (g_trainCount < 2)
+	{
+		log_amx("guntrain: the ladder names %d weapon(s), there is nothing to climb", g_trainCount);
+		return;
+	}
+
+	if (!PickRandomBot())
+	{
+		log_amx("guntrain: no bots are alive");
+		return;
+	}
+
+	g_trainActive = true;
+	g_trainPromotions = 0;
+	g_trainWinner = 0;
+	for (new id = 0; id < MAX_SLOTS; id++)
+	{
+		g_trainLevel[id] = 0;
+		g_trainTop[id] = 0;
+	}
+
+	ClaimTake(CLAIM_WEAPONS, FindEffect("guntrain"), 1);
+
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (!IsBotAlive(id))
+			continue;
+		StripWeapons(id);
+		give_item(id, g_trainLadder[0]);
+		give_item(id, "weapon_knife");
+	}
+
+	StartEffectTimer("guntrain", EffectSeconds(60.0));
+	log_amx("guntrain: %d rungs, %s first, %s last", g_trainCount, g_trainLadder[0], g_trainLadder[g_trainCount - 1]);
+	DonorSay("CLIMB THE LADDER");
+}
+
+/* The ladder arrives as `rung1=.. rung8=..`, one token per rung, and there is a measured reason for that:
+   the RCON line is split by the engine at commas and colons, so a comma-joined list reaches the plugin as its
+   first item only (`reward=weapon_awp,zzz` arrives as `weapon_awp` on the live server). A rung is a weapon
+   name from the catalogue, so it passes the same check a `weapon=` parameter does before give_item sees it. */
+stock TrainReadLadder()
+{
+	new key[KEY_LEN];
+	new value[KEY_LEN];
+	new count;
+
+	for (new i = 0; i < TRAIN_MAX_LADDER; i++)
+	{
+		format(key, charsmax(key), "rung%d", i + 1);
+		if (!ParamCopy(key, value, charsmax(value), ""))
+			break;
+
+		format(g_trainLadder[count], TRAIN_NAME_LEN - 1, "weapon_%s", value);
+		if (IsSafeWeapon(g_trainLadder[count]))
+			count++;
+		else
+			log_amx("guntrain: '%s' is not a weapon name, the rung is dropped", value);
+	}
+
+	return count;
+}
+
+/* The kill feed is the ladder's only controller: a bot moves up when it kills, and the top rung is where the
+   knife is. The count is what the log answers "did anyone climb" with, since a rung is a weapon in the bot's
+   hands and leaves no other trace. */
+stock GunTrainKill(killer)
+{
+	if (!g_trainActive || !IsBotAlive(killer))
+		return;
+
+	new level = g_trainLevel[killer];
+	if (level < g_trainCount - 1)
+	{
+		level++;
+		g_trainLevel[killer] = level;
+		g_trainPromotions++;
+		StripWeapons(killer);
+		give_item(killer, g_trainLadder[level]);
+		give_item(killer, "weapon_knife");
+	}
+
+	if (level < g_trainCount - 1 || g_trainTop[killer])
+		return;
+
+	g_trainTop[killer] = 1;
+	g_trainWinner = killer;
+	new name[NICK_LEN];
+	get_user_name(killer, name, charsmax(name));
+	Announce("%s reached the knife", name);
+	log_amx("guntrain: %s reached the top rung", name);
+}
+
+stock EndGunTrain()
+{
+	ClaimRelease(CLAIM_WEAPONS, FindEffect("guntrain"));
+
+	log_amx("guntrain ended: %d promotion(s)%s", g_trainPromotions,
+		g_trainWinner > 0 ? ", the knife was reached" : "");
+
+	g_trainActive = false;
+	g_trainPromotions = 0;
+	g_trainWinner = 0;
+	for (new id = 0; id < MAX_SLOTS; id++)
+	{
+		g_trainLevel[id] = 0;
+		g_trainTop[id] = 0;
+	}
+}
+
+/* STATUES. Every pass the field is traced: a bot that any other bot can see stands still, and one that
+   nobody can see walks again. This is the whole of Hide'n'Seek with no rule to explain, which is why it is
+   in the catalogue at all. */
+public EffectStatues()
+{
+	BeginEvent("statues");
+
+	if (!PickRandomBot())
+	{
+		log_amx("statues: no bots are alive");
+		return;
+	}
+
+	g_statueActive = true;
+	g_statueFrozen = 0;
+	for (new id = 0; id < MAX_SLOTS; id++)
+		g_statueHeld[id] = 0;
+
+	ClaimTake(CLAIM_FREEZE, FindEffect("statues"), 1);
+	set_task(SIGHT_TICK, "TaskStatues", TASK_STATUE, "", 0, "b");
+
+	StartEffectTimer("statues", EffectSeconds(30.0));
+	log_amx("statues: freeze on sight, a %.1f s pass", SIGHT_TICK);
+	DonorSay("DON'T BE SEEN");
+}
+
+public TaskStatues()
+{
+	if (!g_statueActive)
+	{
+		remove_task(TASK_STATUE);
+		return;
+	}
+
+	// A newer event that wants the field standing owns the freeze; this one then only stops acting.
+	if (!ClaimTake(CLAIM_FREEZE, FindEffect("statues"), 1))
+		return;
+
+	// The whole field is measured before anyone is frozen: two bots looking at each other freeze on the same
+	// pass instead of one of them walking out of the frame it was seen in.
+	new watched[MAX_SLOTS];
+	for (new id = 0; id < MAX_SLOTS; id++)
+		watched[id] = 0;
+
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (!IsBotAlive(id))
+			continue;
+
+		for (new other = 1; other <= get_maxplayers(); other++)
+		{
+			if (other == id || !IsBotAlive(other))
+				continue;
+			if (!CanSee(other, id))
+				continue;
+			watched[id] = 1;
+			break;
+		}
+	}
+
+	for (new id = 1; id < MAX_SLOTS; id++)
+	{
+		if (watched[id] && IsBotAlive(id))
+		{
+			if (!g_statueHeld[id])
+			{
+				g_statueHeld[id] = 1;
+				g_statueFrozen++;
+				FreezeBot(id);
+				set_user_rendering(id, kRenderFxGlowShell, 120, 200, 255, kRenderNormal, 20);
+			}
+			continue;
+		}
+
+		if (!g_statueHeld[id])
+			continue;
+
+		g_statueHeld[id] = 0;
+		if (is_user_connected(id))
+		{
+			ClearGlow(id);
+			ThawBot(id);
+		}
+	}
+}
+
+/* Line of sight between two bodies, eye to chest. 0.98 instead of 1.0: the engine stops the trace a hair
+   short of the hitbox, and a strict comparison would read "seen" as "not seen" for a bot standing right on
+   top of the other. */
+stock bool:CanSee(watcher, target)
+{
+	new Float:eyes[3], Float:body[3];
+	pev(watcher, pev_origin, eyes);
+	pev(target, pev_origin, body);
+	eyes[2] += 24.0;
+	body[2] += 12.0;
+
+	new trace = create_tr2();
+	engfunc(EngFunc_TraceLine, eyes, body, IGNORE_MONSTERS, watcher, trace);
+
+	new Float:fraction;
+	get_tr2(trace, TR_flFraction, fraction);
+	free_tr2(trace);
+
+	return fraction >= 0.98;
+}
+
+stock EndStatues()
+{
+	remove_task(TASK_STATUE);
+
+	new bool:top = ClaimRelease(CLAIM_FREEZE, FindEffect("statues"));
+	for (new id = 1; id < MAX_SLOTS; id++)
+	{
+		if (!g_statueHeld[id])
+			continue;
+
+		if (is_user_connected(id))
+		{
+			ClearGlow(id);
+			if (top)
+				ThawBot(id);
+		}
+		g_statueHeld[id] = 0;
+	}
+
+	log_amx("statues ended: %d freeze(s) on sight", g_statueFrozen);
+	g_statueActive = false;
+	g_statueFrozen = 0;
+}
+
+/* HEAD HUNTER. One bot wears a red shell and a price on its head: whoever kills it gets `reward` and a gold
+   shell for `hold` seconds, and the mark moves every `period` seconds so the hunt never settles. The reward
+   weapon goes away with the body (csdm_lite respawns a bot within a second of the death that matters here);
+   the gold shell is render state, so it is counted down and taken off by hand. */
+public EffectHeadHunter()
+{
+	BeginEvent("head_hunter");
+
+	ParamCopy("reward", g_markReward, charsmax(g_markReward), "weapon_awp");
+	if (!IsSafeWeapon(g_markReward))
+	{
+		log_amx("head_hunter: '%s' is not a weapon name, the mark pays nothing", g_markReward);
+		g_markReward[0] = '^0';
+	}
+
+	g_markHold = ParamInt("hold", 15);
+	if (g_markHold < 1)
+		g_markHold = 1;
+	if (g_markHold > MARK_MAX_HOLD)
+		g_markHold = MARK_MAX_HOLD;
+
+	new period = ParamInt("period", 3);
+	if (period < 1)
+		period = 1;
+	if (period > MARK_MAX_HOLD)
+		period = MARK_MAX_HOLD;
+
+	if (!PickRandomBot())
+	{
+		log_amx("head_hunter: no bots are alive");
+		return;
+	}
+
+	g_markActive = true;
+	g_markBot = 0;
+	g_markRewards = 0;
+	for (new id = 0; id < MAX_SLOTS; id++)
+		g_markGlow[id] = 0;
+
+	ClaimTake(CLAIM_GLOW, FindEffect("head_hunter"), 1);
+	ClaimTake(CLAIM_WEAPONS, FindEffect("head_hunter"), 1);
+
+	HeadHunterMark();
+	set_task(float(period), "TaskMark", TASK_MARK, "", 0, "b");
+	set_task(SIGHT_TICK, "TaskMarkGlow", TASK_MARK_GLOW, "", 0, "b");
+
+	StartEffectTimer("head_hunter", EffectSeconds(45.0));
+	log_amx("head_hunter: the mark moves every %d s, the killer gets %s for %d s", period, g_markReward, g_markHold);
+	DonorSay("A PRICE ON A HEAD");
+}
+
+public TaskMark()
+{
+	if (!g_markActive)
+	{
+		remove_task(TASK_MARK);
+		return;
+	}
+	HeadHunterMark();
+}
+
+stock HeadHunterMark()
+{
+	// A bot still wearing the gold shell of its own reward keeps it: the mark is red, the reward is gold, and
+	// clearing the wrong one would pay a bot and then take the payment off the screen.
+	if (g_markBot > 0 && g_markBot < MAX_SLOTS && g_markGlow[g_markBot] == 0)
+		ClearGlow(g_markBot);
+
+	new bot = PickRandomBot();
+	g_markBot = bot;
+	if (!bot)
+		return;
+
+	set_user_rendering(bot, kRenderFxGlowShell, 255, 40, 40, kRenderNormal, 25);
+
+	new name[NICK_LEN];
+	get_user_name(bot, name, charsmax(name));
+	Announce("MARKED: %s", name);
+}
+
+/* The marked body is dead: the killer is paid, and the next mark arrives on the period's next pass. */
+stock HeadHunterKill(victim, killer)
+{
+	if (!g_markActive || victim != g_markBot)
+		return;
+
+	if (!IsBotAlive(killer))
+	{
+		log_amx("head_hunter: the mark died without a killer, nobody is paid");
+		return;
+	}
+
+	if (g_markReward[0])
+		give_item(killer, g_markReward);
+
+	g_markGlow[killer] = floatround(float(g_markHold) / SIGHT_TICK);
+	set_user_rendering(killer, kRenderFxGlowShell, 255, 200, 0, kRenderNormal, 20);
+	g_markRewards++;
+
+	new name[NICK_LEN];
+	get_user_name(killer, name, charsmax(name));
+	Announce("%s takes the mark", name);
+	log_amx("head_hunter: the mark paid bot %d with %s", killer, g_markReward);
+}
+
+public TaskMarkGlow()
+{
+	if (!g_markActive)
+	{
+		remove_task(TASK_MARK_GLOW);
+		return;
+	}
+
+	for (new id = 1; id < MAX_SLOTS; id++)
+	{
+		if (g_markGlow[id] <= 0)
+			continue;
+
+		// The countdown belongs to the body that was paid, and csdm_lite hands the slot a fresh bot.
+		if (!IsBotAlive(id))
+		{
+			g_markGlow[id] = 0;
+			continue;
+		}
+
+		g_markGlow[id]--;
+		if (g_markGlow[id] == 0)
+			ClearGlow(id);
+	}
+}
+
+stock EndHeadHunter()
+{
+	remove_task(TASK_MARK);
+	remove_task(TASK_MARK_GLOW);
+
+	new owner = FindEffect("head_hunter");
+	new bool:glowTop = ClaimRelease(CLAIM_GLOW, owner);
+	ClaimRelease(CLAIM_WEAPONS, owner);
+
+	if (glowTop)
+	{
+		for (new id = 1; id < MAX_SLOTS; id++)
+		{
+			if (g_markGlow[id] > 0 && is_user_connected(id))
+				ClearGlow(id);
+		}
+		if (g_markBot > 0 && is_user_connected(g_markBot))
+			ClearGlow(g_markBot);
+	}
+
+	log_amx("head_hunter ended: %d mark(s) paid", g_markRewards);
+
+	g_markActive = false;
+	g_markBot = 0;
+	g_markRewards = 0;
+	for (new id = 0; id < MAX_SLOTS; id++)
+		g_markGlow[id] = 0;
+	g_markReward[0] = '^0';
+}
+
+/* KING OF THE HILL. The hill is the middle of the fight at the moment the event starts, not the geometric
+   centre of the map: fy_aztec's centre is a building, and a hill nobody can stand on is a hill nobody can
+   take. Holding it for `hold` seconds pays `health` HP and an M249, and leaving resets the clock - a hold
+   that survives a walk to the other side of the map is not a hold. */
+public EffectKingOfTheHill()
+{
+	BeginEvent("king_of_the_hill");
+
+	new radius = ParamInt("radius", 200);
+	if (radius < 50)
+		radius = 50;
+	if (radius > HILL_MAX_RADIUS)
+		radius = HILL_MAX_RADIUS;
+	g_hillRadius = float(radius);
+
+	g_hillHold = float(ParamInt("hold", 3));
+	if (g_hillHold < 1.0)
+		g_hillHold = 1.0;
+	if (g_hillHold > 30.0)
+		g_hillHold = 30.0;
+
+	g_hillHealth = ParamInt("health", 300);
+	if (g_hillHealth < 100)
+		g_hillHealth = 100;
+	if (g_hillHealth > 2000)
+		g_hillHealth = 2000;
+
+	if (!AliveBotCentre(g_hillCentre))
+	{
+		log_amx("king_of_the_hill: no bot to put the hill under");
+		return;
+	}
+
+	g_hillActive = true;
+	g_hillTaken = 0;
+	for (new id = 0; id < MAX_SLOTS; id++)
+	{
+		g_hillDwell[id] = 0.0;
+		g_hillBuffed[id] = 0;
+	}
+
+	ClaimTake(CLAIM_HEALTH, FindEffect("king_of_the_hill"), 1);
+	ClaimTake(CLAIM_WEAPONS, FindEffect("king_of_the_hill"), 1);
+	set_task(HILL_TICK, "TaskHill", TASK_HILL, "", 0, "b");
+
+	StartEffectTimer("king_of_the_hill", EffectSeconds(60.0));
+	log_amx("king_of_the_hill: hold %.1f s inside %.0f units at %.0f %.0f for %d HP",
+		g_hillHold, g_hillRadius, g_hillCentre[0], g_hillCentre[1], g_hillHealth);
+	DonorSay("TAKE THE HILL");
+}
+
+public TaskHill()
+{
+	if (!g_hillActive)
+	{
+		remove_task(TASK_HILL);
+		return;
+	}
+
+	for (new id = 1; id < MAX_SLOTS; id++)
+	{
+		if (!IsBotAlive(id))
+		{
+			g_hillDwell[id] = 0.0;
+			g_hillBuffed[id] = 0;
+			continue;
+		}
+
+		new Float:origin[3];
+		pev(id, pev_origin, origin);
+		if (get_distance_f(g_hillCentre, origin) > g_hillRadius)
+		{
+			g_hillDwell[id] = 0.0;
+			continue;
+		}
+
+		g_hillDwell[id] += HILL_TICK;
+		if (g_hillDwell[id] < g_hillHold || g_hillBuffed[id])
+			continue;
+
+		g_hillBuffed[id] = 1;
+		g_hillTaken++;
+		set_user_health(id, g_hillHealth);
+		give_item(id, "weapon_m249");
+		set_user_rendering(id, kRenderFxGlowShell, 255, 200, 0, kRenderNormal, 20);
+		Announce("THE HILL IS TAKEN");
+		log_amx("king_of_the_hill: bot %d held the hill, %d HP and an M249", id, g_hillHealth);
+	}
+}
+
+stock EndKingOfTheHill()
+{
+	remove_task(TASK_HILL);
+
+	new owner = FindEffect("king_of_the_hill");
+	ClaimRelease(CLAIM_HEALTH, owner);
+	ClaimRelease(CLAIM_WEAPONS, owner);
+
+	for (new id = 1; id < MAX_SLOTS; id++)
+	{
+		if (g_hillBuffed[id] && is_user_connected(id))
+			ClearGlow(id);
+		g_hillBuffed[id] = 0;
+		g_hillDwell[id] = 0.0;
+	}
+
+	log_amx("king_of_the_hill ended: %d bot(s) took the hill", g_hillTaken);
+	g_hillActive = false;
+	g_hillTaken = 0;
+}
+
+/* DUEL BELL. Every `period` seconds two bots are dropped next to each other with `health` HP and a knife.
+   Both destinations are checked against the engine's own idea of solid space first: a bot teleported into a
+   wall never comes back, and the pair is what the viewer is looking at when it happens. */
+public EffectDuelBell()
+{
+	BeginEvent("duel_bell");
+
+	new period = ParamInt("period", 10);
+	if (period < 2)
+		period = 2;
+	if (period > MARK_MAX_HOLD)
+		period = MARK_MAX_HOLD;
+
+	g_bellHealth = ParamInt("health", 1);
+	if (g_bellHealth < 1)
+		g_bellHealth = 1;
+	if (g_bellHealth > DUEL_MAX_HEALTH)
+		g_bellHealth = DUEL_MAX_HEALTH;
+
+	if (!PickRandomBot())
+	{
+		log_amx("duel_bell: no bots are alive");
+		return;
+	}
+
+	g_duelBellActive = true;
+	g_duels = 0;
+
+	ClaimTake(CLAIM_WEAPONS, FindEffect("duel_bell"), 1);
+	ClaimTake(CLAIM_HEALTH, FindEffect("duel_bell"), 1);
+
+	DuelBell();
+	set_task(float(period), "TaskDuelBell", TASK_DUEL, "", 0, "b");
+
+	StartEffectTimer("duel_bell", EffectSeconds(40.0));
+	log_amx("duel_bell: a %d HP knife duel every %d s", g_bellHealth, period);
+	DonorSay("THE BELL RINGS");
+}
+
+public TaskDuelBell()
+{
+	if (!g_duelBellActive)
+	{
+		remove_task(TASK_DUEL);
+		return;
+	}
+	DuelBell();
+}
+
+stock DuelBell()
+{
+	new first = PickRandomBot();
+	if (!first)
+		return;
+
+	new second;
+	for (new attempt = 0; attempt < 8 && !second; attempt++)
+	{
+		new candidate = PickRandomBot();
+		if (candidate && candidate != first)
+			second = candidate;
+	}
+
+	if (!second)
+		return;
+
+	new Float:centre[3];
+	if (!AliveBotCentre(centre))
+		return;
+
+	new Float:placeA[3], Float:placeB[3];
+	new bool:placed = false;
+	for (new attempt = 0; attempt < 6 && !placed; attempt++)
+	{
+		new Float:angle = random_float(0.0, 360.0);
+		placeA[0] = centre[0] + floatcos(angle, degrees) * DUEL_GAP;
+		placeA[1] = centre[1] + floatsin(angle, degrees) * DUEL_GAP;
+		placeA[2] = centre[2];
+		placeB[0] = centre[0] - floatcos(angle, degrees) * DUEL_GAP;
+		placeB[1] = centre[1] - floatsin(angle, degrees) * DUEL_GAP;
+		placeB[2] = centre[2];
+		placed = SafeSpot(placeA) && SafeSpot(placeB);
+	}
+
+	if (!placed)
+	{
+		log_amx("duel_bell: no free spot around the middle, the bell is skipped");
+		return;
+	}
+
+	DropForDuel(first, placeA);
+	DropForDuel(second, placeB);
+
+	g_duels++;
+	log_amx("duel_bell: bots %d and %d at %.0f %.0f, %d HP each", first, second, centre[0], centre[1], g_bellHealth);
+	Announce("DUEL");
+	emit_sound(0, CHAN_AUTO, "events/task_complete.wav", VOL_NORM, ATTN_NORM, 0, PITCH_NORM);
+}
+
+stock DropForDuel(id, const Float:where[3])
+{
+	engfunc(EngFunc_SetOrigin, id, where);
+
+	// Keeping the run velocity would carry the bot straight out of the duel it was dropped into.
+	new Float:still[3];
+	set_pev(id, pev_velocity, still);
+
+	StripWeapons(id);
+	give_item(id, "weapon_knife");
+	set_user_health(id, g_bellHealth);
+}
+
+stock EndDuelBell()
+{
+	remove_task(TASK_DUEL);
+
+	new owner = FindEffect("duel_bell");
+	ClaimRelease(CLAIM_WEAPONS, owner);
+	ClaimRelease(CLAIM_HEALTH, owner);
+
+	log_amx("duel_bell ended: %d duel(s)", g_duels);
+	g_duelBellActive = false;
+	g_duels = 0;
+}
+
+/* ---------- S6 physics (docs/activities/systems.md, S6) ---------- */
+
+/* AIRSTRIKE. `strikes` blasts walk in from a ring 600 units out: the first lands on the ring, the last
+   on the frag leader. The leader is re-read on every pass, because a dead leader would be a strike
+   aimed at a body that is already gone; `g_airFrom` is the only fixed point of the run. Radius damage
+   goes through Ham_TakeDamage with DMG_BLAST, the same label a thrown HE carries, so another running
+   event that watches explosions sees a real one. */
+public EffectAirstrike()
+{
+	BeginEvent("airstrike");
+
+	// A second airstrike replaces the first instead of leaving two converging barrages on the field.
+	if (g_airActive)
+		EndAirstrike();
+
+	g_airStrikes = ParamInt("strikes", 10);
+	if (g_airStrikes < 1)
+		g_airStrikes = 1;
+	if (g_airStrikes > AIR_MAX_STRIKES)
+		g_airStrikes = AIR_MAX_STRIKES;
+
+	g_airDamage = ParamInt("damage", 120);
+	if (g_airDamage < 1)
+		g_airDamage = 1;
+	if (g_airDamage > AIR_MAX_DAMAGE)
+		g_airDamage = AIR_MAX_DAMAGE;
+
+	g_airRadius = ParamInt("radius", 300);
+	if (g_airRadius < AIR_MIN_RADIUS)
+		g_airRadius = AIR_MIN_RADIUS;
+	if (g_airRadius > AIR_MAX_RADIUS)
+		g_airRadius = AIR_MAX_RADIUS;
+
+	new leader = FindLeaderBot();
+	if (!leader)
+		leader = PickRandomBot();
+	if (!leader)
+	{
+		log_amx("airstrike: no bots are alive");
+		return;
+	}
+
+	pev(leader, pev_origin, g_airTarget);
+	new Float:angle = float(random(360));
+	g_airFrom[0] = g_airTarget[0] + floatcos(angle, degrees) * AIR_RING_RADIUS;
+	g_airFrom[1] = g_airTarget[1] + floatsin(angle, degrees) * AIR_RING_RADIUS;
+	g_airFrom[2] = g_airTarget[2] + 200.0;
+
+	g_airLeft = g_airStrikes;
+	g_airBursts = 0;
+	g_airHits = 0;
+	g_airActive = true;
+
+	set_task(AIR_TICK, "TaskAirstrike", TASK_AIRSTRIKE, "", 0, "b", g_airLeft);
+	StartEffectTimer("airstrike", EffectSeconds(20.0));
+
+	log_amx("airstrike: %d strike(s) of %d damage in %d units, coming from %.0f %.0f",
+		g_airStrikes, g_airDamage, g_airRadius, g_airFrom[0], g_airFrom[1]);
+	DonorSay("AIRSTRIKE INBOUND");
+}
+
+public TaskAirstrike()
+{
+	if (!g_airActive)
+	{
+		remove_task(TASK_AIRSTRIKE);
+		return;
+	}
+
+	// The target moves with the field: a leader who died between two blasts hands the run to the next
+	// bot on the scoreboard instead of leaving the last strikes on a corpse.
+	new leader = FindLeaderBot();
+	if (leader)
+		pev(leader, pev_origin, g_airTarget);
+
+	// The first blast sits on the ring, the last one on the target.
+	new step = g_airStrikes - g_airLeft + 1;
+	new Float:fraction = float(step) / float(g_airStrikes);
+	new Float:pos[3];
+	pos[0] = g_airFrom[0] + (g_airTarget[0] - g_airFrom[0]) * fraction;
+	pos[1] = g_airFrom[1] + (g_airTarget[1] - g_airFrom[1]) * fraction;
+	pos[2] = g_airFrom[2] + (g_airTarget[2] - g_airFrom[2]) * fraction;
+
+	message_begin(MSG_BROADCAST, SVC_TEMPENTITY);
+	write_byte(TE_EXPLOSION);
+	write_coord(floatround(pos[0]));
+	write_coord(floatround(pos[1]));
+	write_coord(floatround(pos[2]));
+	write_short(g_meteorSprite);
+	write_byte(30);
+	write_byte(15);
+	write_byte(0);
+	message_end();
+
+	// Emitted from the world: the capture client listens from one position, and a sample a bot 400
+	// units away emits is a sample the stream never hears.
+	emit_sound(0, CHAN_AUTO, AIR_SOUND, VOL_NORM, ATTN_NORM, 0, PITCH_NORM);
+
+	// Read from the snapshot, not from the parameter table: this runs from a timer, long after the
+	// command that paid for it.
+	new radius = g_airRadius;
+
+	// Each strike draws the radius it damages: ten rings converging on the leader read as a barrage.
+	Shockwave(pos, float(radius), 255, 150, 40);
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (!IsBotAlive(id))
+			continue;
+
+		new Float:where[3];
+		pev(id, pev_origin, where);
+		if (get_distance_f(pos, where) > float(radius))
+			continue;
+
+		ExecuteHamB(Ham_TakeDamage, id, 0, 0, float(g_airDamage), DMG_BLAST);
+		g_airHits++;
+	}
+
+	g_airBursts++;
+	g_airLeft--;
+
+	// The run ends with its last blast, not with the catalogue clock: a 20 second status line over a
+	// four second barrage reads as an effect still on screen when nothing is happening.
+	if (g_airLeft <= 0)
+		FinishEffect("airstrike");
+}
+
+stock EndAirstrike()
+{
+	remove_task(TASK_AIRSTRIKE);
+
+	// Unconditional: "ten strikes, nobody hit" is a result the operator has to be able to read.
+	log_amx("airstrike ended: %d of %d strike(s) landed, %d bot(s) hit", g_airBursts, g_airStrikes, g_airHits);
+
+	g_airActive = false;
+	g_airStrikes = 0;
+	g_airLeft = 0;
+	g_airBursts = 0;
+	g_airHits = 0;
+}
+
+
+/* WEAPON RAIN. One `armoury_entity` every `period` seconds, `count` boxes in total, and never more than
+   five on the map: every extra entity is a model llvmpipe draws on the CPU in every frame.
+ * `cs_set_armoury_type` does not update the world model (the include says so in as many words), so the
+   model is set by hand. Every file in this list ships with CS 1.6 and is already used by a death drop. */
+new const RAIN_WEAPONS[] =
+{
+	CSW_AK47, CSW_M4A1, CSW_AWP, CSW_M249, CSW_MP5NAVY, CSW_XM1014, CSW_SCOUT, CSW_P90
+};
+
+public EffectWeaponRain()
+{
+	BeginEvent("weapon_rain");
+
+	if (g_rainActive)
+		EndWeaponRain();
+
+	new count = ParamInt("count", 5);
+	if (count < 1)
+		count = 1;
+	if (count > RAIN_MAX_DROPS)
+		count = RAIN_MAX_DROPS;
+
+	new Float:period = ParamFloat("period", 2.0);
+	if (period < 0.5)
+		period = 0.5;
+	if (period > 10.0)
+		period = 10.0;
+
+	g_rainLeft = count;
+	g_rainSpawned = 0;
+	g_rainActive = true;
+	for (new i = 0; i < RAIN_MAX_ENTITIES; i++)
+		g_rainEnts[i] = 0;
+
+	StartEffectTimer("weapon_rain", EffectSeconds(20.0));
+
+	// The first box lands in this call: a paid effect that waits two seconds for its first frame reads
+	// as a donation the server swallowed.
+	DropRainWeapon();
+	if (g_rainLeft > 0)
+		set_task(period, "TaskWeaponRain", TASK_WEAPON_RAIN, "", 0, "b", g_rainLeft);
+
+	log_amx("weapon_rain: %d box(es) every %.1f s, at most %d on the map", count, period, RAIN_MAX_ENTITIES);
+	DonorSay("IT RAINS GUNS");
+}
+
+public TaskWeaponRain()
+{
+	if (!g_rainActive || g_rainLeft <= 0)
+	{
+		remove_task(TASK_WEAPON_RAIN);
+		return;
+	}
+
+	DropRainWeapon();
+
+	// The boxes stay on the ground for the rest of the clock: the loot is the event, not the drop. The
+	// task stops as soon as every weapon has fallen.
+	if (g_rainLeft <= 0)
+		remove_task(TASK_WEAPON_RAIN);
+}
+
+stock DropRainWeapon()
+{
+	if (g_rainLeft <= 0)
+		return;
+
+	new bot = PickRandomBot();
+	if (!bot)
+	{
+		log_amx("weapon_rain: no bot is alive to drop a weapon over");
+		g_rainLeft = 0;
+		return;
+	}
+
+	new weaponId = RAIN_WEAPONS[random(sizeof RAIN_WEAPONS)];
+
+	new ent = engfunc(EngFunc_CreateNamedEntity, engfunc(EngFunc_AllocString, "armoury_entity"));
+	if (ent > 0)
+	{
+		// The type goes in before Spawn: the entity builds its touch trigger and its count from the type
+		// it already holds. The model is set afterwards, because the native leaves it alone.
+		cs_set_armoury_type(ent, weaponId, 1);
+		dllfunc(DLLFunc_Spawn, ent);
+
+		new name[32], model[64];
+		get_weaponname(weaponId, name, charsmax(name));
+		format(model, charsmax(model), "models/w_%s.mdl", name[7]);
+		engfunc(EngFunc_SetModel, ent, model);
+
+		// From above the bot: the armoury entity floats down when it is not on the ground, which is the
+		// whole picture the code sells.
+		new Float:origin[3];
+		pev(bot, pev_origin, origin);
+		origin[2] += RAIN_HEIGHT;
+		engfunc(EngFunc_SetOrigin, ent, origin);
+
+		RememberRainEnt(ent);
+		g_rainSpawned++;
+	}
+	else
+	{
+		log_amx("weapon_rain: the engine refused an armoury_entity");
+	}
+
+	g_rainLeft--;
+}
+
+stock RememberRainEnt(ent)
+{
+	for (new i = 0; i < RAIN_MAX_ENTITIES; i++)
+	{
+		if (g_rainEnts[i] == 0)
+		{
+			g_rainEnts[i] = ent;
+			return;
+		}
+	}
+
+	// The cap is the point of the code: the oldest box goes before a sixth model exists.
+	if (pev_valid(g_rainEnts[0]))
+		engfunc(EngFunc_RemoveEntity, g_rainEnts[0]);
+
+	for (new i = 0; i < RAIN_MAX_ENTITIES - 1; i++)
+		g_rainEnts[i] = g_rainEnts[i + 1];
+	g_rainEnts[RAIN_MAX_ENTITIES - 1] = ent;
+}
+
+stock EndWeaponRain()
+{
+	remove_task(TASK_WEAPON_RAIN);
+
+	// Boxes are models: left on the map after the clock they are a permanent cost on a software renderer.
+	for (new i = 0; i < RAIN_MAX_ENTITIES; i++)
+	{
+		if (g_rainEnts[i] > 0 && pev_valid(g_rainEnts[i]))
+			engfunc(EngFunc_RemoveEntity, g_rainEnts[i]);
+		g_rainEnts[i] = 0;
+	}
+
+	log_amx("weapon_rain ended: %d weapon(s) dropped", g_rainSpawned);
+	g_rainActive = false;
+	g_rainLeft = 0;
+	g_rainSpawned = 0;
+}
+
+/* QUAKE. Every `period` seconds every alive bot is shoved by a random horizontal impulse plus a small
+   hop. Nothing is claimed: the velocity is written once per tick and the next tick of the same run
+   overwrites it, so no other effect holds that resource - the undo is the task that stops writing. A
+   ceiling keeps a stacked shove from launching a bot through the skybox. */
+public EffectQuake()
+{
+	BeginEvent("quake");
+
+	if (g_quakeActive)
+		EndQuake();
+
+	new force = ParamInt("force", 400);
+	if (force < QUAKE_MIN_FORCE)
+		force = QUAKE_MIN_FORCE;
+	if (force > QUAKE_MAX_FORCE)
+		force = QUAKE_MAX_FORCE;
+	g_quakeForce = float(force);
+
+	g_quakePeriod = ParamFloat("period", 0.7);
+	if (g_quakePeriod < QUAKE_MIN_PERIOD)
+		g_quakePeriod = QUAKE_MIN_PERIOD;
+	if (g_quakePeriod > QUAKE_MAX_PERIOD)
+		g_quakePeriod = QUAKE_MAX_PERIOD;
+
+	g_quakeActive = true;
+	g_quakeTicks = 0;
+	g_quakeShoves = 0;
+
+	set_task(g_quakePeriod, "TaskQuake", TASK_QUAKE, "", 0, "b");
+	new Float:seconds = EffectSeconds(15.0);
+	StartEffectTimer("quake", seconds);
+
+	log_amx("quake: %.0f impulse every %.1f s for %.0f s", g_quakeForce, g_quakePeriod, seconds);
+	DonorSay("EARTHQUAKE");
+}
+
+public TaskQuake()
+{
+	if (!g_quakeActive)
+	{
+		remove_task(TASK_QUAKE);
+		return;
+	}
+
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (!IsBotAlive(id))
+			continue;
+
+		new Float:velocity[3];
+		pev(id, pev_velocity, velocity);
+
+		new Float:angle = float(random(360));
+		velocity[0] += floatcos(angle, degrees) * g_quakeForce;
+		velocity[1] += floatsin(angle, degrees) * g_quakeForce;
+		// A hop, not a jump: the shove is horizontal, the lift only makes it read as an earthquake.
+		velocity[2] += g_quakeForce * 0.35;
+
+		new Float:speed = floatsqroot(velocity[0] * velocity[0] + velocity[1] * velocity[1] + velocity[2] * velocity[2]);
+		if (speed > QUAKE_MAX_SPEED)
+		{
+			new Float:scale = QUAKE_MAX_SPEED / speed;
+			velocity[0] *= scale;
+			velocity[1] *= scale;
+			velocity[2] *= scale;
+		}
+
+		set_pev(id, pev_velocity, velocity);
+		g_quakeShoves++;
+	}
+
+	g_quakeTicks++;
+}
+
+stock EndQuake()
+{
+	remove_task(TASK_QUAKE);
+
+	log_amx("quake ended: %d tick(s), %d shove(s)", g_quakeTicks, g_quakeShoves);
+	g_quakeActive = false;
+	g_quakeTicks = 0;
+	g_quakeShoves = 0;
+}
+
+/* FIRE RING. A circle centred on the middle of the fight shrinks by `shrink` units every `period`, and
+   every bot outside it burns. The start radius is the farthest bot, not a constant: a fixed 600 on
+   fy_iceworld is a ring outside the map, and the event reads as nothing happening. */
+public EffectFireRing()
+{
+	BeginEvent("fire_ring");
+
+	if (g_ringActive)
+		EndFireRing();
+
+	g_ringDamage = ParamInt("damage", 5);
+	if (g_ringDamage < 1)
+		g_ringDamage = 1;
+	if (g_ringDamage > RING_MAX_DAMAGE)
+		g_ringDamage = RING_MAX_DAMAGE;
+
+	new shrink = ParamInt("shrink", 40);
+	if (shrink < RING_MIN_SHRINK)
+		shrink = RING_MIN_SHRINK;
+	if (shrink > RING_MAX_SHRINK)
+		shrink = RING_MAX_SHRINK;
+	g_ringShrink = float(shrink);
+
+	g_ringPeriod = ParamFloat("period", 1.0);
+	if (g_ringPeriod < RING_MIN_PERIOD)
+		g_ringPeriod = RING_MIN_PERIOD;
+	if (g_ringPeriod > RING_MAX_PERIOD)
+		g_ringPeriod = RING_MAX_PERIOD;
+
+	if (!AliveBotCentre(g_ringCentre))
+	{
+		log_amx("fire_ring: no bots are alive");
+		return;
+	}
+
+	// The ring starts outside the field, so the first tick already has somebody to burn.
+	g_ringRadius = RING_MIN_RADIUS;
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (!IsBotAlive(id))
+			continue;
+
+		new Float:origin[3];
+		pev(id, pev_origin, origin);
+		new Float:distance = get_distance_f(g_ringCentre, origin);
+		if (distance > g_ringRadius)
+			g_ringRadius = distance;
+	}
+	if (g_ringRadius > RING_MAX_RADIUS)
+		g_ringRadius = RING_MAX_RADIUS;
+
+	g_ringScorched = 0;
+	for (new id = 0; id < MAX_SLOTS; id++)
+		g_ringBurnt[id] = 0;
+	g_ringActive = true;
+
+	set_task(g_ringPeriod, "TaskFireRing", TASK_FIRE_RING, "", 0, "b");
+	new Float:seconds = EffectSeconds(30.0);
+	StartEffectTimer("fire_ring", seconds);
+
+	log_amx("fire_ring: %.0f units shrinking by %.0f every %.1f s, %d damage, for %.0f s",
+		g_ringRadius, g_ringShrink, g_ringPeriod, g_ringDamage, seconds);
+	DonorSay("NOWHERE TO RUN");
+}
+
+public TaskFireRing()
+{
+	if (!g_ringActive)
+	{
+		remove_task(TASK_FIRE_RING);
+		return;
+	}
+
+	g_ringRadius -= g_ringShrink;
+	if (g_ringRadius < RING_MIN_RADIUS)
+		g_ringRadius = RING_MIN_RADIUS;
+
+	new Float:radius = g_ringRadius;
+	for (new id = 1; id < MAX_SLOTS; id++)
+	{
+		if (!IsBotAlive(id))
+			continue;
+
+		new Float:origin[3];
+		pev(id, pev_origin, origin);
+		if (get_distance_f(g_ringCentre, origin) <= radius)
+			continue;
+
+		ExecuteHamB(Ham_TakeDamage, id, 0, 0, float(g_ringDamage), DMG_BURN);
+
+		// Counted once per run and glowed only on the first burn: the shell is what makes the zone
+		// readable, and re-setting it every second is render state written for nothing.
+		if (!g_ringBurnt[id])
+		{
+			g_ringBurnt[id] = 1;
+			g_ringScorched++;
+		}
+		set_user_rendering(id, kRenderFxGlowShell, 255, 80, 0, kRenderNormal, 20);
+	}
+}
+
+stock EndFireRing()
+{
+	remove_task(TASK_FIRE_RING);
+
+	for (new id = 1; id < MAX_SLOTS; id++)
+	{
+		if (g_ringBurnt[id] && is_user_connected(id))
+			ClearGlow(id);
+		g_ringBurnt[id] = 0;
+	}
+
+	log_amx("fire_ring ended: %d bot(s) caught outside the ring", g_ringScorched);
+	g_ringActive = false;
+	g_ringScorched = 0;
+}
+
+/* INVERT VELOCITY. Every `period` a bot's horizontal velocity is negated, so the direction it chose a
+   moment ago is the direction it moves. The claim is the point: a released run flips the field one
+   last time, which gives back the direction the engine was already carrying, and a second run's claim
+   makes that last flip somebody else's business. */
+public EffectInvertVelocity()
+{
+	BeginEvent("invert_velocity");
+
+	if (g_invertActive)
+		EndInvertVelocity();
+
+	g_invertPeriod = ParamFloat("period", 0.2);
+	if (g_invertPeriod < INVERT_MIN_PERIOD)
+		g_invertPeriod = INVERT_MIN_PERIOD;
+	if (g_invertPeriod > INVERT_MAX_PERIOD)
+		g_invertPeriod = INVERT_MAX_PERIOD;
+
+	g_invertFlips = 0;
+	g_invertActive = true;
+
+	ClaimTake(CLAIM_VELOCITY, FindEffect("invert_velocity"), 1);
+	set_task(g_invertPeriod, "TaskInvertVelocity", TASK_INVERT, "", 0, "b");
+
+	new Float:seconds = EffectSeconds(10.0);
+	StartEffectTimer("invert_velocity", seconds);
+
+	log_amx("invert_velocity: a flip every %.2f s for %.0f s", g_invertPeriod, seconds);
+	DonorSay("EVERYTHING IN REVERSE");
+}
+
+public TaskInvertVelocity()
+{
+	if (!g_invertActive)
+	{
+		remove_task(TASK_INVERT);
+		return;
+	}
+
+	FlipVelocities();
+}
+
+stock FlipVelocities()
+{
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (!IsBotAlive(id))
+			continue;
+
+		new Float:velocity[3];
+		pev(id, pev_velocity, velocity);
+		// z is left alone: a negated fall turns the map inside out and reads as a server crash, not as
+		// a joke. The joke is horizontal.
+		velocity[0] = -velocity[0];
+		velocity[1] = -velocity[1];
+		set_pev(id, pev_velocity, velocity);
+		g_invertFlips++;
+	}
+}
+
+stock EndInvertVelocity()
+{
+	remove_task(TASK_INVERT);
+
+	new owner = FindEffect("invert_velocity");
+	if (ClaimRelease(CLAIM_VELOCITY, owner))
+		// One last flip gives the field back the direction it had before the run started; without it the
+		// bots keep moon-walking until their next input overwrites the velocity.
+		FlipVelocities();
+
+	log_amx("invert_velocity ended: %d flip(s)", g_invertFlips);
+	g_invertActive = false;
+	g_invertFlips = 0;
+}
+
+/* LOW GRAVITY KNIVES. `sv_gravity` is a server cvar and the one resource that outlives a map change if
+   nothing restores it, so it goes through the claim layer: the newest gravity event writes it, and only
+   the owner may put the base value back. The weapon pool is the second claim, and a bot that respawns is
+   re-armed with a knife by the same repeating pass he_party uses. */
+public EffectLowGravityKnives()
+{
+	BeginEvent("low_gravity_knives");
+
+	if (g_knivesActive)
+		EndLowGravityKnives();
+
+	g_knivesGravity = ParamInt("gravity", 150);
+	if (g_knivesGravity < KNIVES_MIN_GRAVITY)
+		g_knivesGravity = KNIVES_MIN_GRAVITY;
+	if (g_knivesGravity > KNIVES_MAX_GRAVITY)
+		g_knivesGravity = KNIVES_MAX_GRAVITY;
+
+	new owner = FindEffect("low_gravity_knives");
+	ClaimGravity(owner, g_knivesGravity);
+	ClaimTake(CLAIM_WEAPONS, owner, 1);
+	g_knivesActive = true;
+
+	for (new id = 1; id <= get_maxplayers(); id++)
+		ArmKnives(id);
+
+	// Twice a second: csdm_lite hands a respawned bot a rifle, and a rifle on the field ends the event
+	// for that bot.
+	set_task(0.5, "TaskGravityKnives", TASK_GRAVITY_KNIVES, "", 0, "b");
+
+	new Float:seconds = EffectSeconds(25.0);
+	StartEffectTimer("low_gravity_knives", seconds);
+
+	log_amx("low_gravity_knives: sv_gravity %d, knives only, for %.0f s", g_knivesGravity, seconds);
+	DonorSay("MOON KNIVES");
+}
+
+public TaskGravityKnives()
+{
+	if (!g_knivesActive)
+	{
+		remove_task(TASK_GRAVITY_KNIVES);
+		return;
+	}
+
+	for (new id = 1; id <= get_maxplayers(); id++)
+		ArmKnives(id);
+}
+
+stock ArmKnives(id)
+{
+	if (!IsBotAlive(id))
+		return;
+
+	strip_user_weapons(id);
+	give_item(id, "weapon_knife");
+}
+
+stock EndLowGravityKnives()
+{
+	remove_task(TASK_GRAVITY_KNIVES);
+
+	new owner = FindEffect("low_gravity_knives");
+	ClaimRelease(CLAIM_WEAPONS, owner);
+
+	// Only the newest gravity owner may write the cvar: a release that is not the top leaves the value
+	// the newer event applied. CleanupActive has RestoreGravity as the fallback for a full reset.
+	new bool:restored = ClaimRelease(CLAIM_GRAVITY, owner);
+	if (restored)
+		RestoreGravity();
+
+	log_amx("low_gravity_knives ended: sv_gravity %d (restored=%d)", get_cvar_num("sv_gravity"), restored);
+	g_knivesActive = false;
+	g_knivesGravity = 0;
+}
+
+/* ---------- S8 sound (docs/activities/systems.md, S8) ---------- */
+
+/* ANNOUNCER COUNTDOWN. Three chat numbers and a "FIGHT", one per second; the broadcast says the same
+   words on the same seconds (`countdownCues` in src/voice.ts). No game sound: a custom sample would
+   have to be precached inside the client, and espeak-ng already reads it on the stream. */
+public EffectAnnouncerCountdown()
+{
+	BeginEvent("announcer_countdown");
+
+	if (g_countdownActive)
+		EndAnnouncerCountdown();
+
+	g_countdownLeft = COUNTDOWN_FROM;
+	g_countdownActive = true;
+	ClaimTake(CLAIM_AUDIO, FindEffect("announcer_countdown"), 1);
+
+	Announce("%d", g_countdownLeft);
+	// One task, one tick a second, `COUNTDOWN_FROM + 1` runs: the last one prints FIGHT and stops itself.
+	set_task(1.0, "TaskCountdown", TASK_COUNTDOWN, "", 0, "b", COUNTDOWN_FROM + 1);
+
+	new Float:seconds = EffectSeconds(10.0);
+	StartEffectTimer("announcer_countdown", seconds);
+	log_amx("announcer_countdown: %d..1 and FIGHT over %.0f s", COUNTDOWN_FROM, seconds);
+}
+
+public TaskCountdown()
+{
+	if (!g_countdownActive)
+	{
+		remove_task(TASK_COUNTDOWN);
+		return;
+	}
+
+	g_countdownLeft--;
+	if (g_countdownLeft > 0)
+	{
+		Announce("%d", g_countdownLeft);
+		// Logged as well as printed: a bot chat line never reaches the server log, and "the countdown
+		// did not count" and "the countdown was never bought" read the same without this line.
+		log_amx("announcer_countdown: %d", g_countdownLeft);
+		return;
+	}
+
+	Announce("FIGHT!");
+	log_amx("announcer_countdown: FIGHT");
+	g_countdownActive = false;
+	remove_task(TASK_COUNTDOWN);
+}
+
+stock EndAnnouncerCountdown()
+{
+	remove_task(TASK_COUNTDOWN);
+	ClaimRelease(CLAIM_AUDIO, FindEffect("announcer_countdown"));
+	log_amx("announcer_countdown ended");
+	g_countdownActive = false;
+	g_countdownLeft = 0;
+}
+
+/* QUOTES PACK. One bot says a line: the subtitle is the chat line, the voice is the broadcast's TTS.
+   `text=` arrives already sanitized by the control API; a panel run has no phrase, so the built-in pack
+   answers. The clock only satisfies the contract - nothing of this event lasts. */
+public EffectQuotesPack()
+{
+	BeginEvent("quotes_pack");
+
+	if (g_quotesActive)
+		EndQuotesPack();
+
+	new phrase[QUOTE_MAX_LEN + 1];
+	if (!ParamCopy("text", phrase, charsmax(phrase), ""))
+		RandomQuote(phrase, charsmax(phrase));
+	CleanPhrase(phrase);
+
+	new speaker = PickRandomBot();
+	new name[NICK_LEN];
+	if (speaker)
+		get_user_name(speaker, name, charsmax(name));
+	else
+		copy(name, charsmax(name), "BOT");
+
+	g_quotesActive = true;
+	// Single quotes in the format, never an escaped double quote: this amxxpc build aborts with
+	// std::bad_alloc on an escaped quote inside a log_amx/Announce format (see the header).
+	Announce("%s says: '%s'", name, phrase);
+	log_amx("quotes_pack: <%s> said %s", name, phrase);
+	StartEffectTimer("quotes_pack", EffectSeconds(5.0));
+}
+
+stock EndQuotesPack()
+{
+	log_amx("quotes_pack ended");
+	g_quotesActive = false;
+}
+
+/* SIREN. The bed is generated on the stream side (`TRACKS.siren`), so the game only takes the audio
+   claim and prints the line: GoldSrc cannot play a file it did not precache. */
+public EffectSiren()
+{
+	BeginEvent("siren");
+
+	if (g_sirenActive)
+		EndSiren();
+
+	g_sirenActive = true;
+	ClaimTake(CLAIM_AUDIO, FindEffect("siren"), 1);
+
+	new Float:seconds = EffectSeconds(15.0);
+	StartEffectTimer("siren", seconds);
+	log_amx("siren: air-raid bed for %.0f s, synthesised on the stream side", seconds);
+	DonorSay("AIR RAID");
+}
+
+stock EndSiren()
+{
+	ClaimRelease(CLAIM_AUDIO, FindEffect("siren"));
+	log_amx("siren ended");
+	g_sirenActive = false;
+}
+
+/* MUSIC SWAP. The same shape as the siren: a second generated bed replaces the one that was playing,
+   and the claim is what keeps an older sound event's clock from cutting the newer bed. */
+public EffectMusicSwap()
+{
+	BeginEvent("music_swap");
+
+	if (g_musicSwapActive)
+		EndMusicSwap();
+
+	g_musicSwapActive = true;
+	ClaimTake(CLAIM_AUDIO, FindEffect("music_swap"), 1);
+
+	new Float:seconds = EffectSeconds(20.0);
+	StartEffectTimer("music_swap", seconds);
+	log_amx("music_swap: the broadcast bed changes for %.0f s", seconds);
+	DonorSay("NEW TRACK");
+}
+
+stock EndMusicSwap()
+{
+	ClaimRelease(CLAIM_AUDIO, FindEffect("music_swap"));
+	log_amx("music_swap ended");
+	g_musicSwapActive = false;
+}
+
+/* The built-in pack: a panel run has no viewer phrase, and an event with nothing to say is a refund.
+   ASCII only, because GoldSrc chat cannot render anything else. A switch instead of a 2D table: the
+   compiler that builds this file aborts on a jagged initialiser at this size. */
+stock RandomQuote(dest[], len)
+{
+	switch (random(6))
+	{
+		case 0: copy(dest, len, "I'LL BE BACK");
+		case 1: copy(dest, len, "MAY THE FORCE BE WITH YOU");
+		case 2: copy(dest, len, "SAY HELLO TO MY LITTLE FRIEND");
+		case 3: copy(dest, len, "HERE'S JOHNNY");
+		case 4: copy(dest, len, "YOU SHALL NOT PASS");
+		default: copy(dest, len, "WHY SO SERIOUS");
+	}
+}
+
+/* The second gate on a phrase: the API sanitizes `text=` into one RCON token (spaces become
+   underscores), the built-in pack is ours, and a panel run may still patch the parameter by hand.
+   Underscores become spaces here - the subtitle must read like a sentence - and GoldSrc chat is ASCII,
+   so anything else becomes '?'. */
+stock CleanPhrase(text[])
+{
+	new length = strlen(text);
+	for (new i = 0; i < length; i++)
+	{
+		new c = text[i];
+		if (c == '_')
+			text[i] = ' ';
+		else if (c < 32 || c > 126)
+			text[i] = '?';
+	}
+}
+
+/* The middle of the fight: the average of the alive bots. Used by the hill and by the bell, because a
+   geometric map centre is wrong on half the pool and a centre that moves with the field is a hill nobody can
+   hold. */
+stock bool:AliveBotCentre(Float:out[3])
+{
+	new bots;
+
+	out[0] = 0.0;
+	out[1] = 0.0;
+	out[2] = 0.0;
+
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (!IsBotAlive(id))
+			continue;
+
+		new Float:origin[3];
+		pev(id, pev_origin, origin);
+		out[0] += origin[0];
+		out[1] += origin[1];
+		out[2] += origin[2];
+		bots++;
+	}
+
+	if (bots == 0)
+		return false;
+
+	out[0] /= float(bots);
+	out[1] /= float(bots);
+	out[2] /= float(bots);
+	return true;
+}
+
+/* A point a body can stand in. The engine snaps a bot out of solid space without an error, and a duel that
+   never happens reads exactly like a duel that was won in one frame. */
+stock bool:SafeSpot(const Float:point[3])
+{
+	new Float:head[3];
+	head[0] = point[0];
+	head[1] = point[1];
+	head[2] = point[2] + 32.0;
+
+	if (engfunc(EngFunc_PointContents, point) == CONTENTS_SOLID)
+		return false;
+	if (engfunc(EngFunc_PointContents, head) == CONTENTS_SOLID)
+		return false;
+
+	return true;
 }
 
 /* Knockback: how far a hit throws a class bot. Horizontal, away from the attacker, capped at
@@ -3383,6 +6910,17 @@ public OnDeathMsg()
 	if (g_heroActive && g_heroToKiller && victim == g_heroBot)
 		g_heroNext = IsBotAlive(killer) ? killer : 0;
 
+	// S5 chases read the kill feed: the ladder promotes the killer, and whoever kills the mark is paid.
+	if (g_trainActive)
+		GunTrainKill(killer);
+	if (g_markActive)
+		HeadHunterKill(victim, killer);
+
+	// The sniper's loop: a kill pays one round of the five back. Only the hero's own kill counts, and only
+	// while the role is the sniper's.
+	if (g_heroActive && equali(g_heroCode, "sniper") && killer == g_heroBot)
+		SniperReward();
+
 	if (!g_outbreakActive || !IsInfected(killer) || IsInfected(victim))
 		return;
 
@@ -3429,6 +6967,30 @@ public OnTakeDamage(victim, inflictor, attacker, Float:damage, damagebits)
 	}
 
 	return HAM_IGNORED;
+}
+
+/* The launcher's bullet, thrown away. Without this the bazooka bot is an AWP with a rocket on top: the
+   hitscan would do the killing and the rocket would be decoration. Only while the launcher is in hand - a
+   rifle the bot picked up off the ground keeps its own damage. */
+public OnTraceAttack(victim, inflictor, attacker, Float:damage, Float:direction[3], trace, damagebits)
+{
+	// A bot on a locked kit cannot hurt anybody with a weapon that is not its kit. This is the shot itself,
+	// not the sweep: measured live (2026-10-31) a nemesis with 13 500 HP took a kill with an AK between two
+	// sweep passes, and half a second is long enough for a kill. The bullet is dropped and the kit goes
+	// back; the knife does not trace, so a knife round never reaches this branch.
+	if (attacker > 0 && IsBotAlive(attacker) && KitMismatch(attacker))
+	{
+		EnforceKit(attacker);
+		return HAM_SUPERCEDE;
+	}
+
+	if (!g_bazookaActive || attacker != g_bazookaBot)
+		return HAM_IGNORED;
+
+	if (get_user_weapon(attacker) != CSW_AWP)
+		return HAM_IGNORED;
+
+	return HAM_SUPERCEDE;
 }
 
 /* Removes the glow a bless/curse put on a bot. Health and weapons do not need this: the next

@@ -5,9 +5,10 @@ catalogue but off sale; **planned** is described here and not written yet. A cod
 `ready` only when the handler is merged, the contract tests pass and `amx_de codes` reports it.
 
 Every new code ships as `price: 50`, `duration: "seconds"`, `params.seconds` equal to its clock and
-`params.maxNameLength: 16`, so a donation can rename the bot it bought. Two exceptions are marked in
-the table: `he_party` (kept, 60 s) and `quotes_pack` (`instant` — it must stay `enabled: false`
-until `test/activities.test.ts` is relaxed to allow an instant entry on sale).
+`params.maxNameLength: 16`, so a donation can rename the bot it bought. One exception is marked in
+the table: `he_party` (kept, 60 s). `quotes_pack` runs a 5 second clock even though its line is
+instant: the contract needs a clock for every code, and five seconds is the shortest window that
+still lets the subtitle be read.
 
 ## Kept
 
@@ -24,11 +25,11 @@ until `test/activities.test.ts` is relaxed to allow an instant entry on sale).
 
 | # | code | What the viewer sees | sec | params | status |
 |---|---|---|---|---|---|
-| 7 | `nemesis` | one bot: HP = base + perBot×alive bots, knife at 250, ×1.3 speed, camera locked on it | 60 | `baseHealth=1500 perBot=600 knife=250 speed=1.3` | on sale |
-| 8 | `survivor` | one bot: HP = 1200 + 40×bots, M249 + knife, camera on it | 60 | `baseHealth=1200 perBot=40 weapon=weapon_m249 speed=1.1` | on sale |
+| 7 | `nemesis` | one bot: HP = base + perBot×alive bots, knife at 250, ×1.3 speed, camera locked on it, **its own player model** (`infra/models/player/nemesis`) | 60 | `baseHealth=1500 perBot=600 knife=250 speed=1.3` | on sale |
+| 8 | `survivor` | one bot: HP = 1200 + 40×bots, M249 + knife, camera on it, **its own player model** (`infra/models/player/survivor`) | 60 | `baseHealth=1200 perBot=40 weapon=weapon_m249 speed=1.1` | on sale |
 | 9 | `outbreak` | a third of the bots start infected (1500 HP, knife); a knife kill converts the victim | 60 | `share=33 health=1500 infectKnife=150 speed=1.15` | on sale |
 | 10 | `juggernaut` | one bot at 5000 HP with a knife; whoever kills it becomes it | 60 | `baseHealth=5000 perBot=0 knife=200 speed=1.2 transfer=1` | on sale |
-| 11 | `assassin` | one semi-transparent bot with a knife; the role passes on death | 45 | `baseHealth=250 perBot=0 knife=200 speed=1.25 alpha=140` | on sale (see note) |
+| 11 | `sniper` | one bot with an AWP, five rounds and the camera on it; a kill pays a round back, the fifth shot takes the launcher away | 45 | `baseHealth=250 perBot=0 rounds=5 speed=1 weapon=weapon_awp` | on sale (see note) |
 | 12 | `chaos_plague` | the boss, the infection and `amx_chaos force` in one event | 60 | `baseHealth=1500 perBot=300 knife=250 share=25 health=1500 infectKnife=150` | on sale |
 
 ## S2 — classes (Zombie Plague classes)
@@ -45,9 +46,9 @@ until `test/activities.test.ts` is relaxed to allow an instant entry on sale).
 
 | # | code | What the viewer sees | sec | params | status |
 |---|---|---|---|---|---|
-| 18 | `fire_grenades` | an HE sets bots on fire: 60 damage a tick for 15 s, orange sprite | 30 | `damage=60 burn=15` | ready (off sale, YaPB does not throw) |
-| 19 | `freeze_nades` | a flashbang freezes everybody in the blast for 6 s | 30 | `freeze=6 radius=300` | planned |
-| 20 | `bazooka_drop` | one bot gets a rocket launcher, 500 blast damage, camera on it | 30 | `damage=500 radius=320 recharge=15` | planned |
+| 18 | `fire_grenades` | an HE sets bots on fire: 60 damage a tick for 15 s, orange sprite | 30 | `damage=60 burn=15 radius=300` | ready (off sale, own blast, live-run) |
+| 19 | `freeze_nades` | a flashbang freezes everybody in the blast for 6 s under an ice-white shell, with ice shards on the blast and its own ice crack (`freeze/ice_crack.wav`) | 30 | `freeze=6 radius=300` | ready (off sale, own pulse, live-run) |
+| 20 | `bazooka_drop` | one bot holds the launcher and fires rockets: 500 blast damage inside 320 units, camera on it | 30 | `damage=500 radius=320` | ready (off sale, weapon + rocket, live-run pending) |
 | 21 | `plasma_rifle` | one bot with an energy rifle: 90 damage, blue tracers, 50 rounds | 30 | `damage=90 ammo=50` | planned |
 | 22 | `laser_mines` | three mines on the map, a beam burns whoever crosses it | 45 | `count=3 damage=40` | planned |
 
@@ -65,22 +66,22 @@ until `test/activities.test.ts` is relaxed to allow an instant entry on sale).
 
 | # | code | What the viewer sees | sec | params | status |
 |---|---|---|---|---|---|
-| 28 | `guntrain` | GunGame ladder: a kill moves the bot one weapon up, panel shows the leader | 60 | `ladder=glock18,usp,deagle,mp5navy,ak47,m4a1,awp,knife` | planned |
-| 29 | `statues` | a bot freezes while another bot can see it — Hide'n'Seek on autopilot | 30 | `seconds=30` | planned |
-| 30 | `head_hunter` | the marked bot's killer gets an AWP for 15 s; the mark moves every 3 s | 45 | `reward=weapon_awp hold=15 period=3` | planned |
-| 31 | `king_of_the_hill` | hold the map centre for 3 s and keep 300 HP and an M249 | 60 | `radius=200 hold=3 health=300` | planned |
-| 32 | `duel_bell` | every 10 s two random bots are dropped in the middle for a 1 HP knife duel | 40 | `period=10 health=1` | planned |
+| 28 | `guntrain` | GunGame ladder: a kill moves the bot one weapon up, chat names the leader | 60 | `ladder=glock18,usp,deagle,mp5navy,ak47,m4a1,awp,knife` | ready (off sale) |
+| 29 | `statues` | a bot freezes while another bot can see it — Hide'n'Seek on autopilot | 30 | `seconds=30` | ready (off sale) |
+| 30 | `head_hunter` | the marked bot's killer gets an AWP for 15 s; the mark moves every 3 s | 45 | `reward=weapon_awp hold=15 period=3` | ready (off sale) |
+| 31 | `king_of_the_hill` | hold the middle of the fight for 3 s and keep 300 HP and an M249 | 60 | `radius=200 hold=3 health=300` | ready (off sale) |
+| 32 | `duel_bell` | every 10 s two random bots are dropped in the middle for a 1 HP knife duel | 40 | `period=10 health=1` | ready (off sale) |
 
 ## S6 — world and physics (ChaosModV)
 
 | # | code | What the viewer sees | sec | params | status |
 |---|---|---|---|---|---|
-| 33 | `airstrike` | ten explosions converging on the frag leader | 20 | `strikes=10 damage=120 radius=300` | planned |
-| 34 | `weapon_rain` | one weapon drops every 2 s, five in total (hard cap, see llvmpipe) | 20 | `count=5 period=2` | planned |
-| 35 | `quake` | every 0.7 s everyone is shoved by a random impulse | 15 | `period=0.7 force=400` | planned |
-| 36 | `fire_ring` | a damage zone shrinks towards the centre | 30 | `damage=5 period=1 shrink=40` | planned |
-| 37 | `invert_velocity` | every bot's velocity is negated: running forwards goes backwards | 10 | `period=0.2` | planned |
-| 38 | `low_gravity_knives` | gravity 150, knives only: jump duels | 25 | `gravity=150` | planned |
+| 33 | `airstrike` | ten explosions converging on the frag leader | 20 | `strikes=10 damage=120 radius=300` | ready (off sale) |
+| 34 | `weapon_rain` | one weapon drops every 2 s, five in total (hard cap, see llvmpipe) | 20 | `count=5 period=2` | ready (off sale) |
+| 35 | `quake` | every 0.7 s everyone is shoved by a random impulse | 15 | `period=0.7 force=400` | ready (off sale) |
+| 36 | `fire_ring` | a damage zone shrinks towards the centre | 30 | `damage=5 period=1 shrink=40` | ready (off sale) |
+| 37 | `invert_velocity` | every bot's velocity is negated: running forwards goes backwards | 10 | `period=0.2` | ready (off sale) |
+| 38 | `low_gravity_knives` | gravity 150, knives only: jump duels | 25 | `gravity=150` | ready (off sale) |
 
 ## S7 — models
 
@@ -94,10 +95,10 @@ until `test/activities.test.ts` is relaxed to allow an instant entry on sale).
 
 | # | code | What the viewer hears | sec | params | status |
 |---|---|---|---|---|---|
-| 42 | `announcer_countdown` | an announcer counts 3-2-1 before the fight starts | 10 | `sound=/usr/share/cs16/sounds/countdown.wav` | planned |
-| 43 | `quotes_pack` | a bot says a film line, with the subtitle in chat | instant | `maxPhraseLength=40` | planned |
-| 44 | `siren` | an air-raid siren over the field | 15 | `sound=/usr/share/cs16/sounds/siren.wav` | planned |
-| 45 | `music_swap` | the music bed changes for 20 s | 20 | `music=/game/cstrike/sound/… onlyMusic=1` | planned |
+| 42 | `announcer_countdown` | an announcer counts 3-2-1 before the fight starts | 10 | `stock=0` | ready (off sale) |
+| 43 | `quotes_pack` | a bot says a film line, with the subtitle in chat | 5 | `maxPhraseLength=40` | ready (off sale) |
+| 44 | `siren` | an air-raid siren over the field | 15 | `music=siren stock=0` | ready (off sale) |
+| 45 | `music_swap` | the music bed changes for 20 s | 20 | `music=music_swap onlyMusic=1` | ready (off sale) |
 
 ## S9 — stream meta effects (ffmpeg, the game is untouched)
 
@@ -111,11 +112,15 @@ until `test/activities.test.ts` is relaxed to allow an instant entry on sale).
 
 ## Not in this list, on purpose
 
-**The assassin has no target yet.** It is a semi-transparent knife hero, and the camera follows it - but
-"hunts the frag leader" needs the bot to *walk towards* somebody, and the pinned YaPB 4.4.957 ships no
-per-bot goal natives (`docs/runbook.md`, "Phase 0: what the bot plugin actually exposes"). Until a YaPB
-build with `ext/amxx` is pinned, the assassin hunts whatever its own AI picks; the code is honest about
-it (`alpha`, `knife`, `speed`) and the name promises more than the bot does.
+**The sniper replaced the assassin (2026-10-31).** The silhouette mode was a knife hero whose name promised
+"hunts the frag leader", and nothing in the pinned YaPB 4.4.957 can walk a bot towards somebody
+(`docs/runbook.md`, "Phase 0: what the bot plugin actually exposes"). `sniper` keeps the same hero machinery
+but promises only what the bot does: it aims at whatever its own AI picks, with five rounds and the camera on
+it. A kill pays one round back, and the shot that empties the budget takes the AWP away - the rest of the
+clock is a knife fight. The budget is counted in *shots*, not in ammo: `csdm_lite` refills every reserve once
+a second (`csdm_lite_ammo_reserve`), so a "five rounds" promise kept in the clip would be a full AWP inside a
+second. The silhouette parameters (`alpha`, the semi-transparent render) are still in `StartHero`/`ArmHero`
+and unused, ready for the mode that needs them.
 
 **Removed with the reset (17):** listed in `README.md`. They were disabled, and the owner asked for
 everything disabled to go except `he_party`.

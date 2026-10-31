@@ -5,22 +5,28 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadActivities } from "../src/activities.ts";
 import { buildActivityCommand } from "../src/command.ts";
-import { announcementFor, botSpeech, chaosRequest, donationAnnouncement, phaseCues, silenceRequest, VOICE_MAX_AGE_MS, VOICES, writeVoiceRequest } from "../src/voice.ts";
+import { announcementFor, botSpeech, countdownCues, donationAnnouncement, phaseCues, quoteRequest, silenceRequest, VOICE_MAX_AGE_MS, VOICES, writeVoiceRequest } from "../src/voice.ts";
 
 /**
  * The announcement voice is a request file spoken by the capture container (`infra/stream/voice.sh`).
  * These tests pin the format the shell script parses and the rule that a spoken line never reaches
  * RCON, where spaces and Cyrillic would break the command.
+ *
+ * The spring 2026 cut removed the narrator: a paid event and a donation no longer schedule speech, only
+ * their bed (`announcementFor`), because espeak-ng over a gunfight was the worst thing on the stream.
+ * The paid lines that remain are the viewer's own: `quotes_pack` and the bot chatter.
  */
 const catalog = loadActivities(new URL("../config/activities.json", import.meta.url));
 
-test("an event is announced with a voice from the list and its Russian text", () => {
+test("a paid event schedules its music and no narrator", () => {
   const cannon = catalog.activities.find((activity) => activity.code === "glass_cannon");
   assert.ok(cannon);
 
-  const request = announcementFor(cannon, () => 0.5);
-  assert.ok(request.voice !== undefined && VOICES.includes(request.voice), `${request.voice} is not a shipped voice`);
-  assert.match(String(request.text), /ПУШКА/u);
+  const request = announcementFor(cannon);
+  assert.equal(request.text, undefined, "the spoken announcement is back");
+  assert.equal(request.voice, undefined, "no espeak voice is scheduled for an event");
+  assert.equal(request.music, "glass_cannon", "the bed is what is left, and it is kept");
+  assert.equal(request.seconds, cannon.seconds ?? 15, "the bed still ends with the event");
 });
 
 test("a request file is line based, and newlines inside the text are collapsed", () => {
@@ -68,14 +74,31 @@ test("a spoken line is dropped from the RCON command", () => {
 });
 
 test("a Cyrillic line is never read by an English voice", () => {
-  // espeak-ng with an English voice spells Cyrillic out letter by letter: that is not an announcement.
+  // espeak-ng with an English voice spells Cyrillic out letter by letter: that is not a sentence. The paid
+  // `quotes_pack` line is the one spoken request left, so that is the one this pins.
+  for (const roll of [0, 0.25, 0.5, 0.75, 0.99]) {
+    const request = quoteRequest("привет", () => roll);
+    assert.match(String(request.text), /[\u0400-\u04FF]/u, "the line is Russian");
+    assert.match(String(request.voice), /^ru/u, `${request.voice} cannot read Cyrillic`);
+  }
+});
+
+test("a paid event writes no voice line into its request", () => {
   const cannon = catalog.activities.find((activity) => activity.code === "glass_cannon");
   assert.ok(cannon);
 
-  for (const roll of [0, 0.25, 0.5, 0.75, 0.99]) {
-    const request = announcementFor(cannon, () => roll);
-    assert.match(String(request.text), /[\u0400-\u04FF]/u, "the line is Russian");
-    assert.match(String(request.voice), /^ru/u, `${request.voice} cannot read Cyrillic`);
+  const dir = mkdtempSync(join(tmpdir(), "cs16-voice-"));
+  try {
+    const path = writeVoiceRequest(dir, announcementFor(cannon));
+    assert.ok(path !== null, "the bed alone is still a request");
+    const lines = readFileSync(path, "utf8").trimEnd().split("\n");
+    assert.equal(
+      lines.some((line) => line.startsWith("voice=") || line.startsWith("text=")),
+      false,
+      `the narrator is back in the request: ${lines.join(" | ")}`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -83,7 +106,7 @@ test("an event carries its own bed and the window the player must cut it at", ()
   const cannon = catalog.activities.find((activity) => activity.code === "glass_cannon");
   assert.ok(cannon);
 
-  const request = announcementFor(cannon, () => 0);
+  const request = announcementFor(cannon);
   assert.equal(request.music, "glass_cannon", "the code names the bed");
   assert.equal(request.seconds, cannon.seconds ?? 15, "the music ends with the event");
 
@@ -161,25 +184,22 @@ test("a per-run patch of seconds moves the bed with the game clock", () => {
   );
 });
 
-test("a batch of events is announced once, with one bed and the longest clock", () => {
+test("a batch of events gets one bed and the longest clock, and no spoken credit", () => {
   const meteor = catalog.activities.find((activity) => activity.code === "meteor_shower");
   const duel = catalog.activities.find((activity) => activity.code === "lightsaber_duel");
   assert.ok(meteor && duel);
 
-  const request = donationAnnouncement([meteor, duel], { username: "Петя", amount: 1000, currency: "RUB" });
+  const request = donationAnnouncement([meteor, duel]);
   assert.equal(request.music, "meteor_shower", "one bed for the whole batch, from the first effect");
   assert.equal(request.seconds, 30, "the music follows the longest effect, not the first one");
-  const text = request.text ?? "";
-  assert.match(text, /^Петя, 1000 рублей\. Выпало: /u);
-  assert.ok(text.includes("МЕТЕОРИТНЫЙ ДОЖДЬ"), text);
-  assert.ok(text.includes("Lightsaber duel"), `the duel has no Russian line any more: ${text}`);
-  assert.equal(request.voice !== undefined && request.voice.startsWith("ru"), true, "a Russian line needs a Russian voice");
+  assert.equal(request.text, undefined, "the donation monologue is back");
+  assert.equal(request.voice, undefined, "no voice is scheduled for a donation");
 });
 
 test("a batch of phase events has no bed of its own: the cues are the soundtrack", () => {
   const red = catalog.activities.find((activity) => activity.code === "red_light");
   assert.ok(red);
-  assert.deepEqual(donationAnnouncement([red], { username: "Петя", amount: 50, currency: "RUB" }), {});
+  assert.deepEqual(donationAnnouncement([red]), {});
 });
 
 test("the bed is cut by its own request, so a phase event cannot inherit the previous music", () => {
@@ -228,4 +248,42 @@ test("a phase event schedules one cue per phase", () => {
     "file paths never reach RCON",
   );
   assert.deepEqual(phaseCues({ ...red, params: {} }, 0), [], "without custom files the plugin keeps its own cues");
+});
+
+test("the countdown speaks 3-2-1-fight on the game's own seconds", () => {
+  const countdown = catalog.activities.find((activity) => activity.code === "announcer_countdown");
+  assert.ok(countdown);
+
+  const cues = countdownCues(countdown, 1_000);
+  assert.equal(cues.length, 4, "three numbers and FIGHT");
+  assert.deepEqual(
+    cues.map((cue) => cue.at),
+    [1_000, 2_000, 3_000, 4_000],
+    "the cues do not land on the plugin's one second ticks",
+  );
+  assert.deepEqual(
+    cues.map((cue) => cue.request.text),
+    ["Три", "Два", "Один", "В бой!"],
+  );
+  for (const cue of cues) {
+    assert.ok(String(cue.request.voice).startsWith("ru"), "a Cyrillic line needs a Russian voice");
+  }
+
+  const cannon = catalog.activities.find((activity) => activity.code === "glass_cannon");
+  assert.ok(cannon);
+  assert.deepEqual(countdownCues(cannon, 0), [], "only the countdown schedules countdown cues");
+});
+
+test("a quote is spoken in the same ASCII form the chat shows", () => {
+  const request = quoteRequest("  hello \n world  ", () => 0);
+  assert.equal(request.text, "hello world", "whitespace is collapsed for the line-based request");
+  assert.ok(VOICES.includes(String(request.voice)), `${request.voice} is not a shipped voice`);
+
+  // The RCON token has underscores where the spaces were; the voice must not read them out.
+  assert.equal(quoteRequest("HELLO_WORLD", () => 0).text, "HELLO WORLD");
+
+  // The donation arrives in Cyrillic and the chat shows a transliteration; the voice must read the
+  // transliteration too, or the subtitle and the speech disagree.
+  const cyrillic = quoteRequest("привет", () => 0);
+  assert.ok(String(cyrillic.voice).startsWith("ru"));
 });

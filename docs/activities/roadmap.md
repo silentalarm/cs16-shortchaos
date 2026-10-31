@@ -56,11 +56,23 @@ leaves the other intact.
       drops the guard task and unlocks the camera on a full reset;
 - [x] the four other codes of the system: `outbreak` (a third of the field infected, a knife kill
       converts and the respawn hook re-arms the victim), `juggernaut` (the role goes to its killer),
-      `assassin` (semi-transparent hero - it has no target, see the note in `catalogue.md`) and
-      `chaos_plague` (boss + infection + `amx_chaos force`);
+      `sniper` (one bot, an AWP and five rounds; a kill pays a round back, and the shot that empties the
+      budget takes the launcher away - the budget is counted in shots because `csdm_lite` refills every
+      reserve once a second) and `chaos_plague` (boss + infection + `amx_chaos force`); `sniper` replaced
+      `assassin` on 2026-10-31, see the note in `catalogue.md`;
 - [x] the infection is a per-slot flag, not a health value: csdm_lite gives the bot a rifle half a
       second after it dies, so only a flag survives the death the conversion depends on;
-- [ ] the zombie model pack: every hero mode currently reads by glow or silhouette, not by model (S7).
+- [~] the nemesis' own look: **the models are made** - `infra/models/build/nemesis.mjs` re-skins the game's
+      own soldier and knife into `models/player/nemesis/nemesis.mdl` and `models/p_nemesis_knife.mdl` (new
+      files; the stock ones are only read), PASS on `check`, both copied into the image and synced into the
+      volume under `models/player/`. **The plugin hook is not in yet**: `cs_set_user_model` +
+      `pev_weaponmodel` in `ArmHero`/`TaskKitSweep`/`EndHero` made amxxpc abort with `std::bad_alloc`, and
+      the first root cause found on the way was a stray duplicated comment block after `KitWeapon`'s header
+      (fixed). What is left is a bisect of the remaining four hooks against the local compiler harness
+      (`.tmp-amxx/probe3.sh`: amxxpc out of the pinned AMXX archives, run in `amxxpc-runner:local`) - every
+      probe is 20 seconds instead of a two-minute image build;
+- [ ] the rest of the model pack: `survivor`/`juggernaut` still wear stock uniforms, and the zombie set
+      (`zombie_source`, S7) is still unwritten (S7);
 - [x] the newer run replaces the older one here too: `StartHero`/`StartOutbreak` end the running code
       before taking over, and `EndHero`/`EndOutbreak` ignore a code that is not the one on screen - a
       `nemesis` bought over a `survivor` used to lose its camera lock and its health claim to the
@@ -140,23 +152,61 @@ log. What is missing is the .mdl, and the on-sale step once the picture is confi
 
 ## Stage 5 — S3 items (5 codes)
 
-- [~] `fire_grenades`: the field keeps HE grenades in hand (twice a second, like the HE party) and every
+- [x] `fire_grenades`: the field keeps HE grenades in hand (twice a second, like the HE party) and every
       bot a blast catches burns for `burn` seconds at `damage` a tick, with an orange shell. The trigger
       is the engine's own `DMG_BLAST` flag in the damage hook, not a scan for grenade entities: the
       engine already resolved the explosion, and a scan is a second guess at the same fact with a frame
-      of lag on it. The run logs `N bot(s) burned, M tick(s) of fire`, and the undo drops both tasks and
+      of lag on it. The run logs `N bot(s) burned, M tick(s) of fire`, and the undo drops every task and
       every countdown, so a bot cannot leave the map on fire. Measured live: with a `meteor_shower`
       providing the blasts, `30 bot(s) burned, 425 tick(s) of fire` in 30 s - the whole path works. But
-      over 30 s of grenades alone **nobody burned**: YaPB bots hold an HE and do not throw it, so the
-      code as it stands depends on a player action that never happens. Either force the throw or add a
-      spark of its own before this goes on sale;
-- [ ] fire and freeze grenades: the freeze half is not written yet. A flashbang does no damage, so
-      `DMG_BLAST` cannot detect it the way it detects an HE - the options are a `FM_SetModel` forward on
-      the world model of the detonating grenade, or a 0.25 s scan of `grenade` entities with their last
-      known origin. Pick one before writing it;
-- [ ] the bazooka entity first, measured against `csdm_lite` respawn: `v_`/`w_`/`p` models are needed for
-      a real weapon entity and the image has none, so the documented fallback (`weapon_m249` with a
-      bigger blast radius) is the only path that ships before the models arrive;
+      over 30 s of grenades alone **nobody burned**: YaPB bots hold an HE and never throw it. So the event
+      now carries a blast of its own: `TaskFireSpark` drops one explosion every 4 s next to a random bot,
+      `radius` wide, at `FIRE_SPARK_DAMAGE` - and it is labelled `DMG_BLAST` through `Ham_TakeDamage`, so
+      the ignition stays in the one hook the meteor path already proved. A thrown HE is still a blast; it
+      is simply not the only one. Live on `fy_iceworld` (2026-10-31): `fire_grenades ended: 18 bot(s)
+      burned, 230 tick(s) of fire` inside its 30 s clock, `amx_de status` back to `active=none` on the
+      timer and no new line in the AMXX error log - the event's own spark ignites the field, which the
+      grenade-only run never did. Left: the on-sale step, and it wants a stream watch, not another
+      server run;
+- [x] `freeze_nades`: the field keeps flashbangs in hand and a flashbang that goes off freezes every bot in
+      `radius` for `freeze` seconds under a blue shell. The trigger cannot be `DMG_BLAST` - a flashbang deals
+      no damage and never reaches `OnTakeDamage` - so a 0.25 s scan reads the `grenade` entities themselves:
+      each live flashbang is remembered with its last origin and its `pev_dmgtime`, and one that is gone
+      within a stride of its own fuse is a detonation at that origin. `TaskFlashSpark` adds the same half as
+      the fire event: one pulse every 4 s on a random bot, the stock `weapons/flashbang-1.wav` as its bang,
+      and the same `FlashBlast` the scan calls, so there is one freeze path with two sources. The undo drops
+      the four tasks, every countdown and the claim, and the log always reports `N blast(s) seen, M bot(s)
+      frozen`, so a run where nothing happened says so. Live on `fy_snow` (2026-10-31): `freeze_nades
+      ended: 21 blast(s) seen, 41 bot(s) frozen`, `active=none` on the clock. The event's own pulse is one
+      blast every 4 s, so seven of the twenty-one; the other fourteen arrived through the grenade scan, so
+      that branch is not idle. The log cannot tell a bot throw from a live grenade the engine cleared, and
+      it does not have to: the count the viewer gets is the 41 freezes. Left: the on-sale step and a stream
+      watch;
+- [x] `bazooka_drop`: the launcher is a weapon the bot fires. A custom weapon entity is not reachable from
+      a plugin - YaPB picks what to shoot from its own weapon list and nothing in that list is ours - so
+      the carrier is armed with `weapon_awp` (one shot per bolt cycle, which is the launcher's rhythm) and
+      three things are put on top of it: **the model** (the engine draws a player's third-person weapon
+      from that player's `weaponmodel` field, so `models/p_bazooka.mdl` is written into the field every
+      0.25 s - the game puts the AWP's own model back on every switch and every spawn, which is why one
+      write was not enough and why the earlier prop read as a launcher floating over the bot), **the
+      trigger** (`Ham_Weapon_PrimaryAttack` on the carrier's `weapon_awp`, so the bot aims and fires by
+      itself) and **the shell** (the AWP's bullet is superceded in `Ham_TraceAttack`, and a rocket - the
+      `zerogxplode` sprite, additive, 900 u/s - flies along the view and explodes on the first thing it
+      meets, `damage` 500 in `radius` 320 with falloff, through `Ham_TakeDamage` and `DMG_BLAST`, so the
+      kill is the blast and not the hitscan). Both models are made in this repository (SMAK, MIT, PASS on
+      `smak check --engine goldsrc`). The run logs `N rocket(s) fired, M blast(s), K bot(s) hit`, the
+      respawn hook re-arms the carrier and the role moves to a living bot on each death, and the undo
+      drops the dress tick, every rocket in the air and the model field. The first live run (2026-10-31)
+      said the rocket was there but *invisible* - 0.6 of sprite scale next to a 72 unit bot - so the rocket
+      now carries a beam trail from step to step, a flash and a muzzle streak at launch, and every blast
+      draws its own radius as a `Shockwave()` ring; the same run measured the carrier dying on its own
+      explosion six times in 45 s, so the owner is out of its own blast. The second run showed the sprite
+      itself as a **black square** (an entity does not animate a sprite, and frame 0 of `zerogxplode` is
+      black), so the rocket has no model at all now: it is the collider, and what the viewer sees is the
+      beam streak. And the launcher in the hand sat at the bot's feet: the engine draws a player's weapon
+      model in the model's own space, and the stock p_ files put their geometry at the hand's rest position
+      (`HAND` in `infra/models/build/bazooka.mjs`), which is where the mesh is built now. Left: the on-sale
+      step and a stream watch;
 - [ ] plasma rifle and laser mines only if the bazooka is stable.
 
 **Done when:** one custom weapon survives a full respawn cycle and its model is visible in the stream.
@@ -164,30 +214,79 @@ log. What is missing is the .mdl, and the on-sale step once the picture is confi
 
 ## Stage 6 — S5 chases (5 codes)
 
-- [ ] `guntrain` ladder with per-bot progress and the panel showing the leader;
-- [ ] `statues` line-of-sight freeze;
-- [ ] `head_hunter`, `king_of_the_hill`;
-- [ ] `duel_bell` teleports, verified on all seven maps.
+- [x] `guntrain` ladder with per-bot progress: the rung is per slot and survives death - the respawn branch
+      re-arms the bot with `g_trainLadder[g_trainLevel[id]]` and only while `ClaimTake` says the ladder still
+      owns the weapon pool, so a newer weapon event is not fought over. Every rung is
+      checked by `IsSafeWeapon` before `give_item`, the promotion is counted, and the leader is announced in
+      chat and the AMXX log - the panel line is not wired yet (it would need a cvar and a `game-poller` read);
+- [x] `statues` line-of-sight freeze: one pass traces the whole field (`CanSee`, eye to chest, 0.98) and
+      freezes every bot somebody can see, then thaws the ones nobody does. The freeze is the shared
+      `CLAIM_FREEZE`, so `red_light` and `freeze_nades` cannot fight it: the newest claim owns the field;
+- [x] `head_hunter`: the mark wears a red shell, moves every `period`, and its killer gets `reward` plus a
+      gold shell that is counted down and taken off. The reward weapon itself lives with the body - csdm_lite
+      respawns a bot seconds after the death that pays here, so "until death" is the honest bound in the
+      catalogue's `hold`;
+- [x] `king_of_the_hill`: the hill is the average of the alive bots at start, not the geometric centre
+      (`fy_aztec`'s centre is a building); a continuous `hold` inside `radius` pays `health` HP and an M249,
+      and leaving resets the clock. Claims health and weapons;
+- [~] `duel_bell` teleports: both spots are checked with `EngFunc_PointContents` before `EngFunc_SetOrigin`,
+      and a pair with no free spot skips the ring instead of dropping a bot into a wall. Verified on one map
+      live; the seven-map walk for this code is still open (the smoke test in `scripts/map-walk.ts` walks the
+      pool, and this stage's `Done when` asks for it on all seven);
 
 **Done when:** every one of them runs for its whole clock with no bot stuck outside the map.
 
 ## Stage 7 — S6 physics (6 codes)
 
-- [ ] `airstrike` converging strikes;
-- [ ] `weapon_rain` with the 5-entity cap;
-- [ ] `quake`, `fire_ring`, `invert_velocity`, `low_gravity_knives`;
-- [ ] `sv_gravity` restored after `amx_de clear`, verified over RCON.
+- [x] `airstrike` converging strikes;
+- [x] `weapon_rain` with the 5-entity cap;
+- [x] `quake`, `fire_ring`, `invert_velocity`, `low_gravity_knives`;
+- [x] `sv_gravity` restored after `amx_de clear`, verified over RCON.
 
 **Done when:** none of the six survives its clock — no permanent gravity, no permanent velocity flip.
 
+Built: each code owns a 48xx task and a branch in `EndEffectState`; `invert_velocity` takes
+`CLAIM_VELOCITY` and gives the field one last flip when its claim is the newest, `low_gravity_knives`
+writes `sv_gravity` through `ClaimGravity` and restores the base only when it is the top claim; the
+five boxes of `weapon_rain` are `armoury_entity` weapons (`cs_set_armoury_type` + a hand-set world
+model, because the native does not touch the model) and are removed with the clock. 310 tests green,
+plugin compiles.
+
+Live on `fy_iceworld` (2026-10-31): `amx_de codes` lists 35 codes; `airstrike` landed 10 of 10 strikes
+and hit 14 bots; `weapon_rain` dropped 5 boxes; `quake` ran 15 ticks and 200 shoves; `invert_velocity`
+made 701 flips and ended on its clock; `fire_ring` caught 10 bots and ended on its clock;
+`low_gravity_knives` took `sv_gravity` 800 → 150 → 800 both on its own 5 s clock and on `amx_de clear`;
+`amx_de status` reported `active=none` at the end. No AMXX runtime errors in the log.
+
 ## Stage 8 — S8 sound (4 codes)
 
-- [ ] siren and countdown through `infra/sounds` → WAV → `voice.sh`;
-- [ ] `quotes_pack` through the TTS path (`src/voice.ts`), subtitle in chat;
-- [ ] `music_swap` with the audio-bed claim;
-- [ ] levels checked with `node scripts/wav-levels.ts`.
+- [x] siren and countdown, synthesised on the broadcast side (no asset file, no licence);
+- [x] `quotes_pack` through the TTS path (`src/voice.ts`), subtitle in chat;
+- [x] `music_swap` with the audio-bed claim;
+- [x] levels checked with `node scripts/wav-levels.ts`.
 
 **Done when:** two sound events in the same second do not clip the mix.
+
+Built: the game side prints the line and takes `CLAIM_AUDIO`, the broadcast side owns the mix.
+`siren` and `music_swap` are two new beds in `TRACKS` (`src/music.ts`), rendered at image build like
+the other seventeen; the siren needed `gain: 2.5`, because a track with no bass and no drums measured
+8 dB under its neighbours. `announcer_countdown` schedules four TTS cues (`countdownCues`) on the
+same one-second ticks the plugin uses for its chat numbers. `quotes_pack` speaks the viewer's phrase
+after the announcement, sanitised to the same ASCII form the chat shows, and falls back to a built-in
+pack when a panel run carries no message.
+
+Two events in the same second cannot clip: `voice.sh` keeps exactly one bed (`start_music` kills the
+previous pid) and plays speech and cues sequentially through the poll loop, so a second bed replaces
+the first instead of stacking on it.
+
+Measured on the generated files: `siren.wav` 15.00 s, mean -18.3 dBFS, peak 0.522; `music_swap.wav`
+20.00 s, mean -18.7, peak 0.725; `default.wav` mean -19.7, peak 0.519 - every bed within ~1.5 dB of
+its neighbours. The plugin was live-run on `fy_iceworld`: `amx_de codes` lists 39 codes; the countdown
+logged 2, 1 and FIGHT and ended on its own 10 s clock; `quotes_pack text=HELLO_WORLD` printed
+`said HELLO WORLD` (the RCON token's underscores become spaces); `siren` and `music_swap` started and
+`amx_de status` listed them together; `amx_de clear` left `active=none`. The stream image was rebuilt:
+`siren.wav` (661 544 B) and `music_swap.wav` (882 044 B) are in `/usr/share/cs16/music`, and
+`espeak-ng`/`paplay` are on the image. No live broadcast was started for this stage.
 
 ## Stage 9 — S9 ffmpeg meta (5 codes)
 
