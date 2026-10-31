@@ -340,6 +340,99 @@ test("a replaced hero or infection cannot tear down the run that replaced it", (
   assert.match(reset, /g_outbreakCode\[0\] = '\^0'/, "the infection owner outlives a full reset");
 });
 
+test("the five S4 skills are registered, clocked and undone like every other effect", () => {
+  const handlers = registered();
+  const skills: [string, string][] = [
+    ["hex_wave", "EffectHexWave"],
+    ["chain_lightning", "EffectChainLightning"],
+    ["blink_bots", "EffectBlinkBots"],
+    ["hero_roulette", "EffectHeroRoulette"],
+    ["vampiric_aura", "EffectVampiricAura"],
+  ];
+
+  for (const [code, handler] of skills) {
+    assert.equal(handlers.get(code), handler, `${code} is not registered`);
+
+    const effect = new RegExp(`public ${handler}\\(\\)\\s*\\{[\\s\\S]*?\\n\\}`).exec(source)?.[0] ?? "";
+    assert.notEqual(effect, "", `${handler} is missing`);
+    assert.match(effect, /BeginEvent\("/, `${code} does not open an event`);
+    // A clock, not a round: csdm_lite ends a round in half a second, so Round_End never arrives.
+    assert.match(effect, new RegExp(`StartEffectTimer\\("${code}", EffectSeconds\\(`), `${code} has no clock`);
+    assert.match(
+      source,
+      new RegExp(`if \\(equal\\(code, "${code}"\\)\\)`),
+      `${code} has no undo branch in EndEffectState`,
+    );
+  }
+
+  // The three timers are dropped on every reset path, or a task outlives its flag by one map.
+  const reset = /public ResetEventState\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  for (const task of ["TASK_CHAIN", "TASK_BLINK", "TASK_ROULETTE"]) {
+    assert.match(reset, new RegExp(`remove_task\\(${task}\\)`), `${task} survives a full reset`);
+  }
+});
+
+test("the blink traces before it moves a bot, and refuses a solid landing", () => {
+  const blink = /stock bool:BlinkBot\(id\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(blink, "", "BlinkBot is missing");
+
+  // The order is the point: a bot placed inside geometry is stuck for the rest of the event, and the
+  // engine snaps a bad origin back without an error, which reads as "the skill did nothing".
+  const traced = blink.indexOf("EngFunc_TraceLine");
+  const moved = blink.indexOf("EngFunc_SetOrigin");
+  assert.notEqual(traced, -1, "the destination is never traced");
+  assert.notEqual(moved, -1, "the bot is never moved");
+  assert.ok(traced < moved, "the bot is moved before the destination is checked");
+  assert.match(blink, /CONTENTS_SOLID/, "a solid landing is not refused");
+  assert.match(blink, /fraction < 0\.5/, "a blink that stops at the first wall still counts as a blink");
+});
+
+test("the roulette hides its power until it fires, and the aura heals in the damage hook", () => {
+  const roulette = /public EffectHeroRoulette\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(roulette, "", "EffectHeroRoulette is missing");
+  // The surprise is the product: the chat may not name the power before the timer applies it.
+  assert.doesNotMatch(roulette, /Announce\(/, "the roulette announces its power before it fires");
+  assert.match(roulette, /set_task\(delay, "TaskRoulette", TASK_ROULETTE\)/, "the power is never applied later");
+  const pool = /stock RoulettePool\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(pool, "", "RoulettePool is missing");
+  assert.match(pool, /ParamCopy\("pool"/, "the pool is not read from the command");
+  assert.match(pool, /containi\(pool, "deagle"\)/, "the pool names are not read one by one");
+
+  const fire = /stock RouletteFire\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(fire, /Announce\(/, "the reveal has no chat line");
+  assert.match(fire, /switch \(g_roulettePower\)/, "the pool is not used to pick a branch");
+
+  const damage = /public OnTakeDamage\([^)]*\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(damage, /AuraHeal\(attacker, damage\)/, "the aura never heals");
+});
+
+test("the hex takes the costume off again, and the aura keeps a ceiling", () => {
+  const undo = /stock EndHexWave\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(undo, "", "EndHexWave is missing");
+  // A render-side state outlives death: without the reset the bot is a chicken for the rest of the map.
+  assert.match(undo, /cs_reset_user_model\(g_hexBot\)/, "the costume is never taken off");
+  assert.match(undo, /ClaimRelease\(CLAIM_SPEED, owner\)/, "the speed is put back blindly");
+
+  const arm = /stock ArmHexed\([^)]*\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(arm, /if \(g_hexCostume\)/, "the model is set even when the file is missing");
+  assert.match(arm, /StripWeapons\(id\)/, "the chicken keeps its weapons");
+
+  const respawn = /public ReArmOnSpawn\(id\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(respawn, /ArmHexed\(id, false\)/, "a respawned chicken comes back with a rifle");
+
+  const heal = /stock AuraHeal\([^)]*\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(heal, /REGEN_CEIL/, "the aura has no ceiling");
+
+  // Measured on the test server: precaching a .mdl that is not in the image is not a soft failure, it is
+  // `FATAL ERROR (shutting down): Mod_LoadModel: models/player/chicken/chicken.mdl not found`, and the
+  // server goes into a restart loop. The file has to be checked before it is precached.
+  const precache = /public plugin_precache\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  const checked = precache.indexOf("file_exists(HEX_MODEL_PATH)");
+  const loaded = precache.indexOf("precache_model(HEX_MODEL_PATH)");
+  assert.notEqual(checked, -1, "the costume file is not checked before use");
+  assert.ok(checked < loaded, "the costume is precached before the file is checked");
+});
+
 test("no unfinished markers left in the plugin source", () => {
   assert.equal(/\/\/\s*PART[0-9]/.test(source), false, "the file still contains a PART marker");
 });

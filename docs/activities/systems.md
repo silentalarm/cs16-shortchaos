@@ -134,7 +134,10 @@ nothing until it fires, because the surprise is the product; `vampiric_aura` hea
 
 **Measure.** `set_user_origin` into geometry: a blink that lands a bot inside a wall is a stuck bot
 for the rest of the event. Trace first and skip the bot when the destination is solid. The engine also
-likes to snap a moved bot back — the same trap `set_user_origin` had in `docs/events.md`.
+likes to snap a moved bot back — the same trap `set_user_origin` had in `docs/events.md`. Measured on the
+test server: `precache_model` of a `.mdl` that is not in the image is not a warning, it is
+`FATAL ERROR (shutting down): Mod_LoadModel: ... not found` and a restart loop, so any model a code can
+name has to pass `file_exists` before it is precached.
 
 ## S5 — chases and arenas (GunGame, Hide'n'Seek, arena formats)
 

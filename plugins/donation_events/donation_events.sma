@@ -248,6 +248,59 @@ new g_classBotCount;
    `capped` says whether the ceiling of `KNOCKBACK_CAP` was the thing in effect. */
 new g_classPushes;
 new g_classCappedPushes;
+
+/* ---------- S4 skills: state ---------- */
+
+/* A skill does not need a class or a hero to exist: each of the five owns its own clock and its own
+   claims, and two of them can be on the field at once. Task ids stay in the 48xx block. */
+#define TASK_CHAIN 4811
+#define TASK_BLINK 4812
+#define TASK_ROULETTE 4813
+#define HEX_MODEL_PATH "models/player/chicken/chicken.mdl"
+#define HEX_SPEED 0.6
+#define BLINK_MIN_DIST 50.0
+#define BLINK_MAX_DIST 600.0
+#define ROULETTE_INVISIBLE 0
+#define ROULETTE_SPEED 1
+#define ROULETTE_HEALTH 2
+#define ROULETTE_DEAGLE 3
+#define ROULETTE_POWERS 4
+#define ROULETTE_HEALTH_HP 500
+#define ROULETTE_SPEED_MULT 2.0
+#define ROULETTE_ALPHA 60
+
+new bool:g_hexActive;
+new g_hexBot;
+new g_hexModel[VALUE_LEN];
+/* The costume needs a .mdl that the image does not ship yet, and GoldSrc dies on a missing precache
+   (`Mod_LoadModel: not found` is a FATAL ERROR), so the costume is opt-in on the file existing and the
+   hex works without it. */
+new bool:g_hexCostume;
+
+new g_beamSprite;
+
+new bool:g_chainActive;
+new g_chainTargets = 3;
+new g_chainDamage = 40;
+/* Same reason as the blink counters: a bolt nobody sees hit anything is a bolt nobody can prove. */
+new g_chainBolts;
+new g_chainHits;
+
+new bool:g_blinkActive;
+new Float:g_blinkDistance = 200.0;
+/* Counted the way the class knockback is: a blink that lands is indistinguishable from one the engine
+   snapped back, so the run reports how many of its attempts actually moved a bot. */
+new g_blinkMoved;
+new g_blinkTried;
+
+new bool:g_rouletteActive;
+new bool:g_rouletteFired;
+new g_rouletteBot;
+new g_roulettePower = -1;
+new g_rouletteSavedHealth;
+
+new bool:g_auraActive;
+new g_auraShare = 50;
 new bool:g_classActive;
 /* Which of the five codes shapes the field right now. A newer class event ends the running one before it
    takes over, and the ended run's clock still fires later: without this code that stale clock would
@@ -313,6 +366,14 @@ public plugin_init()
 	RegisterDonationEffect("lightsaber_duel", "EffectLightsaberDuel");
 	RegisterDonationEffect("one_bullet", "EffectOneBullet");
 
+	// S4 skills: the five codes of docs/activities/systems.md, S4. No new asset is needed by four of
+	// them; `hex_wave` wants a chicken model and says so in its log line.
+	RegisterDonationEffect("hex_wave", "EffectHexWave");
+	RegisterDonationEffect("chain_lightning", "EffectChainLightning");
+	RegisterDonationEffect("blink_bots", "EffectBlinkBots");
+	RegisterDonationEffect("hero_roulette", "EffectHeroRoulette");
+	RegisterDonationEffect("vampiric_aura", "EffectVampiricAura");
+
 	log_amx("loaded, API %d, %d activities", API_VERSION, g_effectCount);
 }
 
@@ -336,6 +397,19 @@ public plugin_precache()
 	precache_sound("ambience/lv_neon.wav");
 	precache_sound("ambience/Opera.wav");
 	precache_sound("events/enemy_died.wav");
+
+	// S4: the bolt between chained bots is a stock sprite. The hex costume is a different case - a missing
+	// .mdl is not a soft failure in GoldSrc, it is `FATAL ERROR (shutting down): Mod_LoadModel: ... not
+	// found`, which takes the server into a restart loop. So the file is checked first and precached only
+	// when it is there; the costume then appears by itself once the model is in the image.
+	precache_model("sprites/laserbeam.spr");
+	g_beamSprite = precache_model("sprites/laserbeam.spr");
+
+	g_hexCostume = file_exists(HEX_MODEL_PATH) != 0;
+	if (g_hexCostume)
+		precache_model(HEX_MODEL_PATH);
+	else
+		log_amx("hex_wave: %s is not in the image, the hex runs without the costume", HEX_MODEL_PATH);
 }
 
 stock RegisterDonationEffect(const code[], const handler[])
@@ -830,6 +904,36 @@ stock EndEffectState(const code[])
 		return;
 	}
 
+	if (equal(code, "hex_wave"))
+	{
+		EndHexWave();
+		return;
+	}
+
+	if (equal(code, "chain_lightning"))
+	{
+		EndChainLightning();
+		return;
+	}
+
+	if (equal(code, "blink_bots"))
+	{
+		EndBlinkBots();
+		return;
+	}
+
+	if (equal(code, "hero_roulette"))
+	{
+		EndHeroRoulette();
+		return;
+	}
+
+	if (equal(code, "vampiric_aura"))
+	{
+		EndVampiricAura();
+		return;
+	}
+
 	if (equal(code, "he_party"))
 	{
 		// The party owns its own repeating task instead of a generic clock, so its undo is explicit.
@@ -1106,7 +1210,7 @@ stock bool:HasGun(id)
    drop it with the same `remove_task(id)`. */
 public OnPlayerSpawn(id)
 {
-	if (!g_duelActive && !g_outbreakActive && !g_classActive)
+	if (!g_duelActive && !g_outbreakActive && !g_classActive && !g_hexActive)
 		return;
 
 	if (!is_user_connected(id) || !is_user_bot(id))
@@ -1114,8 +1218,9 @@ public OnPlayerSpawn(id)
 
 	// The infection is the reason this hook now fires on every respawn: csdm_lite hands the bot a rifle
 	// half a second after it died, and an infected bot has to come back with a knife. A class bot has
-	// the same problem on another axis: health, speed and gravity are per-spawn values.
-	if (g_duelActive || IsInfected(id) || IsClassed(id))
+	// the same problem on another axis: health, speed and gravity are per-spawn values. The hex is the
+	// third case - csdm_lite gives the chicken a rifle and the server's own run speed back.
+	if (g_duelActive || IsInfected(id) || IsClassed(id) || (g_hexActive && id == g_hexBot))
 		set_task(0.3, "ReArmOnSpawn", id);
 }
 
@@ -1136,6 +1241,13 @@ public ReArmOnSpawn(id)
 	if (IsClassed(id))
 	{
 		ArmClass(id, false);
+		return;
+	}
+
+	// A hexed bot keeps the costume and the speed, and loses the rifle csdm_lite just handed it.
+	if (g_hexActive && id == g_hexBot)
+	{
+		ArmHexed(id, false);
 		return;
 	}
 
@@ -1234,6 +1346,25 @@ public ResetEventState()
 		g_classSavedHealth[id] = 0;
 	}
 	ResetBotGravity();
+
+	// The skills: a dropped task with a live flag is a bot that stays a chicken on the next map, and
+	// the costume and the render mode both survive death, so they are taken off here as well.
+	remove_task(TASK_CHAIN);
+	remove_task(TASK_BLINK);
+	remove_task(TASK_ROULETTE);
+	if (g_hexActive && g_hexBot > 0 && g_hexCostume && is_user_connected(g_hexBot))
+		cs_reset_user_model(g_hexBot);
+	g_hexActive = false;
+	g_hexBot = 0;
+	g_chainActive = false;
+	g_blinkActive = false;
+	g_blinkMoved = 0;
+	g_blinkTried = 0;
+	g_rouletteActive = false;
+	g_rouletteFired = false;
+	g_rouletteBot = 0;
+	g_rouletteSavedHealth = 0;
+	g_auraActive = false;
 
 	if (g_cannonBot > 0 && g_cannonSavedHealth > 0 && is_user_alive(g_cannonBot))
 		set_user_health(g_cannonBot, g_cannonSavedHealth);
@@ -2416,6 +2547,620 @@ public TaskClassRegen()
 	}
 }
 
+/* ---------- S4 skills: the handlers ---------- */
+
+/* HEX WAVE. One bot stops being a soldier. The costume is the joke, so it is applied only when the model
+   is in the image; without it the hex still strips the bot, slows it to 60 % and glows it yellow, which
+   is what the viewer sees instead of a chicken. */
+public EffectHexWave()
+{
+	BeginEvent("hex_wave");
+
+	ParamCopy("model", g_hexModel, charsmax(g_hexModel), "chicken");
+
+	new bot = PickRandomBot();
+	if (!bot)
+	{
+		log_amx("hex_wave: no bots are alive");
+		return;
+	}
+
+	g_hexActive = true;
+	g_hexBot = bot;
+
+	new owner = FindEffect("hex_wave");
+	ClaimTake(CLAIM_SPEED, owner, floatround(HEX_SPEED * 100.0));
+	ClaimTake(CLAIM_GLOW, owner, 1);
+	ClaimTake(CLAIM_WEAPONS, owner, 1);
+
+	// The shared "speed was touched" flag is what a full reset reads: a hexed bot that keeps 192 u/s
+	// after `amx_de clear` is the same bug the classes had before they took the claim.
+	g_speedBoosted = true;
+
+	ArmHexed(bot, true);
+
+	new name[NICK_LEN];
+	get_user_name(bot, name, charsmax(name));
+	Announce("%s IS THE %s", name, g_hexModel);
+
+	StartEffectTimer("hex_wave", EffectSeconds(20.0));
+	DonorSay("THE HEX IS LOOSED");
+}
+
+stock ArmHexed(id, bool:first)
+{
+	if (g_hexCostume)
+		cs_set_user_model(id, g_hexModel);
+
+	StripWeapons(id);
+	set_user_maxspeed(id, HexSpeed());
+	set_user_rendering(id, kRenderFxGlowShell, 255, 255, 0, kRenderNormal, 18);
+
+	if (first)
+	{
+		log_amx("hex_wave: bot %d is '%s' (%s), x%.2f speed", id, g_hexModel,
+			g_hexCostume ? "model in the image" : "no model in the image, glow only", HEX_SPEED);
+	}
+}
+
+stock Float:HexSpeed()
+{
+	new Float:speed = get_cvar_float("sv_maxspeed");
+	if (speed <= 0.0)
+		speed = 320.0;
+
+	return speed * HEX_SPEED;
+}
+
+stock EndHexWave()
+{
+	new owner = FindEffect("hex_wave");
+	new bool:speedOwned = ClaimRelease(CLAIM_SPEED, owner);
+	new bool:glowOwned = ClaimRelease(CLAIM_GLOW, owner);
+	ClaimRelease(CLAIM_WEAPONS, owner);
+
+	if (g_hexBot > 0 && is_user_connected(g_hexBot))
+	{
+		// The costume is render-side state and survives death, so it comes off a slot that is not alive
+		// too. Health is not touched by this code, and the weapons are handed back by csdm_lite on the
+		// next respawn: re-arming a corpse would only fight the engine.
+		if (g_hexCostume)
+			cs_reset_user_model(g_hexBot);
+
+		if (speedOwned)
+		{
+			new Float:speed = get_cvar_float("sv_maxspeed");
+			if (speed <= 0.0)
+				speed = 320.0;
+			set_user_maxspeed(g_hexBot, speed);
+		}
+
+		if (glowOwned)
+			ClearGlow(g_hexBot);
+	}
+
+	g_hexActive = false;
+	g_hexBot = 0;
+}
+
+/* CHAIN LIGHTNING. A bolt every `period` hops through `targets` bots from a random start, drawn between
+   the bots it actually damages. The damage goes through Ham_TakeDamage with the start bot as the
+   attacker, so the kill feed and every other rule on the server stay in force. */
+public EffectChainLightning()
+{
+	BeginEvent("chain_lightning");
+
+	g_chainTargets = ParamInt("targets", 3);
+	if (g_chainTargets < 1)
+		g_chainTargets = 1;
+	if (g_chainTargets > 5)
+		g_chainTargets = 5;
+
+	g_chainDamage = ParamInt("damage", 40);
+	if (g_chainDamage < 1)
+		g_chainDamage = 1;
+
+	new Float:period = ParamFloat("period", 3.0);
+	if (period < 1.0)
+		period = 1.0;
+
+	if (!PickRandomBot())
+	{
+		log_amx("chain_lightning: no bots are alive");
+		return;
+	}
+
+	g_chainActive = true;
+	g_chainBolts = 0;
+	g_chainHits = 0;
+
+	ClaimTake(CLAIM_HEALTH, FindEffect("chain_lightning"), 1);
+	set_task(period, "TaskChainBolt", TASK_CHAIN, "", 0, "b");
+	StartEffectTimer("chain_lightning", EffectSeconds(20.0));
+	log_amx("chain_lightning: %d bots a bolt, %d damage, every %.1f s", g_chainTargets, g_chainDamage, period);
+	DonorSay("LOOK UP");
+}
+
+public TaskChainBolt()
+{
+	if (!g_chainActive)
+	{
+		remove_task(TASK_CHAIN);
+		return;
+	}
+
+	ChainBolt();
+}
+
+stock ChainBolt()
+{
+	new from = PickRandomBot();
+	if (!from)
+		return;
+
+	new hit[MAX_SLOTS];
+	hit[from] = 1;
+
+	new current = from;
+	new Float:origin[3];
+	pev(current, pev_origin, origin);
+	origin[2] += 36.0;
+	g_chainBolts++;
+
+	for (new step = 0; step < g_chainTargets; step++)
+	{
+		new next = FindNearestUnhit(current, hit);
+		if (!next)
+			break;
+
+		hit[next] = 1;
+
+		new Float:where[3];
+		pev(next, pev_origin, where);
+		where[2] += 36.0;
+		DrawBeam(origin, where);
+
+		ExecuteHamB(Ham_TakeDamage, next, from, from, float(g_chainDamage), DMG_SHOCK);
+		g_chainHits++;
+
+		origin[0] = where[0];
+		origin[1] = where[1];
+		origin[2] = where[2];
+		current = next;
+	}
+}
+
+/* The same walk as FindNearestBot, but a bot this bolt already hit is not a candidate: a chain that
+   returns to its own source is two bots and one beam. */
+stock FindNearestUnhit(id, hit[])
+{
+	new Float:origin[3];
+	new Float:candidate[3];
+	pev(id, pev_origin, origin);
+
+	new best;
+	new Float:bestDistance = 99999.0;
+
+	for (new other = 1; other <= get_maxplayers(); other++)
+	{
+		if (other == id || hit[other] || !IsBotAlive(other))
+			continue;
+
+		pev(other, pev_origin, candidate);
+		new Float:distance = get_distance_f(origin, candidate);
+		if (distance < bestDistance)
+		{
+			bestDistance = distance;
+			best = other;
+		}
+	}
+
+	return best;
+}
+
+/* TE_BEAMPOINTS with the stock laser sprite, precached in plugin_precache(). A zero index means the
+   sprite is missing and the bolt would be invisible, so it is skipped instead of drawn as nothing. */
+stock DrawBeam(const Float:start[3], const Float:end[3])
+{
+	if (!g_beamSprite)
+		return;
+
+	message_begin(MSG_BROADCAST, SVC_TEMPENTITY);
+	write_byte(TE_BEAMPOINTS);
+	write_coord(floatround(start[0]));
+	write_coord(floatround(start[1]));
+	write_coord(floatround(start[2]));
+	write_coord(floatround(end[0]));
+	write_coord(floatround(end[1]));
+	write_coord(floatround(end[2]));
+	write_short(g_beamSprite);
+	write_byte(0);
+	write_byte(0);
+	write_byte(8);
+	write_byte(8);
+	write_byte(0);
+	write_byte(180);
+	write_byte(220);
+	write_byte(255);
+	write_byte(200);
+	write_byte(0);
+	message_end();
+}
+
+stock EndChainLightning()
+{
+	remove_task(TASK_CHAIN);
+
+	// The health a bolt took comes back with the next spawn, so the release is the whole undo: it tells
+	// the layer that the field's health is free again for whatever runs next.
+	ClaimRelease(CLAIM_HEALTH, FindEffect("chain_lightning"));
+
+	if (g_chainBolts > 0)
+		log_amx("chain_lightning ended: %d bolt(s), %d bot(s) hit", g_chainBolts, g_chainHits);
+
+	g_chainActive = false;
+}
+
+/* BLINK. Every bot jumps `distance` units the way it faces. The destination is traced first: a bot put
+   inside geometry is stuck for the rest of the event, and the engine snaps a bad origin back anyway,
+   which reads as "the skill does nothing" rather than as an error. */
+public EffectBlinkBots()
+{
+	BeginEvent("blink_bots");
+
+	g_blinkDistance = ParamFloat("distance", 200.0);
+	if (g_blinkDistance < BLINK_MIN_DIST)
+		g_blinkDistance = BLINK_MIN_DIST;
+	if (g_blinkDistance > BLINK_MAX_DIST)
+		g_blinkDistance = BLINK_MAX_DIST;
+
+	new Float:period = ParamFloat("period", 4.0);
+	if (period < 1.0)
+		period = 1.0;
+
+	if (!PickRandomBot())
+	{
+		log_amx("blink_bots: no bots are alive");
+		return;
+	}
+
+	g_blinkActive = true;
+	g_blinkMoved = 0;
+	g_blinkTried = 0;
+
+	set_task(period, "TaskBlink", TASK_BLINK, "", 0, "b");
+	StartEffectTimer("blink_bots", EffectSeconds(20.0));
+	log_amx("blink_bots: %.0f units every %.1f s", g_blinkDistance, period);
+	DonorSay("KEEP YOUR EYES ON THE FLOOR");
+}
+
+public TaskBlink()
+{
+	if (!g_blinkActive)
+	{
+		remove_task(TASK_BLINK);
+		return;
+	}
+
+	BlinkAll();
+}
+
+stock BlinkAll()
+{
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (!IsBotAlive(id))
+			continue;
+
+		g_blinkTried++;
+		if (BlinkBot(id))
+			g_blinkMoved++;
+	}
+}
+
+stock bool:BlinkBot(id)
+{
+	new Float:origin[3], Float:angles[3];
+	pev(id, pev_origin, origin);
+	pev(id, pev_v_angle, angles);
+
+	new Float:start[3], Float:destination[3];
+	start[0] = origin[0];
+	start[1] = origin[1];
+	start[2] = origin[2] + 24.0;
+	destination[0] = start[0] + floatcos(angles[1], degrees) * g_blinkDistance;
+	destination[1] = start[1] + floatsin(angles[1], degrees) * g_blinkDistance;
+	destination[2] = start[2];
+
+	new trace = create_tr2();
+	engfunc(EngFunc_TraceLine, start, destination, IGNORE_MONSTERS, id, trace);
+
+	new Float:fraction;
+	get_tr2(trace, TR_flFraction, fraction);
+
+	new Float:landing[3];
+	get_tr2(trace, TR_vecEndPos, landing);
+	free_tr2(trace);
+
+	// Halfway is the least that reads as a teleport: stopping at the first wall would move the bot a few
+	// units and look like nothing happened, which is the outcome the trace exists to avoid.
+	if (fraction < 0.5)
+		return false;
+
+	landing[2] -= 24.0;
+
+	// The feet need free space too: the trace stops on the face of a wall, but a brush edge or a
+	// func_door can still leave the destination solid and the engine then snaps the bot back.
+	if (engfunc(EngFunc_PointContents, landing) == CONTENTS_SOLID)
+		return false;
+
+	engfunc(EngFunc_SetOrigin, id, landing);
+
+	// Keeping the old velocity would carry the bot back into the wall it just blinked past.
+	new Float:still[3];
+	set_pev(id, pev_velocity, still);
+	return true;
+}
+
+stock EndBlinkBots()
+{
+	remove_task(TASK_BLINK);
+
+	if (g_blinkTried > 0)
+		log_amx("blink_bots ended: %d of %d blink(s) landed", g_blinkMoved, g_blinkTried);
+
+	g_blinkActive = false;
+	g_blinkMoved = 0;
+	g_blinkTried = 0;
+}
+
+/* HERO ROULETTE. The power is chosen when the event starts and applied seconds later: the surprise is
+   the product, and a chat line that reads "somebody is about to be invisible" turns the reveal into a
+   reaction shot. The chosen power is written to the log and only there. */
+public EffectHeroRoulette()
+{
+	BeginEvent("hero_roulette");
+
+	g_roulettePower = RoulettePick(RoulettePool());
+	if (g_roulettePower < 0)
+	{
+		log_amx("hero_roulette: the pool names no power");
+		return;
+	}
+
+	new bot = PickRandomBot();
+	if (!bot)
+	{
+		log_amx("hero_roulette: no bots are alive");
+		return;
+	}
+
+	g_rouletteActive = true;
+	g_rouletteFired = false;
+	g_rouletteBot = bot;
+	g_rouletteSavedHealth = 0;
+
+	new Float:delay = random_float(6.0, 12.0);
+	set_task(delay, "TaskRoulette", TASK_ROULETTE);
+	StartEffectTimer("hero_roulette", EffectSeconds(45.0));
+
+	new power[16];
+	RouletteName(g_roulettePower, power, charsmax(power));
+	log_amx("hero_roulette: '%s' armed on bot %d, fires in %.1f s", power, bot, delay);
+	DonorSay("SOMETHING IS COMING");
+}
+
+public TaskRoulette()
+{
+	if (!g_rouletteActive)
+	{
+		remove_task(TASK_ROULETTE);
+		return;
+	}
+
+	RouletteFire();
+}
+
+stock RouletteFire()
+{
+	if (!IsBotAlive(g_rouletteBot))
+	{
+		g_rouletteBot = PickRandomBot();
+		if (!g_rouletteBot)
+			return;
+	}
+
+	g_rouletteFired = true;
+
+	new owner = FindEffect("hero_roulette");
+	ClaimTake(CLAIM_HEALTH, owner, 1);
+	ClaimTake(CLAIM_SPEED, owner, 1);
+	ClaimTake(CLAIM_GLOW, owner, 1);
+
+	new name[NICK_LEN];
+	get_user_name(g_rouletteBot, name, charsmax(name));
+
+	switch (g_roulettePower)
+	{
+		case ROULETTE_INVISIBLE:
+		{
+			set_user_rendering(g_rouletteBot, kRenderFxNone, 0, 0, 0, kRenderTransAlpha, ROULETTE_ALPHA);
+			Announce("%s HAS GONE INVISIBLE", name);
+		}
+		case ROULETTE_SPEED:
+		{
+			new Float:speed = get_cvar_float("sv_maxspeed");
+			if (speed <= 0.0)
+				speed = 320.0;
+			set_user_maxspeed(g_rouletteBot, speed * ROULETTE_SPEED_MULT);
+			g_speedBoosted = true;
+			Announce("%s IS TWICE AS FAST", name);
+		}
+		case ROULETTE_HEALTH:
+		{
+			g_rouletteSavedHealth = get_user_health(g_rouletteBot);
+			if (g_rouletteSavedHealth < 1)
+				g_rouletteSavedHealth = 100;
+			set_user_health(g_rouletteBot, ROULETTE_HEALTH_HP);
+			Announce("%s NOW HAS %d HP", name, ROULETTE_HEALTH_HP);
+		}
+		case ROULETTE_DEAGLE:
+		{
+			give_item(g_rouletteBot, "weapon_deagle");
+			cs_set_user_bpammo(g_rouletteBot, CSW_DEAGLE, 200);
+			Announce("%s HAS AN ENDLESS DEAGLE", name);
+		}
+	}
+
+	new power[16];
+	RouletteName(g_roulettePower, power, charsmax(power));
+	log_amx("hero_roulette: '%s' fired on bot %d", power, g_rouletteBot);
+}
+
+/* `pool` is a list of names, not an index: the catalogue can turn a power off without a recompile, and
+   an unknown word is skipped instead of turning into a power nobody asked for. */
+stock RoulettePool()
+{
+	new pool[VALUE_LEN];
+	ParamCopy("pool", pool, charsmax(pool), "invisible,speed,health,deagle");
+
+	new mask;
+	if (containi(pool, "invisible") >= 0)
+		mask |= (1 << ROULETTE_INVISIBLE);
+	if (containi(pool, "speed") >= 0)
+		mask |= (1 << ROULETTE_SPEED);
+	if (containi(pool, "health") >= 0)
+		mask |= (1 << ROULETTE_HEALTH);
+	if (containi(pool, "deagle") >= 0)
+		mask |= (1 << ROULETTE_DEAGLE);
+
+	return mask;
+}
+
+stock RoulettePick(mask)
+{
+	new allowed[ROULETTE_POWERS];
+	new count;
+
+	for (new power = 0; power < ROULETTE_POWERS; power++)
+	{
+		if (mask & (1 << power))
+			allowed[count++] = power;
+	}
+
+	if (count == 0)
+		return -1;
+
+	return allowed[random(count)];
+}
+
+/* The names live in a table, not in a `return "..."`: Pawn infers a function's return type from its first
+   return statement, and an array literal has no size to infer. */
+stock RouletteName(power, out[], len)
+{
+	new const names[ROULETTE_POWERS][] = {"invisible", "speed", "health", "deagle"};
+
+	if (power >= 0 && power < ROULETTE_POWERS)
+		copy(out, len, names[power]);
+	else
+		copy(out, len, "none");
+}
+
+stock EndHeroRoulette()
+{
+	remove_task(TASK_ROULETTE);
+
+	new owner = FindEffect("hero_roulette");
+	new bool:speedOwned = ClaimRelease(CLAIM_SPEED, owner);
+	new bool:glowOwned = ClaimRelease(CLAIM_GLOW, owner);
+	new bool:healthOwned = ClaimRelease(CLAIM_HEALTH, owner);
+
+	if (g_rouletteBot > 0 && is_user_connected(g_rouletteBot))
+	{
+		if (speedOwned)
+		{
+			new Float:speed = get_cvar_float("sv_maxspeed");
+			if (speed <= 0.0)
+				speed = 320.0;
+			set_user_maxspeed(g_rouletteBot, speed);
+		}
+
+		// ClearGlow drops the invisibility render mode too: an alpha of 60 that outlives its clock is a
+		// bot the viewer cannot see for the rest of the map.
+		if (glowOwned)
+			ClearGlow(g_rouletteBot);
+
+		// Health is a spawn value: only a bot that is still alive keeps the pool it was given.
+		if (healthOwned && g_rouletteSavedHealth > 0 && is_user_alive(g_rouletteBot))
+			set_user_health(g_rouletteBot, g_rouletteSavedHealth);
+	}
+
+	// A roulette whose timer never fired is a paid event with nothing in it, and the chat cannot tell
+	// the difference from one that did: the log can.
+	if (g_rouletteFired)
+	{
+		new power[16];
+		RouletteName(g_roulettePower, power, charsmax(power));
+		log_amx("hero_roulette ended: '%s' had been on the field", power);
+	}
+	else
+	{
+		log_amx("hero_roulette ended: the power never fired");
+	}
+
+	g_rouletteActive = false;
+	g_rouletteFired = false;
+	g_rouletteBot = 0;
+	g_rouletteSavedHealth = 0;
+}
+
+/* VAMPIRIC AURA. A rule, not a state: the healing lives in OnTakeDamage and only its clock and its claim
+   live here. The ceiling is the one the regeneration class uses - a 30 second aura without one turns the
+   field into bots nobody can kill, which is not what "50 % of the damage" sells. */
+public EffectVampiricAura()
+{
+	BeginEvent("vampiric_aura");
+
+	g_auraShare = ParamInt("share", 50);
+	if (g_auraShare < 1)
+		g_auraShare = 1;
+	if (g_auraShare > 100)
+		g_auraShare = 100;
+
+	if (!PickRandomBot())
+	{
+		log_amx("vampiric_aura: no bots are alive");
+		return;
+	}
+
+	g_auraActive = true;
+	ClaimTake(CLAIM_HEALTH, FindEffect("vampiric_aura"), 1);
+	StartEffectTimer("vampiric_aura", EffectSeconds(30.0));
+	log_amx("vampiric_aura: %d%% of the damage comes back as health, ceiling %d", g_auraShare, REGEN_CEIL);
+	DonorSay("EVERY HIT FEEDS");
+}
+
+stock AuraHeal(attacker, Float:damage)
+{
+	if (attacker <= 0 || !IsBotAlive(attacker))
+		return;
+
+	new gain = floatround(damage * float(g_auraShare) / 100.0);
+	if (gain < 1)
+		return;
+
+	new health = get_user_health(attacker) + gain;
+	if (health > REGEN_CEIL)
+		health = REGEN_CEIL;
+	set_user_health(attacker, health);
+}
+
+stock EndVampiricAura()
+{
+	ClaimRelease(CLAIM_HEALTH, FindEffect("vampiric_aura"));
+	g_auraActive = false;
+}
+
 /* Knockback: how far a hit throws a class bot. Horizontal, away from the attacker, capped at
    KNOCKBACK_CAP units a second. An impulse instead of a damage multiplier on purpose - a raptor that
    took 160 % damage would be a 3 000 HP bot that dies like a 1 875 HP one, and what the catalogue sells
@@ -2479,6 +3224,11 @@ public OnTakeDamage(victim, inflictor, attacker, Float:damage, damagebits)
 	// knife, and an early return here would shadow the whole class system on a rifle round.
 	if (g_classActive && g_classKnockback != 100 && IsClassed(victim))
 		PushBot(victim, attacker, damage);
+
+	// Vampiric aura is a rule about who is healed, so it belongs here for the same reason: every hit
+	// counts, and the damage itself is left alone - the aura gives health back, it does not take more.
+	if (g_auraActive && g_auraShare > 0 && damage > 0.0)
+		AuraHeal(attacker, damage);
 
 	if (attacker <= 0 || !IsBotAlive(attacker))
 		return HAM_IGNORED;

@@ -380,6 +380,109 @@
         "short": "РЕГЕНЕРАЦИЯ",
         "say": "ЧЕТЫРЕ РЕГЕНЕРАТОРА"
       }
+    },
+    {
+      "code": "hex_wave",
+      "title": "Hex Wave",
+      "announce": "ONE OF THEM IS A CHICKEN",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 20,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": false,
+      "params": {
+        "seconds": 20,
+        "model": "chicken",
+        "maxNameLength": 16,
+        "short": "КУРИЦА",
+        "say": "КТО-ТО СТАЛ КУРИЦЕЙ"
+      }
+    },
+    {
+      "code": "chain_lightning",
+      "title": "Chain Lightning",
+      "announce": "CHAIN LIGHTNING IS IN THE AIR",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 20,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": false,
+      "params": {
+        "seconds": 20,
+        "targets": 3,
+        "damage": 40,
+        "period": 3,
+        "maxNameLength": 16,
+        "short": "МОЛНИЯ",
+        "say": "ЦЕПНАЯ МОЛНИЯ"
+      }
+    },
+    {
+      "code": "blink_bots",
+      "title": "Blink",
+      "announce": "EVERY BOT BLINKS FORWARD",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 20,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": false,
+      "params": {
+        "seconds": 20,
+        "distance": 200,
+        "period": 4,
+        "maxNameLength": 16,
+        "short": "БЛИНК",
+        "say": "ВСЕ БЛИНКУЮТ ВПЕРЁД"
+      }
+    },
+    {
+      "code": "hero_roulette",
+      "title": "Hero Roulette",
+      "announce": "SOMEBODY IS GETTING A POWER",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 45,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": false,
+      "params": {
+        "seconds": 45,
+        "pool": ["invisible", "speed", "health", "deagle"],
+        "maxNameLength": 16,
+        "short": "РУЛЕТКА",
+        "say": "КТО-ТО ПОЛУЧИТ СИЛУ"
+      }
+    },
+    {
+      "code": "vampiric_aura",
+      "title": "Vampiric Aura",
+      "announce": "EVERY HIT HEALS THE HITTER",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 30,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": false,
+      "params": {
+        "seconds": 30,
+        "share": 50,
+        "maxNameLength": 16,
+        "short": "ВАМПИРИЗМ",
+        "say": "УДАРЫ ЛЕЧАТ"
+      }
     }
   ]
 }

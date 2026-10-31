@@ -109,13 +109,34 @@ a bunny.
 
 ## Stage 4 — S4 skills (5 codes)
 
-- [ ] chicken model in the image; `hex_wave` with a proper reset;
-- [ ] `chain_lightning` beams and damage;
-- [ ] `blink_bots` with a trace, no bot inside geometry;
-- [ ] `hero_roulette` pool of four, hidden until it fires;
-- [ ] `vampiric_aura` in `Ham_TakeDamage`.
+- [x] five handlers in `donation_events`, each with its own clock, its claim and its undo branch:
+      `hex_wave`, `chain_lightning`, `blink_bots`, `hero_roulette`, `vampiric_aura`;
+- [x] `chain_lightning` draws `TE_BEAMPOINTS` between the bots it damages and deals through
+      `Ham_TakeDamage`, and the run logs `N bolt(s), M bot(s) hit` so a bolt nobody can see is still
+      countable. Live: `chain_lightning ended: 6 bolt(s), 18 bot(s) hit` - 20 s at a 3 s period is six
+      bolts, and three targets a bolt is eighteen hits, so nothing was skipped;
+- [x] `blink_bots` traces with `EngFunc_TraceLine` before `EngFunc_SetOrigin`, refuses a landing whose
+      feet are `CONTENTS_SOLID` and a blink that stops before half the distance, and logs
+      `N of M blink(s) landed` - the engine snaps a bad origin back without an error, so the count is
+      the only evidence the skill did anything. Live: `80 of 95 blink(s) landed`, and the 15 refusals are
+      the wall the trace was there to stop;
+- [x] `hero_roulette` picks its power at arm time, applies it 6-12 s later and announces nothing before
+      that; `pool` is a list of names from the catalogue, so switching a power off needs no recompile.
+      Live: `'invisible' armed on bot 20, fires in 10.2 s`, then `hero_roulette ended: 'invisible' had
+      been on the field`;
+- [x] `vampiric_aura` heals in `Ham_TakeDamage` at `share` percent of the damage, capped at
+      `REGEN_CEIL` - the same ceiling the regeneration class uses;
+- [~] the chicken model: `hex_wave` works without it (weapons stripped, 60 % speed, a yellow glow, and
+      the costume name plus `no model in the image` in the log), and the costume switches on by itself
+      when `models/player/chicken/chicken.mdl` lands in the image. The guard is not cosmetic: precaching
+      a .mdl that is not there is **`FATAL ERROR (shutting down): Mod_LoadModel: ... not found`** on
+      GoldSrc and the server goes into a restart loop - measured, on the first run of this code. So the
+      file is checked with `file_exists` before `precache_model`, and a contract test keeps that order;
 
 **Done when:** the chicken shows up on the stream and the bot gets its model and weapons back afterwards.
+All five codes are in the plugin, in the catalogue as `ready` and off sale, and checked on the test
+server: `amx_de codes` lists them, each clock ends on its own, and the undo path runs with no AMXX error
+log. What is missing is the .mdl, and the on-sale step once the picture is confirmed.
 
 ## Stage 5 — S3 items (5 codes)
 

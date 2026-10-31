@@ -55,11 +55,11 @@ until `test/activities.test.ts` is relaxed to allow an instant entry on sale).
 
 | # | code | What the viewer sees | sec | params | status |
 |---|---|---|---|---|---|
-| 23 | `hex_wave` | a random bot turns into a chicken: model swap, no weapons, ×0.6 speed | 20 | `seconds=20 model=chicken` | planned |
-| 24 | `chain_lightning` | every 3 s a bolt jumps through three bots in a row | 20 | `targets=3 damage=40 period=3` | planned |
-| 25 | `blink_bots` | every bot teleports 200 units forward every 4 s | 20 | `distance=200 period=4` | planned |
-| 26 | `hero_roulette` | one bot gets a random power: invisibility, ×2 speed, 500 HP or an endless deagle | 45 | `pool=invisible,speed,health,deagle` | planned |
-| 27 | `vampiric_aura` | everybody heals 50 % of the damage they deal | 30 | `share=50` | planned |
+| 23 | `hex_wave` | a random bot turns into a chicken: model swap, no weapons, ×0.6 speed | 20 | `seconds=20 model=chicken` | ready (off sale, no .mdl) |
+| 24 | `chain_lightning` | every 3 s a bolt jumps through three bots in a row | 20 | `targets=3 damage=40 period=3` | ready (off sale) |
+| 25 | `blink_bots` | every bot teleports 200 units forward every 4 s | 20 | `distance=200 period=4` | ready (off sale) |
+| 26 | `hero_roulette` | one bot gets a random power: invisibility, ×2 speed, 500 HP or an endless deagle | 45 | `pool=invisible,speed,health,deagle` | ready (off sale) |
+| 27 | `vampiric_aura` | everybody heals 50 % of the damage they deal | 30 | `share=50` | ready (off sale) |
 
 ## S5 — chases and arenas (GunGame, Hide'n'Seek, arena formats)
 
