@@ -433,6 +433,33 @@ test("the hex takes the costume off again, and the aura keeps a ceiling", () => 
   assert.ok(checked < loaded, "the costume is precached before the file is checked");
 });
 
+test("fire grenades burn what a blast catches, and stop burning when the clock does", () => {
+  assert.match(source, /RegisterDonationEffect\("fire_grenades", "EffectFireGrenades"\)/);
+
+  const effect = /public EffectFireGrenades\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(effect, "", "EffectFireGrenades is missing");
+  assert.match(effect, /ParamInt\("damage", 60\)/, "the damage is not read from the command");
+  assert.match(effect, /ParamInt\("burn", 15\)/, "the burn length is not read from the command");
+  // The grenade is the trigger: the field has to be holding one for the blast to happen at all.
+  assert.match(effect, /set_task\(0\.5, "TaskFireParty", TASK_FIRE_PARTY/, "nobody is ever handed a grenade");
+
+  // DMG_BLAST is the engine's own label for an explosion, so the damage hook is where the ignition
+  // belongs: a grenade entity scan would be a second guess at a fact the engine already resolved.
+  const damage = /public OnTakeDamage\([^)]*\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(damage, /damagebits & DMG_BLAST/, "an explosion never ignites anything");
+  assert.match(damage, /IgniteBot\(victim\)/, "the blast is detected but nobody burns");
+
+  const burn = /public TaskBurn\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.match(burn, /ExecuteHamB\(Ham_TakeDamage, id, 0, 0, float\(g_fireDamage\), DMG_BURN\)/, "the fire does no damage");
+  assert.match(burn, /if \(!IsBotAlive\(id\)\)/, "a dead bot keeps burning");
+
+  const undo = /stock EndFireGrenades\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(undo, "", "EndFireGrenades is missing");
+  assert.match(undo, /remove_task\(TASK_FIRE_PARTY\)/, "the grenade party outlives its clock");
+  assert.match(undo, /remove_task\(TASK_BURN\)/, "the fire outlives its clock");
+  assert.match(undo, /g_fireTicks\[id\] = 0/, "the countdowns survive the event");
+});
+
 test("no unfinished markers left in the plugin source", () => {
   assert.equal(/\/\/\s*PART[0-9]/.test(source), false, "the file still contains a PART marker");
 });

@@ -483,6 +483,27 @@
         "short": "ВАМПИРИЗМ",
         "say": "УДАРЫ ЛЕЧАТ"
       }
+    },
+    {
+      "code": "fire_grenades",
+      "title": "Fire Grenades",
+      "announce": "EVERYTHING THAT EXPLODES BURNS",
+      "price": 50,
+      "priority": 0,
+      "duration": "seconds",
+      "seconds": 30,
+      "rounds": null,
+      "cooldownSec": 60,
+      "globalCooldownSec": 20,
+      "enabled": false,
+      "params": {
+        "seconds": 30,
+        "damage": 60,
+        "burn": 15,
+        "maxNameLength": 16,
+        "short": "ОГОНЬ",
+        "say": "ГРАНАТЫ ЖГУТ"
+      }
     }
   ]
 }

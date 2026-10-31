@@ -45,7 +45,7 @@ until `test/activities.test.ts` is relaxed to allow an instant entry on sale).
 
 | # | code | What the viewer sees | sec | params | status |
 |---|---|---|---|---|---|
-| 18 | `fire_grenades` | an HE sets bots on fire: 60 damage a tick for 15 s, orange sprite | 30 | `damage=60 burn=15` | planned |
+| 18 | `fire_grenades` | an HE sets bots on fire: 60 damage a tick for 15 s, orange sprite | 30 | `damage=60 burn=15` | ready (off sale, YaPB does not throw) |
 | 19 | `freeze_nades` | a flashbang freezes everybody in the blast for 6 s | 30 | `freeze=6 radius=300` | planned |
 | 20 | `bazooka_drop` | one bot gets a rocket launcher, 500 blast damage, camera on it | 30 | `damage=500 radius=320 recharge=15` | planned |
 | 21 | `plasma_rifle` | one bot with an energy rifle: 90 damage, blue tracers, 50 rounds | 30 | `damage=90 ammo=50` | planned |

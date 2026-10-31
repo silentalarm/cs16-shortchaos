@@ -25,11 +25,11 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
 
   assert.equal(config.currency, "RUB");
   assert.equal(config.minAmount, 50);
-  // Twenty-two codes: the five 2025-10 events, `he_party` (kept off sale), the six round modes of S1,
-  // the five classes of S2 and the five skills of S4. The skills are not on sale yet: they are in the
-  // catalogue so the plugin cannot keep a handler nobody can trigger, and `enabled: false` keeps them
-  // out of the random roll until the live check is done.
-  assert.equal(config.activities.length, 22, "five events, he_party, six round modes, five classes, five skills");
+  // Twenty-three codes: the five 2025-10 events, `he_party` (kept off sale), the six round modes of S1,
+  // the five classes of S2, the five skills of S4 and the first item of S3. The skills and the item are
+  // not on sale yet: they are in the catalogue so the plugin cannot keep a handler nobody can trigger,
+  // and `enabled: false` keeps them out of the random roll until the live check is done.
+  assert.equal(config.activities.length, 23, "five events, he_party, six round modes, five classes, five skills, one item");
 
   const codes = config.activities.map((activity) => activity.code);
   assert.equal(new Set(codes).size, codes.length, "codes are unique");
@@ -108,7 +108,7 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
 test("every effect on a clock carries that clock in its params as well", () => {
   const config = loadActivities(shippedConfig);
   const timed = config.activities.filter((activity) => activity.duration === "seconds");
-  assert.equal(timed.length, 22, "every shipped code is a clock");
+  assert.equal(timed.length, 23, "every shipped code is a clock");
 
   for (const activity of timed) {
     // The plugin reads the length from the command the control API builds, so both places must agree.
@@ -135,7 +135,7 @@ test("the HE party is the whole shop: one step, sixty seconds, no cooldown", () 
   assert.equal(party.params.maxNameLength, 16);
 });
 
-test("the catalogue is exactly the twenty-two codes the plugin still registers", () => {
+test("the catalogue is exactly the twenty-three codes the plugin still registers", () => {
   const config = loadActivities(shippedConfig);
   assert.deepEqual(
     config.activities.map((activity) => activity.code).sort(),
@@ -145,6 +145,7 @@ test("the catalogue is exactly the twenty-two codes the plugin still registers",
       "brutes",
       "chain_lightning",
       "chaos_plague",
+      "fire_grenades",
       "glass_cannon",
       "he_party",
       "hero_roulette",

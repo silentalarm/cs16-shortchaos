@@ -301,6 +301,26 @@ new g_rouletteSavedHealth;
 
 new bool:g_auraActive;
 new g_auraShare = 50;
+
+/* ---------- S3 items: state ---------- */
+
+/* Fire grenades: the field keeps HE grenades in hand, and a blast sets its victim on fire. The burn is
+   per slot because two bots can burn at once, and its task is the only clock in the plugin that outlives
+   a single bot. */
+#define TASK_FIRE_PARTY 4814
+#define TASK_BURN 4815
+#define BURN_TICK 1.0
+#define FIRE_MAX_DAMAGE 500
+#define FIRE_MAX_BURN 60
+
+new bool:g_fireActive;
+new g_fireDamage = 60;
+new g_fireBurn = 15;
+new g_fireTicks[MAX_SLOTS];
+/* Counted for the same reason the knockback and the blinks are: "nothing caught fire" and "the fire did
+   nothing" are the same log line otherwise. */
+new g_fireIgnited;
+new g_fireTicksApplied;
 new bool:g_classActive;
 /* Which of the five codes shapes the field right now. A newer class event ends the running one before it
    takes over, and the ended run's clock still fires later: without this code that stale clock would
@@ -373,6 +393,10 @@ public plugin_init()
 	RegisterDonationEffect("blink_bots", "EffectBlinkBots");
 	RegisterDonationEffect("hero_roulette", "EffectHeroRoulette");
 	RegisterDonationEffect("vampiric_aura", "EffectVampiricAura");
+
+	// S3 items, in the roadmap's order: the two grenade codes first, the custom weapons once their
+	// entities and models exist.
+	RegisterDonationEffect("fire_grenades", "EffectFireGrenades");
 
 	log_amx("loaded, API %d, %d activities", API_VERSION, g_effectCount);
 }
@@ -934,6 +958,12 @@ stock EndEffectState(const code[])
 		return;
 	}
 
+	if (equal(code, "fire_grenades"))
+	{
+		EndFireGrenades();
+		return;
+	}
+
 	if (equal(code, "he_party"))
 	{
 		// The party owns its own repeating task instead of a generic clock, so its undo is explicit.
@@ -1365,6 +1395,16 @@ public ResetEventState()
 	g_rouletteBot = 0;
 	g_rouletteSavedHealth = 0;
 	g_auraActive = false;
+
+	// The burn is a per-slot countdown with its own task: dropped here, or a bot keeps losing 60 hp a
+	// second on the next map with no event on the field to explain it.
+	remove_task(TASK_FIRE_PARTY);
+	remove_task(TASK_BURN);
+	g_fireActive = false;
+	g_fireIgnited = 0;
+	g_fireTicksApplied = 0;
+	for (new id = 0; id < MAX_SLOTS; id++)
+		g_fireTicks[id] = 0;
 
 	if (g_cannonBot > 0 && g_cannonSavedHealth > 0 && is_user_alive(g_cannonBot))
 		set_user_health(g_cannonBot, g_cannonSavedHealth);
@@ -3161,6 +3201,141 @@ stock EndVampiricAura()
 	g_auraActive = false;
 }
 
+/* FIRE GRENADES. The field keeps HE grenades in hand, and whatever a blast catches burns: `damage` a
+   second for `burn` seconds, with an orange shell so the fire is visible from the chase camera. The
+   trigger is the engine's own `DMG_BLAST` flag in the damage hook, not a grenade entity tracker - the
+   engine already resolves the explosion, and a scan for `grenade` entities would be a second guess at
+   the same fact with a frame of lag on it. */
+public EffectFireGrenades()
+{
+	BeginEvent("fire_grenades");
+
+	g_fireDamage = ParamInt("damage", 60);
+	if (g_fireDamage < 1)
+		g_fireDamage = 1;
+	if (g_fireDamage > FIRE_MAX_DAMAGE)
+		g_fireDamage = FIRE_MAX_DAMAGE;
+
+	g_fireBurn = ParamInt("burn", 15);
+	if (g_fireBurn < 1)
+		g_fireBurn = 1;
+	if (g_fireBurn > FIRE_MAX_BURN)
+		g_fireBurn = FIRE_MAX_BURN;
+
+	if (!PickRandomBot())
+	{
+		log_amx("fire_grenades: no bots are alive");
+		return;
+	}
+
+	g_fireActive = true;
+	g_fireIgnited = 0;
+	g_fireTicksApplied = 0;
+	for (new id = 0; id < MAX_SLOTS; id++)
+		g_fireTicks[id] = 0;
+
+	new owner = FindEffect("fire_grenades");
+	ClaimTake(CLAIM_WEAPONS, owner, 1);
+	ClaimTake(CLAIM_HEALTH, owner, 1);
+
+	// Twice a second, like the HE party: the grenade is the trigger, so the field has to keep throwing
+	// them, and a thrown grenade is gone from the inventory the moment it leaves the hand.
+	set_task(0.5, "TaskFireParty", TASK_FIRE_PARTY, "", 0, "b");
+	set_task(BURN_TICK, "TaskBurn", TASK_BURN, "", 0, "b");
+
+	StartEffectTimer("fire_grenades", EffectSeconds(30.0));
+	log_amx("fire_grenades: HE on the field, %d damage a tick for %d s", g_fireDamage, g_fireBurn);
+	DonorSay("EVERYTHING BURNS");
+}
+
+public TaskFireParty()
+{
+	if (!g_fireActive)
+	{
+		remove_task(TASK_FIRE_PARTY);
+		return;
+	}
+
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (!IsBotAlive(id))
+			continue;
+
+		if (!user_has_weapon(id, CSW_HEGRENADE))
+			give_item(id, "weapon_hegrenade");
+	}
+}
+
+stock IgniteBot(id)
+{
+	if (id <= 0 || id >= MAX_SLOTS || !IsBotAlive(id))
+		return;
+
+	// Counted only on the first spark: a bot caught by a second grenade is the same burning bot, and a
+	// count that double-counted would read as twice the field.
+	if (g_fireTicks[id] == 0)
+		g_fireIgnited++;
+
+	g_fireTicks[id] = g_fireBurn;
+	set_user_rendering(id, kRenderFxGlowShell, 255, 120, 0, kRenderNormal, 20);
+}
+
+public TaskBurn()
+{
+	if (!g_fireActive)
+	{
+		remove_task(TASK_BURN);
+		return;
+	}
+
+	for (new id = 1; id < MAX_SLOTS; id++)
+	{
+		if (g_fireTicks[id] <= 0)
+			continue;
+
+		// A dead bot stops burning: the countdown belongs to the body that was on fire, not to the slot,
+		// and csdm_lite hands that slot a fresh bot half a second later.
+		if (!IsBotAlive(id))
+		{
+			g_fireTicks[id] = 0;
+			continue;
+		}
+
+		ExecuteHamB(Ham_TakeDamage, id, 0, 0, float(g_fireDamage), DMG_BURN);
+		g_fireTicks[id]--;
+		g_fireTicksApplied++;
+
+		if (g_fireTicks[id] == 0)
+			ClearGlow(id);
+	}
+}
+
+stock EndFireGrenades()
+{
+	remove_task(TASK_FIRE_PARTY);
+	remove_task(TASK_BURN);
+
+	new owner = FindEffect("fire_grenades");
+	ClaimRelease(CLAIM_WEAPONS, owner);
+	ClaimRelease(CLAIM_HEALTH, owner);
+
+	// Every burning bot stops burning: an event that ends while a bot is on fire leaves it losing health
+	// with nothing on the field to explain why.
+	for (new id = 1; id < MAX_SLOTS; id++)
+	{
+		if (g_fireTicks[id] > 0 && is_user_connected(id))
+			ClearGlow(id);
+		g_fireTicks[id] = 0;
+	}
+
+	if (g_fireIgnited > 0)
+		log_amx("fire_grenades ended: %d bot(s) burned, %d tick(s) of fire", g_fireIgnited, g_fireTicksApplied);
+
+	g_fireActive = false;
+	g_fireIgnited = 0;
+	g_fireTicksApplied = 0;
+}
+
 /* Knockback: how far a hit throws a class bot. Horizontal, away from the attacker, capped at
    KNOCKBACK_CAP units a second. An impulse instead of a damage multiplier on purpose - a raptor that
    took 160 % damage would be a 3 000 HP bot that dies like a 1 875 HP one, and what the catalogue sells
@@ -3229,6 +3404,11 @@ public OnTakeDamage(victim, inflictor, attacker, Float:damage, damagebits)
 	// counts, and the damage itself is left alone - the aura gives health back, it does not take more.
 	if (g_auraActive && g_auraShare > 0 && damage > 0.0)
 		AuraHeal(attacker, damage);
+
+	// Fire grenades: DMG_BLAST is the engine's own label for an explosion, so a blast while the event
+	// runs is the trigger. No entity tracking, and it cannot miss an HE the engine itself resolves.
+	if (g_fireActive && (damagebits & DMG_BLAST) && damage > 0.0)
+		IgniteBot(victim);
 
 	if (attacker <= 0 || !IsBotAlive(attacker))
 		return HAM_IGNORED;

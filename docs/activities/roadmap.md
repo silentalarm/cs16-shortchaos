@@ -140,11 +140,27 @@ log. What is missing is the .mdl, and the on-sale step once the picture is confi
 
 ## Stage 5 — S3 items (5 codes)
 
-- [ ] the bazooka entity first, measured against `csdm_lite` respawn;
-- [ ] fire and freeze grenades (burn task, `FL_FROZEN` plus sprite);
+- [~] `fire_grenades`: the field keeps HE grenades in hand (twice a second, like the HE party) and every
+      bot a blast catches burns for `burn` seconds at `damage` a tick, with an orange shell. The trigger
+      is the engine's own `DMG_BLAST` flag in the damage hook, not a scan for grenade entities: the
+      engine already resolved the explosion, and a scan is a second guess at the same fact with a frame
+      of lag on it. The run logs `N bot(s) burned, M tick(s) of fire`, and the undo drops both tasks and
+      every countdown, so a bot cannot leave the map on fire. Measured live: with a `meteor_shower`
+      providing the blasts, `30 bot(s) burned, 425 tick(s) of fire` in 30 s - the whole path works. But
+      over 30 s of grenades alone **nobody burned**: YaPB bots hold an HE and do not throw it, so the
+      code as it stands depends on a player action that never happens. Either force the throw or add a
+      spark of its own before this goes on sale;
+- [ ] fire and freeze grenades: the freeze half is not written yet. A flashbang does no damage, so
+      `DMG_BLAST` cannot detect it the way it detects an HE - the options are a `FM_SetModel` forward on
+      the world model of the detonating grenade, or a 0.25 s scan of `grenade` entities with their last
+      known origin. Pick one before writing it;
+- [ ] the bazooka entity first, measured against `csdm_lite` respawn: `v_`/`w_`/`p` models are needed for
+      a real weapon entity and the image has none, so the documented fallback (`weapon_m249` with a
+      bigger blast radius) is the only path that ships before the models arrive;
 - [ ] plasma rifle and laser mines only if the bazooka is stable.
 
 **Done when:** one custom weapon survives a full respawn cycle and its model is visible in the stream.
+`fire_grenades` is the first code of the system and it needs no new asset.
 
 ## Stage 6 — S5 chases (5 codes)
 
