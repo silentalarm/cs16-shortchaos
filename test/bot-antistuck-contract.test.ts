@@ -32,10 +32,11 @@ test("camping is respected until the camping window is over", () => {
   // case (a wall *behind* the bot) is allowed past `bot_antistuck_patience` - and that value has to stay
   // above `yb_camping_time_max`, because a camper never moves for longer than that window.
   const patience = /register_cvar\("bot_antistuck_patience",\s*"([\d.]+)"\)/.exec(plugin);
-  assert.notEqual(patience, null, "the corner case has no patience setting");
+  // `assert.ok` narrows the type, `assert.notEqual` does not: without it `patience[1]` does not compile.
+  assert.ok(patience !== null, "the corner case has no patience setting");
 
   const campingMax = /yb_camping_time_max \\"([\d.]+)\\"/.exec(entrypoint);
-  assert.notEqual(campingMax, null, "the camping window is not set in the entrypoint any more");
+  assert.ok(campingMax !== null, "the camping window is not set in the entrypoint any more");
 
   assert.ok(
     Number(patience[1]) > Number(campingMax[1]),
