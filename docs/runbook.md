@@ -1087,6 +1087,29 @@ docker run --rm -v cs16-youtube_client-data:/game -v "$PWD/out/shots:/shots" --e
   -c "ffmpeg -y -ss 20 -i /game/check.mkv -frames:v 1 /shots/check.jpg"
 ```
 
+### Frame rate and canvas: what the box actually sustains
+
+The client is launched with `+fps_max "$FPS"`, so `STREAM_FPS` is the ceiling for the whole pipeline,
+not just the encoder: a 30 fps cap makes the game itself render 30 fps and no encoder setting brings
+the motion back. The renderer is llvmpipe (software OpenGL) in the same container as x264, so frame
+rate, canvas size and encoder preset all compete for the same cores. Measured on `e2-custom-4-8192`
+(4 vCPU, `STREAM_ENCODE_THREADS=2`, preset `veryfast`), reading `speed=`/`dup=` from
+`/tmp/ffmpeg.log` and `%CPU` from `docker stats`:
+
+| canvas @ fps | result |
+| --- | --- |
+| 720x1280 @ 30 | fps 28, `drop` keeps growing - the client cannot hold 30 at that canvas |
+| 720x1280 @ 45 | fps 36, `speed` 0.96 - the encoder starves the renderer |
+| 640x1138 @ 45 | fps 45, `dup` 0, `speed` 1.01, xash3d + ffmpeg ~310 % of 400 % |
+| 640x1138 @ 50 | fps 50, `dup` 0, ~330 % - almost no headroom left for the game side |
+
+Three knobs move this balance. `STREAM_BAND_PERCENT=0` takes the two spectator bands out of the
+render (720x2134 -> 720x1280, ~16 % of the client CPU) but puts the translucent bands back onto the
+picture, because the client has no switch for their background - that is why the default stays 20.
+`STREAM_PRESET` (`veryfast` by default, `superfast`/`ultrafast` cheaper) trades compression for
+renderer headroom, and is the first thing to try before paying for a bigger machine. Only more cores
+buy both the full canvas and 45-60 fps.
+
 ### Reconnect behaviour and the frozen-picture case
 
 The client has no scripting interface, so the watchdog reads the engine's own output. With `-dev`

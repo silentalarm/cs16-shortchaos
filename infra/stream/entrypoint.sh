@@ -38,6 +38,11 @@ BITRATE="${STREAM_BITRATE_KBPS:-2000}"
 # and both scale with the core count, so an unbounded encoder starves the client and the picture
 # stutters in the capture itself. 2 threads keeps 720p30 well inside its budget.
 ENC_THREADS="${STREAM_ENCODE_THREADS:-2}"
+# x264 preset. "veryfast" is the default: the client renders through llvmpipe in the same container,
+# so every core the encoder does not take is a core of game frame rate. "superfast"/"ultrafast" buy
+# about 25-40% of encoder CPU at some quality cost, which is the first knob to try before paying for
+# a bigger machine when the picture has to run faster than 30 fps.
+ENC_PRESET="${STREAM_PRESET:-veryfast}"
 RTMP_BASE="${STREAM_RTMP:-rtmps://a.rtmps.youtube.com:443/live2}"
 PLAYER_NAME="${STREAM_CAM_NAME:-StreamCam}"
 
@@ -586,7 +591,7 @@ run_encoder() {
   args+=(-vf "$VF")
   if [ -n "$audio_filter" ]; then args+=(-af "$audio_filter"); fi
   args+=(
-    -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -threads "$ENC_THREADS"
+    -c:v libx264 -preset "$ENC_PRESET" -tune zerolatency -pix_fmt yuv420p -threads "$ENC_THREADS"
     -b:v "${BITRATE}k" -maxrate "${BITRATE}k" -bufsize "$((BITRATE * 2))k"
     -g "$((FPS * 2))" -keyint_min "$FPS" -sc_threshold 0
     -c:a aac -b:a 128k -shortest

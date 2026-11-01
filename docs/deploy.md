@@ -15,9 +15,9 @@ Everything on this page, without the reasons:
 
 ```bash
 # on the VM, once Docker is installed and the repository is cloned (sections 2-3)
-cp .env.example .env && chmod 600 .env   # RCON_PASSWORD, ADMIN_TOKEN, YOUTUBE_STREAM_KEY
-bash infra/deploy.sh                     # ~10-20 min: checks, builds both images, starts the stack
-bash infra/deploy.sh --check             # three services, the plugin line, the panel, the encoder
+sudo cp .env.example .env && sudo chmod 600 .env   # RCON_PASSWORD, ADMIN_TOKEN, YOUTUBE_STREAM_KEY
+sudo bash infra/deploy.sh                     # ~10-20 min: checks, builds both images, starts the stack
+sudo bash infra/deploy.sh --check             # three services, the plugin line, the panel, the encoder
 ```
 
 `--check` is the health report and can be run at any time, including on a live server; `--no-build`
@@ -66,6 +66,10 @@ A fresh clone is complete: the maps (`infra/maps/*.bsp`, `.nav`, `.res`, the `.w
 navigation graphs the bots read (`infra/maps/graph/`) and the hero models (`infra/models/`) are
 committed. Nothing is downloaded from a map site on the VPS, and there is no fetch step to remember.
 
+One file is **not** in git and the build refuses to start without it: `infra/checksums.env`, the
+pinned URLs and SHA256s. Copy it from a machine that has run `infra/update-checksums.ps1`, and keep
+it LF-clean - `infra/build-images.sh` strips a stray `\r` for exactly this reason.
+
 ## 4. `.env`
 
 ```bash
@@ -85,7 +89,9 @@ Keys that must not be empty, and where they come from:
 | `DA_MOCK` | `1` runs the whole pipeline on fake donations - the right setting until the account is connected |
 
 `bash infra/deploy.sh` refuses to start while `RCON_PASSWORD` or `ADMIN_TOKEN` is empty, and warns
-about an empty stream key or `DA_MOCK=1`. It never prints a value.
+about an empty stream key or `DA_MOCK=1`. It never prints a value. Both it and `--check` want `sudo`:
+the file belongs to uid 1000 with mode 600, because the control API reads `.env` from the read-only
+repository mount as that user, and an unprivileged shell cannot read it back.
 
 Real donations need one OAuth round-trip that writes `data/da-token.json`. The script listens on
 `127.0.0.1:4318`, so on a headless VPS it runs in a throwaway container with the host network, and
@@ -103,7 +109,7 @@ Running the same script on your own machine and copying the file over is equival
 ## 5. First start
 
 ```bash
-bash infra/deploy.sh
+sudo bash infra/deploy.sh
 ```
 
 What it does, in order: checks the host (x86_64, Docker, compose plugin), checks `.env` for the two
@@ -121,7 +127,7 @@ After a `git pull`, the same command is the whole deploy: rebuild, recreate, don
 ## 6. Verify
 
 ```bash
-bash infra/deploy.sh --check
+sudo bash infra/deploy.sh --check
 ```
 
 Expected, in order: three services `running`; `hlds: donation_events loaded`; `panel: 200 on
@@ -172,6 +178,19 @@ tunnel rather than a published port:
 ssh -L 27015:127.0.0.1:27015 <user>@<host>     # then connect to 127.0.0.1:27015 in the game
 ```
 
+If SSH itself does not get through - some networks reset the connection right after the TCP
+handshake, on :22 and on any other port, while sshd on the host is perfectly healthy - tunnel it over
+HTTPS with IAP instead of fighting the path: enable `iap.googleapis.com`, allow `35.235.240.0/20` to
+tcp:22 for the instance tag, then
+
+```bash
+gcloud compute start-iap-tunnel cs16 22 --local-host-port=127.0.0.1:2222 --zone=<zone>
+ssh -p 2222 <user>@127.0.0.1        # in a second window, the tunnel stays in the foreground
+```
+
+The same mechanism exposes the panel with no inbound rule at all:
+`gcloud compute start-iap-tunnel cs16 8080 --local-host-port=127.0.0.1:8080 --zone=<zone>`.
+
 ## 9. Day two
 
 | Task | Command |
@@ -216,7 +235,7 @@ history is not worth a `.backup` dance, but if it ever is, use `sqlite3 data/con
 | `./infra/build-stream.ps1` | `bash infra/build-images.sh stream` |
 | `./infra/compose.ps1 <args>` | `bash infra/compose.sh <args>` |
 | `./infra/verify-image.ps1`, `verify-stream.ps1` | PowerShell only - install `pwsh` on the VPS, or use the section 6 checks |
-| `./infra/update-checksums.ps1` | run once on any machine with PowerShell, commit `infra/checksums.env` |
+| `./infra/update-checksums.ps1` | run once on any machine with PowerShell, then copy `infra/checksums.env` to the host - it is **gitignored**, so a clone does not carry it |
 
 One rough edge that is already handled: `.dockerignore` keeps the build context at ~14 MB (it was
 ~198 MB with `out/`, `node_modules/` and `.tmp-*`). The file is short on purpose - a pattern there

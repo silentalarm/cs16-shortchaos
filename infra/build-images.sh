@@ -22,6 +22,9 @@ command -v docker >/dev/null 2>&1 || die "docker is not installed"
 
 declare -A pin=()
 while IFS= read -r line || [ -n "$line" ]; do
+  # A checkout with CRLF (the file is generated on Windows) leaves a \r at the end of every value,
+  # and a URL with a stray CR in it fails deep inside the build with "unsupported protocol scheme".
+  line="${line%$'\r'}"
   case "$line" in ''|'#'*) continue ;; esac
   key="${line%%=*}"
   [[ "$key" =~ ^[A-Za-z0-9_]+$ ]] || continue

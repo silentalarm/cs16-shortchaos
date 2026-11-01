@@ -124,8 +124,8 @@ Linux the PowerShell scripts have bash twins, so one command does the deploy:
 
 ```bash
 sudo chown -R 1000:1000 data      # the control API writes its SQLite history as uid 1000
-bash infra/deploy.sh              # checks the host, builds both images, recreates the stack
-bash infra/deploy.sh --check      # read-only health report, safe on a live server
+sudo bash infra/deploy.sh         # checks the host, builds both images, recreates the stack
+sudo bash infra/deploy.sh --check # read-only health report, safe on a live server
 ```
 
 ## Streaming
