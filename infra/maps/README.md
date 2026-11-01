@@ -45,10 +45,28 @@ After adding files: `./infra/compose.ps1 restart hlds`. The capture container sy
 the server volume on every start (`--skip-old-files`), so the client can join a map that was added
 after the volume was created.
 
+## Bots need a graph, not a nav
+
+YaPB 4.4 does not read Quake-style `.nav` files (an earlier version of this file claimed it did): it loads
+`addons/yapb/data/graph/<map>.graph` and logs `Loaded Bots Graph data v2`. The archive ships graphs for the
+stock maps only, so a map dropped in here is analyzed by the bot's own analyzer on first load, with the
+result kept in the server volume - and lost whenever the volume is recreated.
+
+A reviewed graph therefore goes into `graph/<map>.graph`; `infra/entrypoint.sh` copies it over the volume
+copy on every start (`yapb graphs: N file(s) synced`). The file in git is the reviewed one, so it wins over
+whatever the volume has. Regenerating one (`docs/runbook.md`, "Navigation graphs"):
+
+```bash
+docker run --rm -v cs16-youtube_server-data:/hlds --entrypoint sh cs16-hlds:local \
+  -c 'rm -f /hlds/cstrike/addons/yapb/data/graph/my_map.graph'
+# load my_map, wait for "Analysis finished", then:
+docker cp cs16-youtube-hlds-1:/hlds/cstrike/addons/yapb/data/graph/my_map.graph infra/maps/graph/
+```
+
 ## Adding a map by hand
 
-Drop `my_map.bsp` (plus optional `.res`, `.txt` and `.nav` - without a `.nav` YaPB walks blind) into
-this directory, then put `my_map` into **both** lists:
+Drop `my_map.bsp` (plus optional `.res` and `.txt`) into this directory, then put `my_map` into both
+lists:
 
 1. `map_duel_maps` in `plugins/map_duel/map_duel.sma` (or override the cvar in `infra/server.cfg`),
 2. `params.maps` of the `map_change` activity in `config/activities.json`.

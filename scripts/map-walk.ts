@@ -22,7 +22,7 @@ function arg(name: string, fallback: string): string {
 }
 
 /** The pool from infra/docker-compose.yml: the stream must never fall back to a stock map. */
-const DEFAULT_MAPS = "fy_iceworld,fy_pool_day,fy_snow,fy_buzzkill,fy_simpsons,fy_aztec,fy_dustworld";
+const DEFAULT_MAPS = "fy_iceworld,fy_pool_day,fy_snow,fy_buzzkill,fy_aztec,fy_dustworld";
 /** One activity per map, chosen so every system is exercised somewhere in the walk. */
 const DEFAULT_CODES = "nemesis,raptors,outbreak,jumpers,runners,brutes,regenerators";
 

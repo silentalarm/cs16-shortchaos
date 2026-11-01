@@ -363,9 +363,41 @@ copy_tree() {
 # the map change a donation paid for. --skip-old-files makes this a stat per file, not a copy.
 sync_new_files() {
   local d="$1"
+  # tar carries a directory's mode over from the server volume, and the YaPB archive ships
+  # addons/yapb/data/{train,pwf,logs} as 0644 *directories*. A copy made before that was fixed kept
+  # the mode, so as soon as the bot could finally save its path matrix the extract below died with
+  #   tar: ./addons/yapb/data/train/<map>.pmx: Cannot open: Permission denied
+  # and the capture never started. Only directories missing the bit are touched: a full recursive
+  # chmod over the client tree would walk tens of thousands of files on every restart.
+  find "$GAME_DIR/$d" -type d ! -perm -u+x -exec chmod u+x {} + 2>/dev/null || true
   ( cd "$SERVER_DIR/$d" && tar --ignore-failed-read \
       --exclude=logs --exclude=server.cfg --exclude='*.log' --exclude='*.mdmp' -cf - . ) |
     tar -xf - -C "$GAME_DIR/$d" --skip-old-files || { log "sync of $d failed"; return 1; }
+}
+
+# What this repository publishes itself - the hero models, the sounds, the sprites, the maps - is
+# refreshed by content, not by existence. `--skip-old-files` above is a stat per file and stays for the
+# thousands of Steam files, but it also froze everything it had copied once: a hero re-painted in
+# `infra/models` kept the copy from the first run inside the client volume, so the server precached the
+# new model, `Loaded Bots Graph`-style silence all around, and the stream kept drawing the stock soldier
+# the model was built on. Same trap as the YaPB graphs on the server side (`infra/entrypoint.sh`), one
+# volume further out - and here it is invisible unless somebody looks at the picture.
+PUBLISHED="cstrike/models cstrike/sprites cstrike/sound cstrike/maps"
+
+refresh_published() {
+  local d src dst rel
+  for d in $PUBLISHED; do
+    [ -d "$SERVER_DIR/$d" ] || continue
+    ( cd "$SERVER_DIR/$d" && find . -type f -print ) | while IFS= read -r rel; do
+      src="$SERVER_DIR/$d/$rel"
+      dst="$GAME_DIR/$d/$rel"
+      # A map's own models and sounds live in these directories too, so the parent can be missing while
+      # the file exists: a copy into it would fail and the client would miss the asset it was made for.
+      mkdir -p "$(dirname "$dst")" || { log "could not make room for $d/$rel"; continue; }
+      if [ -f "$dst" ] && cmp -s "$src" "$dst"; then continue; fi
+      cp -f "$src" "$dst" || log "could not refresh $d/$rel"
+    done
+  done
 }
 
 prepare_game_dir() {
@@ -379,6 +411,10 @@ prepare_game_dir() {
       sync_new_files "$d" || return 1
     fi
   done
+  # Everything else under cstrike/ is Steam's or the game's own and only ever grows; these four
+  # directories are what this repository publishes, and one of them being stale is the bug
+  # `refresh_published` above repairs.
+  refresh_published
   # Engine + bundled SDL2/ffmpeg libraries must sit in the same directory as the game dirs.
   cp -a /opt/xash/. "$GAME_DIR/" || { log "engine copy failed"; return 1; }
   # Valve's client library needs a Steam session; CS16Client's open-source one does not.

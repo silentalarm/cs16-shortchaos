@@ -126,7 +126,7 @@ test("nothing outside the fight-yard pool can start or catch the stream", () => 
   const cycle = /MAPCYCLE="\$\{MAPCYCLE:-([^"}]+)\}"/.exec(entrypoint)?.[1] ?? "";
   const cycleMaps = cycle.split(",").filter((map) => map !== "");
   assert.deepEqual(cycleMaps, [
-    "fy_iceworld", "fy_pool_day", "fy_snow", "fy_buzzkill", "fy_simpsons", "fy_aztec", "fy_dustworld",
+    "fy_iceworld", "fy_pool_day", "fy_snow", "fy_buzzkill", "fy_aztec", "fy_dustworld",
   ]);
   assert.match(entrypoint, /mapcycle\.txt/, "the stock mapcycle is never rewritten");
 });
@@ -156,7 +156,7 @@ test("the rotation is fight-yard maps only, and every one of them is fetched", (
   const configured = /register_cvar\("map_duel_maps",\s*"([^"]+)"\)/.exec(plugin)?.[1] ?? "";
   const rotation = configured.split(",").filter((map) => map !== "");
   assert.deepEqual(rotation, [
-    "fy_iceworld", "fy_pool_day", "fy_snow", "fy_buzzkill", "fy_simpsons", "fy_aztec", "fy_dustworld",
+    "fy_iceworld", "fy_pool_day", "fy_snow", "fy_buzzkill", "fy_aztec", "fy_dustworld",
   ]);
   for (const map of rotation) {
     assert.match(map, /^fy_/, `${map} is not a fight-yard map - the pool is fy_* only`);
@@ -187,5 +187,22 @@ test("the rotation is fight-yard maps only, and every one of them is fetched", (
   // removed with the 2026-10 reset; when S5 of docs/activities/roadmap.md brings a map rotation back,
   // this is the test that pins it against the cvar the duel uses.
   assert.ok(rotation.length > 0, "the map rotation is empty");
+});
+
+test("every map in the pool has a pinned navigation graph", () => {
+  // YaPB 4.4 loads addons/yapb/data/graph/<map>.graph and analyzes a map itself when that file is
+  // missing: on a fresh volume the bots then spend the first minutes of a map producing the graph
+  // instead of playing it. infra/entrypoint.sh copies a pinned graph in when the volume has none.
+  const configured = /register_cvar\("map_duel_maps",\s*"([^"]+)"\)/.exec(plugin)?.[1] ?? "";
+  const graphs = new URL("../infra/maps/graph/", import.meta.url);
+
+  for (const map of configured.split(",").filter((name) => name !== "")) {
+    assert.ok(existsSync(new URL(`${map}.graph`, graphs)), `${map} has no pinned graph in infra/maps/graph`);
+  }
+  assert.match(
+    readFileSync(new URL("../infra/entrypoint.sh", import.meta.url), "utf8"),
+    /yapb graphs: \$\{graphs\} file\(s\) added/,
+    "a pinned graph never reaches the server volume",
+  );
 });
 

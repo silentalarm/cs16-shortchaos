@@ -32,10 +32,12 @@ scripts/ui-preview.ts    local preview of the panel, no Docker and no game serve
 scripts/map-walk.ts      walks the map rotation, one activity per map (the smoke test)
 plugins/donation_events/ Pawn plugin: effect registry, one public handler per activity
 plugins/team_war/        Pawn plugin: T vs CT frag race, published as cvars for the panel
+plugins/bot_antistuck/   Pawn plugin: shoves a bot that grinds into a wall back onto the picture
 infra/Dockerfile         game image: HLDS + ReHLDS + ReGameDLL + Metamod-R + AMXX + YaPB
 infra/build-hlds.sh      assembles the server, verifies every SHA256, compiles the plugin
 infra/update-checksums.ps1 resolves official release assets and writes infra/checksums.env
 infra/verify-image.ps1   supply-chain gate: binary whitelist, no suid, trivy scan
+infra/verify-graphs.ps1  are the navigation graphs in the volume still the pinned ones?
 infra/docker-compose.yml hlds + control API (shared network namespace)
 ```
 
@@ -69,8 +71,8 @@ Planned: ffmpeg streaming to YouTube.
 - `bounty`, `hot_potato` and `boss_raid` follow `DeathMsg` and end on their clock (or when the
   target dies); a boss is re-armed on every spawn so `csdm_lite` cannot undo the raid;
 - `map_change` changes the map at once and is rate limited to once per 10 minutes; the rotation
-  (`map_duel_maps`) is seven fight-yard maps - `fy_iceworld`, `fy_pool_day`, `fy_snow`, `fy_buzzkill`,
-  `fy_simpsons`, `fy_aztec`, `fy_dustworld` - because a vertical feed cannot wait five seconds for the
+  (`map_duel_maps`) is six fight-yard maps - `fy_iceworld`, `fy_pool_day`, `fy_snow`, `fy_buzzkill`,
+  `fy_aztec`, `fy_dustworld` - because a vertical feed cannot wait five seconds for the
   bots to meet. None of them ship with HLDS: they are fetched by `infra/fetch-maps.ps1` from
   GameBanana and pinned by SHA256 in `infra/maps/maps.json` (nothing is downloaded during a build);
 - `announce` must be printable ASCII: GoldSrc chat cannot render cyrillic;

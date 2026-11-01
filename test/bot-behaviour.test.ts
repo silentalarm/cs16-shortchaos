@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
  * server config and csdm_lite - so both are pinned here.
  */
 const serverCfg = readFileSync(new URL("../infra/server.cfg", import.meta.url), "utf8");
+const entrypoint = readFileSync(new URL("../infra/entrypoint.sh", import.meta.url), "utf8");
 const csdm = readFileSync(new URL("../plugins/csdm_lite/csdm_lite.sma", import.meta.url), "utf8");
 
 function body(name: string): string {
@@ -22,9 +23,13 @@ test("a bot never fights with a knife, and never stands still instead of shootin
   // own to run at someone with a knife, which on the stream looks like a broken bot.
   assert.match(serverCfg, /^yb_random_knife_attacks 0$/m, "bots still attack with a knife at random");
   assert.match(serverCfg, /^yb_stab_close_enemies 0$/m, "bots still stab a close enemy");
-  // Camping and shift-walking are what "стоял и смотрел" looks like from the camera.
-  assert.match(serverCfg, /^yb_camping_allowed 0$/m, "bots are allowed to camp again");
-  assert.match(serverCfg, /^yb_walking_allowed 0$/m, "bots still walk slowly when they hear somebody");
+  // Camping and shift-walking are what "стоял и смотрел" looks like from the camera. YaPB re-executes its
+  // own conf/yapb.cfg on every map change, so server.cfg cannot pin either of them: the values that win are
+  // the block infra/entrypoint.sh writes into that file. 4-12 s of holding an angle is human; the first
+  // setting was 10-30 s, which is a third of a fight on fy_iceworld.
+  assert.match(entrypoint, /echo "yb_camping_time_min \\"4\.0\\""/, "the camping window is long again");
+  assert.match(entrypoint, /echo "yb_camping_time_max \\"12\.0\\""/, "the camping window is long again");
+  assert.match(entrypoint, /echo "yb_walking_allowed \\"0\\""/, "bots still walk slowly when they hear somebody");
   // Team play: T against CT. yb_csdm_mode 0 makes a bot target the other team only; 2 (FFA) was the
   // old setting, where every bot was a target and a team kill fed the scoreboard.
   assert.match(serverCfg, /^yb_csdm_mode 0$/m, "bots went back to free-for-all targeting");

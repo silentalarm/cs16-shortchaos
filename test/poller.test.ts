@@ -221,7 +221,7 @@ test("an effect with a global cooldown is limited to once per window", async () 
   try {
     await pollOnce(ctx.deps);
     assert.deepEqual(ctx.commands, [
-      "amx_de map_change maps=fy_iceworld,fy_pool_day,fy_snow,fy_buzzkill,fy_simpsons,fy_aztec,fy_dustworld",
+      "amx_de map_change maps=fy_iceworld,fy_pool_day,fy_snow,fy_buzzkill,fy_aztec,fy_dustworld",
     ]);
 
     ctx.advance(60_000);

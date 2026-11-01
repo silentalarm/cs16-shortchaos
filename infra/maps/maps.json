@@ -33,12 +33,6 @@
                      "note":  "two facing platforms, the fight is the gap between them"
                  },
                  {
-                     "name":  "fy_simpsons",
-                     "mod":  86686,
-                     "sha256":  "82c4d24686b9147401615aa09bfe803febedffde49c83d3dfd50a011a5413b81",
-                     "note":  "house and garden, tight corners"
-                 },
-                 {
                      "name":  "fy_aztec",
                      "mod":  85875,
                      "sha256":  "d28913bb44b70f2dd53192aca4bcbda76b0d882233bdad69be14583ec9d693d6",

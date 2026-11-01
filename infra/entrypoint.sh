@@ -7,7 +7,7 @@ MAP="${MAP:-fy_iceworld}"
 # The map cycle the engine falls back to (nextmap, a bare `changelevel`). mp_timelimit is 0 and the
 # duel owns the rotation, so this is only a safety net - but it must not list stock maps either:
 # that is how a stream ends up on de_dust2 after an unrelated restart. One name per line.
-MAPCYCLE="${MAPCYCLE:-fy_iceworld,fy_pool_day,fy_snow,fy_buzzkill,fy_simpsons,fy_aztec,fy_dustworld}"
+MAPCYCLE="${MAPCYCLE:-fy_iceworld,fy_pool_day,fy_snow,fy_buzzkill,fy_aztec,fy_dustworld}"
 MAXPLAYERS="${MAXPLAYERS:-22}"
 PORT="${PORT:-27015}"
 SERVER_CFG=/hlds/cstrike/server.cfg
@@ -29,11 +29,16 @@ if [ -d "$DEFAULTS" ]; then
   if [ -d "$DEFAULTS/models" ]; then
     mkdir -p /hlds/cstrike/models
     cp -f "$DEFAULTS/models"/*.mdl /hlds/cstrike/models/ 2>/dev/null || true
-    # Player models live one folder down, the way CS keeps its own: models/player/<name>/<name>.mdl.
-    if [ -d "$DEFAULTS/models/player" ]; then
-      mkdir -p /hlds/cstrike/models/player
-      cp -rf "$DEFAULTS/models/player/." /hlds/cstrike/models/player/ 2>/dev/null || true
-    fi
+    # Player models live one folder down, the way CS keeps its own: models/player/<name>/<name>.mdl. Only
+    # the .mdl files: the folder next to each of them also holds the build's own report pictures (the
+    # painted sheet, the sheet of views, `infra/models/build/*.mjs`), and those are not part of the model -
+    # in the volume they only travel on to every client that joins.
+    for from in "$DEFAULTS/models/player"/*/; do
+      [ -d "$from" ] || continue
+      to="/hlds/cstrike/models/player/$(basename "$from")"
+      mkdir -p "$to"
+      cp -f "$from"*.mdl "$to/" 2>/dev/null || true
+    done
   fi
   # A sound the client does not have is a silent bang, and `precache_sound` says nothing about it: the
   # freeze sample is synced here for the same reason the models are.
@@ -59,20 +64,70 @@ chmod 600 "$SERVER_CFG" || true
 
 # YaPB re-executes its own conf/yapb.cfg on every map change, and that silently reverts cvars set in
 # server.cfg: verified live, yb_radio_mode went back to 2 and the bot chat spam returned in the
-# middle of a stream while yb_quota stayed put. Appending our values makes them the last
-# assignment the bot plugin sees, and the guard keeps the file from growing on every restart.
+# middle of a stream while yb_quota stayed put. The block below is appended at the end of that file,
+# because the last assignment is the one the plugin sees.
+#
+# It is rewritten on every start, not appended once: the first version guarded on a marker with
+# `grep -q`, so a tuned value never reached an existing volume and the edit looked like it did
+# nothing. Our own lines are deleted by name first (the archive's defaults for them come back with
+# the block below), which also removes that older, marker-less version.
+#
+# The YaPB archive ships data/train, data/logs and data/pwf as *directories* with mode 0644, and a
+# directory without the execute bit cannot be written into. Every map load therefore logged
+#   Unable to open Pathmatrix file for writing (filename: '.../data/train/fy_iceworld.pmx')
+#   Unable to open Vistable file for writing (filename: '.../data/train/fy_iceworld.vis')
+# and the path matrix and visibility table were never kept: the bot recomputed its routes every round
+# and mis-guessed which connections are clear, which is what "the bots walk into walls" looks like.
+YAPB_DATA=/hlds/cstrike/addons/yapb/data
+if [ -d "$YAPB_DATA" ]; then
+  for dir in graph logs pwf train; do
+    mkdir -p "$YAPB_DATA/$dir" 2>/dev/null || true
+    chmod 755 "$YAPB_DATA/$dir" 2>/dev/null || true
+  done
+fi
+
 YAPB_CFG=/hlds/cstrike/addons/yapb/conf/yapb.cfg
-if [ -f "$YAPB_CFG" ] && ! grep -q "cs16-youtube overrides" "$YAPB_CFG"; then
+if [ -f "$YAPB_CFG" ]; then
+  sed -i -E '/cs16-youtube overrides/d' "$YAPB_CFG"
+  sed -i -E '/^yb_(radio_mode|chat|chat_percent|display_welcome_text|autovacate|quota|difficulty|shoots_thru_walls|camping_allowed|camping_time_min|camping_time_max|walking_allowed|has_team_semiclip|random_knife_attacks|graph_analyze_distance|graph_analyze_optimize_nodes_on_finish)[[:space:]]/d' "$YAPB_CFG"
   {
-    echo "// cs16-youtube overrides: this file is re-executed on every map change"
+    echo "// cs16-youtube overrides: rewritten on every start, keep this block last"
     echo "yb_radio_mode \"${BOT_RADIO_MODE:-0}\""
     echo "yb_chat \"0\""
     echo "yb_chat_percent \"0\""
     echo "yb_display_welcome_text \"0\""
     echo "yb_autovacate \"0\""
     echo "yb_quota \"${BOT_QUOTA:-20}\""
+    # Aim at what a good human does instead of at what the bot can do: Hard (3) reacts in 0.2-0.4 s,
+    # goes for the head 75% of the time and fires at a remembered enemy through the wall in 60% of the
+    # cases. Normal (2) reacts in 0.4-0.6 s at 50%, and with wall shooting off the tell that breaks the
+    # illusion on a stream is gone.
+    echo "yb_difficulty \"${BOT_DIFFICULTY:-2}\""
+    echo "yb_shoots_thru_walls \"0\""
+    # Holding an angle is human; never stopping is not. 10-30 s (the first setting) is a third of a
+    # fight on fy_iceworld and reads as "the bots are asleep" on a 24/7 feed; 4-12 s keeps the picture
+    # moving and still lets a bot watch a doorway. bot_antistuck is told to ignore a bot that is only
+    # holding one (see plugins/bot_antistuck).
+    echo "yb_camping_allowed \"1\""
+    echo "yb_camping_time_min \"4.0\""
+    echo "yb_camping_time_max \"12.0\""
+    # yb_walking_allowed: the bot re-executes this file on every map change, so the 0 in server.cfg is
+    # reverted to the archive's 1 - a bot then crouch-walks whenever it thinks an enemy is near, which
+    # from the outside is a bot that stopped.
+    echo "yb_walking_allowed \"0\""
+    # Told, not done: the bot only needs to know that a teammate is not an obstacle. The collision itself
+    # is removed by team_semiclip (plugins/team_semiclip), and without this line a bot still refuses to
+    # path through the body standing in the doorway.
+    echo "yb_has_team_semiclip \"1\""
+    echo "yb_random_knife_attacks \"${BOT_KNIFE_ATTACKS:-0}\""
+    # Navigation graph density for the fy_* pool, which the bot analyzes itself (the archive ships no
+    # graph for those maps): 64 units between nodes leaves too few links in a tight corner, and the
+    # optimizer drops nodes a corridor needs. 48 is as dense as the bot accepts - YaPB clamps the value
+    # to 42..128 and reverts anything outside it with "Bogus value for cvar" (40 was tried and ignored).
+    echo "yb_graph_analyze_distance \"48\""
+    echo "yb_graph_analyze_optimize_nodes_on_finish \"0\""
   } >> "$YAPB_CFG"
-  echo "yapb.cfg: chat and radio disabled, quota ${BOT_QUOTA:-20}"
+  echo "yapb.cfg: chat and radio off, quota ${BOT_QUOTA:-20}, difficulty ${BOT_DIFFICULTY:-2}"
 fi
 
 # Custom maps, dropped in by the operator: `infra/maps` is mounted read-only at maps-extra (see
@@ -101,6 +156,26 @@ if [ -d "$MAPS_EXTRA" ]; then
     if cp "$file" "$dest/" 2>/dev/null; then files=$((files + 1)); fi
   done
   echo "maps: ${files} file(s) added from maps-extra"
+fi
+
+# Navigation graphs for those maps. YaPB 4.4 loads addons/yapb/data/graph/<map>.graph - never a .nav -
+# and ships a graph for the stock maps only, so a fresh volume would start with a bot that has to
+# analyze a fight-yard map first.
+#
+# Copied only when the volume has no graph of that name. A graph the bot built on this very server is
+# better than the one in git whenever the two disagree (it was analyzed with the current
+# yb_graph_analyze_* values, on the running build), and clobbering it on every restart is how the
+# tuning below never took effect. The repository copy is the baseline for a volume that has none.
+if [ -n "$YAPB_DATA" ] && [ -d "$MAPS_EXTRA/graph" ]; then
+  graphs=0
+  mkdir -p "$YAPB_DATA/graph"
+  for file in "$MAPS_EXTRA"/graph/*.graph; do
+    [ -f "$file" ] || continue
+    name=$(basename "$file")
+    [ -e "$YAPB_DATA/graph/$name" ] && continue
+    if cp -f "$file" "$YAPB_DATA/graph/" 2>/dev/null; then graphs=$((graphs + 1)); fi
+  done
+  echo "yapb graphs: ${graphs} file(s) added"
 fi
 
 # Stock mapcycle.txt lists the 25 maps HLDS ships with; the stream is a fight-yard stream, so the

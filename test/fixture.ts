@@ -108,7 +108,7 @@ export function onSaleCatalogue(): ActivitiesConfig {
         cooldownSec: 60,
         globalCooldownSec: 600,
         enabled: false,
-        params: { maps: ["fy_iceworld", "fy_pool_day", "fy_snow", "fy_buzzkill", "fy_simpsons", "fy_aztec", "fy_dustworld"] },
+        params: { maps: ["fy_iceworld", "fy_pool_day", "fy_snow", "fy_buzzkill", "fy_aztec", "fy_dustworld"] },
       },
     ],
   });

@@ -122,6 +122,22 @@ player's `weaponmodel` field - the same field the bazooka writes - re-applied fr
 engine rewrites it on every weapon switch. Both belong in `EndHero` and in a full reset as well: a model and a
 weapon model outlive a clock on their own.
 
+**Where a model has to arrive before it is seen - twice.** `infra/entrypoint.sh` copies the `.mdl` files into
+the server volume (`server-data`), where `file_exists` and `precache_model` find them; `infra/stream/entrypoint.sh`
+then fills the capture client's own volume (`client-data`) from it, because the client renders the game from its
+own copy of `cstrike/`. That second fill used to be `--skip-old-files`, which is right for the tens of thousands
+of Steam files and wrong for the four directories this repository writes: a repainted hero never replaced the copy
+the client already had, so the server precached the new model, the event ran, and the stream kept drawing the
+**stock soldier the model was built on**. Reported as "the nemesis/survivor textures do not apply to the model",
+and nothing in any log says so - the file is there, it is precached, and it is the wrong build. The four
+directories are refreshed by content now (`refresh_published`); when a rebuild still looks unchanged on the
+stream, compare the two volumes before touching the model:
+
+```powershell
+docker run --rm -v cs16-youtube_server-data:/server:ro -v cs16-youtube_client-data:/game:ro `
+  --entrypoint sh cs16-stream:local -c "cmp /server/cstrike/models/player/nemesis/nemesis.mdl /game/cstrike/models/player/nemesis/nemesis.mdl && echo same"
+```
+
 ### Our own bazooka: `infra/models/weapons/`
 
 
@@ -238,6 +254,6 @@ handler from the description in `systems.md` and note the reference here.
 2. `amx_de codes` reports the code, and firing it by hand from the panel shows the model/sound;
 3. `docker stats` for the stream container stays inside the pre-asset envelope, and the watchdog does
    not report `frozen: true` or a growing `logAgeSec`;
-4. the picture survives a map change with the asset loaded (`fy_simpsons`, the heaviest map);
+4. the picture survives a map change with the asset loaded (`fy_aztec`, the heaviest map);
 5. `node scripts/wav-levels.ts` for every new WAV: peak within ~1 dB of its neighbours;
 6. the licence of the pack is written down in this file before the file lands in `infra/`.

@@ -1028,3 +1028,31 @@ test("the camera follows the bot an event landed on", () => {
   const rearm = /public ReArmOnSpawn\(id\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
   assert.match(rearm, /ArmHero\(id\)/, "a respawned hero does not get its own camera back");
 });
+
+/**
+ * A hero that brings its own body must not be painted over. `kRenderFxGlowShell` is drawn *over* the model,
+ * not around it: with the red shell on, the nemesis and the survivor both came out of the encoder as the same
+ * solid red silhouette, so the repaint in `infra/models/player/` was invisible on the stream no matter how
+ * correct the file was - reported as "the textures do not apply to the model". The shell is still what makes a
+ * hero without a look followable (`juggernaut`, `sniper`), so the rule is "own look first, shell second".
+ */
+test("the glow does not paint over a hero that has its own model", () => {
+  const stock = (name: string) =>
+    new RegExp(`stock (?:bool:)?${name}\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}`).exec(source)?.[0] ?? "";
+
+  const arm = stock("ArmHero");
+  assert.notEqual(arm, "", "ArmHero is missing");
+
+  // The order matters: the alpha branch is the assassin machinery and stays first, the shell is the
+  // fallback for a mode without a look.
+  const glow = arm.indexOf("kRenderFxGlowShell");
+  assert.ok(glow > 0, "no hero is marked by a glow any more");
+  assert.match(arm, /else if \(!HeroOwnLook\(\)\)[\s\S]*kRenderFxGlowShell/, "the shell is drawn over a repainted hero");
+
+  const own = stock("HeroOwnLook");
+  assert.notEqual(own, "", "HeroOwnLook is missing");
+  assert.match(own, /equali\(g_heroCode, "nemesis"\)[\s\S]*g_nemesisLook/, "the nemesis look is not part of the question");
+  assert.match(own, /equali\(g_heroCode, "survivor"\)[\s\S]*g_survivorLook/, "the survivor look is not part of the question");
+  // It answers before DressHeroModel runs, so it must not read the flag that function sets.
+  assert.doesNotMatch(own, /g_heroLookSet/, "the question is answered after the model is already on");
+});

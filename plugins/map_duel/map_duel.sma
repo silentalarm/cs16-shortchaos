@@ -93,8 +93,10 @@ public plugin_init()
 	// hook a viewer, and on de_dust2 the bots spend five of them running to each other with an empty
 	// field in frame. None of these ship with HLDS - they are fetched by infra/fetch-maps.ps1 and
 	// pinned by SHA256 in infra/maps/maps.json (test/map-duel-contract.test.ts checks both).
+	// fy_simpsons was dropped: the house has corners too tight for the bot's navigation graph, and a
+	// bot that grinds a wall there is the one thing a 9:16 feed cannot sell.
 	register_cvar("map_duel_maps",
-		"fy_iceworld,fy_pool_day,fy_snow,fy_buzzkill,fy_simpsons,fy_aztec,fy_dustworld");
+		"fy_iceworld,fy_pool_day,fy_snow,fy_buzzkill,fy_aztec,fy_dustworld");
 
 	// Published for the panel (control API -> ui/panel.ts) and for the log.
 	register_cvar("map_duel_winner", "-");

@@ -3053,10 +3053,14 @@ stock ArmHero(id)
 
 	// Semi-transparent instead of a glow: `alpha` was the silhouette of the assassin mode, and the machinery
 	// stays for the next hero that has to be hard to see without being invisible. No code sets it today, so
-	// every hero on sale draws the red shell the viewer can follow.
+	// every hero on sale draws the red shell the viewer can follow - except the two that bring their own
+	// body. A glow shell is drawn over the model, not around it: on the stream the nemesis and the survivor
+	// came out as the same solid red silhouette, and the repaint in `infra/models/player/` could not be seen
+	// at all, which reads as "the textures do not apply to the model". A mode with its own look is followed
+	// by that look instead (and the camera is locked on the hero for the whole event anyway).
 	if (g_heroAlpha > 0)
 		set_user_rendering(id, kRenderFxNone, 0, 0, 0, kRenderTransAlpha, g_heroAlpha);
-	else
+	else if (!HeroOwnLook())
 		set_user_rendering(id, kRenderFxGlowShell, 255, 0, 0, kRenderNormal, 20);
 
 	// The sniper's budget is a part of the role like the health: a hero that comes back from a death (or a
@@ -3068,6 +3072,21 @@ stock ArmHero(id)
 	// bot holds, so a model set before the kit arrives is a body the engine redraws with the wrong hand.
 	DressHeroModel(id);
 	LockCameraOn(id, g_heroSeconds);
+}
+
+/* Whether the hero of the running event brings its own body (`infra/models/player/`). Asked before
+   `DressHeroModel` runs, so it cannot read `g_heroLookSet`: it is the same two questions that function
+   asks - the mode is one of the two with a model, and the file was found and precached at start. A mode
+   without a look keeps the red shell that makes it followable. */
+stock bool:HeroOwnLook()
+{
+	if (equali(g_heroCode, "nemesis"))
+		return g_nemesisLook;
+
+	if (equali(g_heroCode, "survivor"))
+		return g_survivorLook;
+
+	return false;
 }
 
 /* Puts the hero's own look on the bot. ArmHero is the only way into the role - the event start, the role

@@ -152,6 +152,11 @@ test("the image and the entrypoint both carry the player model folder", () => {
   assert.match(dockerfile, /COPY infra\/models\/player\/ \/hlds\/cstrike\/models\/player\//, "the player model is not copied into the image");
   assert.match(dockerfile, /\/opt\/defaults\/models\/player\/nemesis/, "the volume never receives the player model");
   assert.match(entrypoint, /DEFAULTS\/models\/player/, "the entrypoint does not sync player/ into the volume");
+  // The repaint's own report pictures live in the same folder as the model (`infra/models/build/sheets.mjs`).
+  // They are the human check of a repaint, not an asset: in `models/player` they would be downloaded by
+  // every client that joins, so the image drops them and the entrypoint syncs only `*.mdl`.
+  assert.match(dockerfile, /find \/opt\/defaults\/models -name '\*\.png' -delete/, "the build reports would be published as game assets");
+  assert.match(entrypoint, /cp -f "?\$from"?\*\.mdl/, "the entrypoint copies the whole model folder, reports included");
 });
 
 /**
@@ -179,6 +184,31 @@ test("the image carries the survivor and both hero looks reach the volume", () =
   assert.match(dockerfile, /COPY --from=build[^\n]*\/opt\/defaults\/models\/player\/survivor/, "the survivor never reaches the volume defaults");
   assert.match(dockerfile, /\/hlds\/cstrike\/sound\//, "the freeze sound is not copied into the game image");
   assert.match(entrypoint, /DEFAULTS\/sound/, "the entrypoint does not sync sound/ into the volume");
+});
+
+/**
+ * The capture client draws its own copy of the game, `client-data` at `/game`, and fills it from the
+ * server volume on every start (`infra/stream/entrypoint.sh`). That fill was `--skip-old-files`, which is
+ * right for the tens of thousands of Steam files and wrong for the four directories this repository
+ * writes: a hero re-painted in `infra/models` never replaced the copy the client already had, so the
+ * server precached the new model and the stream kept drawing the **stock soldier the model was built on**
+ * - reported as "the nemesis/survivor textures do not apply to the model". Nothing in any log says so:
+ * the file is there, it is precached, and it is the wrong build.
+ */
+test("a repainted hero reaches the capture client, not only a missing one", () => {
+  const stream = readFileSync(new URL("../infra/stream/entrypoint.sh", import.meta.url), "utf8");
+
+  const refresh = /refresh_published\(\) \{[\s\S]*?\n\}/.exec(stream)?.[0] ?? "";
+  assert.ok(refresh !== "", "nothing refreshes the files this repository publishes inside the client volume");
+  assert.match(refresh, /cmp -s/, "the refresh tests for existence, not for content");
+  assert.match(refresh, /cp -f/, "the refresh copies nothing");
+
+  assert.match(stream, /PUBLISHED="[^"]*cstrike\/models/, "the hero models are not among the refreshed paths");
+  assert.match(stream, /refresh_published\n/, "the refresh is defined and never called");
+
+  // The cheap pass has to stay: valve/ and cstrike/ are tens of thousands of files, and copying them on
+  // every start is the one thing the stat-per-file skip exists to avoid.
+  assert.match(stream, /--skip-old-files/, "the whole tree would be copied on every start");
 });
 
 /**

@@ -78,6 +78,14 @@ Conversion in `outbreak` is `DeathMsg`: if the killer carries the infection flag
 on the infected side with the zombie model and the infected health. `sniper` reads its budget from
 `rounds`, spends it in `Ham_Weapon_PrimaryAttack` and pays one back in `DeathMsg`.
 
+**The look and the glow.** `ArmHero` draws a red `kRenderFxGlowShell` so the viewer can follow a hero
+without a look of its own (`juggernaut`, `sniper`). The shell is drawn *over* the model, not around it:
+with it on, the repainted nemesis and survivor both came out of the encoder as the same solid red
+silhouette, and `infra/models/player/` was invisible on the stream - read from outside as "the textures
+do not apply to the model", while the log said `nemesis: bot 4 wears the nemesis model`. So the shell is
+skipped for a mode that has its own model (`HeroOwnLook`); the camera lock follows the hero anyway.
+A second cause was delivery rather than rendering - see the two-volume note in `assets.md`.
+
 **Parameters.** `baseHealth`, `perBot`, `knife`, `speed`, `share`, `health`, `weapon`, `alpha`, `rounds`,
 `chaos`.
 

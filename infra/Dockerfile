@@ -99,6 +99,15 @@ RUN apt-get update \
 
 COPY --from=build --chown=10001:10001 /hlds /hlds
 
+# The YaPB archive ships data/train, data/logs and data/pwf as *directories* with mode 0644, and a
+# directory without the execute bit cannot be written into. The bot therefore failed on every map load
+# with `Unable to open Pathmatrix file for writing (filename: '.../data/train/<map>.pmx')` and never
+# kept its path matrix or visibility table, so paths were recomputed (and guessed) every round - which
+# is what "the bots grind into walls" looks like from the outside. Fixed here and in the entrypoint:
+# a volume seeded from an image keeps the mode of the first seed forever.
+RUN chmod 755 /hlds/cstrike/addons/yapb/data/train /hlds/cstrike/addons/yapb/data/logs \
+    /hlds/cstrike/addons/yapb/data/pwf /hlds/cstrike/addons/yapb/data/graph
+
 # /hlds is a named volume at runtime, and Docker seeds a volume from the image only once. A rebuilt
 # plugin or an edited config would therefore never reach an existing volume, which makes image
 # updates silently ineffective. Pristine copies live outside the mount point; the entrypoint syncs
@@ -115,6 +124,11 @@ COPY --from=build --chown=10001:10001 /hlds/cstrike/models/p_bazooka.mdl /hlds/c
 # server down.
 COPY --from=build --chown=10001:10001 /hlds/cstrike/models/player/nemesis /opt/defaults/models/player/nemesis
 COPY --from=build --chown=10001:10001 /hlds/cstrike/models/player/survivor /opt/defaults/models/player/survivor
+# The build also draws report pictures next to each model (`infra/models/build/sheets.mjs`: the painted
+# sheet, six views, a side-by-side against the stock soldier). They are the human check of a repaint and
+# review lives in the repository, so they are dropped here: a game volume only needs the `.mdl`, and a
+# picture in `models/player` is downloaded by every client that joins.
+RUN find /opt/defaults/models -name '*.png' -delete
 # The freeze sound keeps its `freeze/` subdirectory for the same reason.
 COPY --from=build --chown=10001:10001 /hlds/cstrike/sound/freeze /opt/defaults/sound/freeze
 

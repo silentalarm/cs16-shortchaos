@@ -188,13 +188,25 @@ amx_map_duel status   map_duel status: state=<idle|live|done> winner=<name|->
 
 Cvars: `map_duel_enabled` (1), `map_duel_minutes` (10), `map_duel_prepare` (45),
 `map_duel_limit` (60), `map_duel_weapons` (`ak47,m4a1,awp,xm1014,p90,mp5navy`), `map_duel_maps`
-(`fy_iceworld,fy_pool_day,fy_snow,fy_buzzkill,fy_simpsons,fy_aztec,fy_dustworld`, wraps around).
+(`fy_iceworld,fy_pool_day,fy_snow,fy_buzzkill,fy_aztec,fy_dustworld`, wraps around).
 
 The rotation is fight-yard maps only, and deliberately **small** ones. A vertical 9:16 feed has a
 second or two to stop a thumb, and on de_dust2 the bots spend five of them running to each other with
 an empty field in frame; on a compact arena the fight is already on screen when the frame changes.
 
-None of the seven ship with HLDS. They are fetched from GameBanana by `./infra/fetch-maps.ps1`
+`fy_simpsons` left the pool on 2026-10-31: its house has rooms narrower than two bot radii, so a bot
+that lost its route there ended up pushing a door frame on camera more often than on any other map. The
+three wads it needed (`fy_simpsons.wad`, `0soup0_simpsons.wad`, `cl_Simpsons.wad` - the first two are
+byte-identical, one archive shipped both) belonged to that map only and are gone with it. The entrypoint
+only ever copies files *into* a volume, so a volume created before the removal still has them; nothing asks
+for them any more, but the space can be reclaimed by hand:
+
+```bash
+docker run --rm -v cs16-youtube_server-data:/hlds --entrypoint sh cs16-hlds:local \
+  -c 'rm -f /hlds/cstrike/maps/fy_simpsons.* /hlds/cstrike/fy_simpsons.wad /hlds/cstrike/0soup0_simpsons.wad /hlds/cstrike/cl_Simpsons.wad'
+```
+
+None of the six ship with HLDS. They are fetched from GameBanana by `./infra/fetch-maps.ps1`
 (`infra/maps/maps.json` names a mod id and a SHA256 pin; the script verifies GameBanana's MD5, its AV
 verdict and the pin, so a re-uploaded file fails instead of landing in the game) and copied into the
 server by `infra/entrypoint.sh` at start - the image build never downloads a map. The fetcher
@@ -220,15 +232,23 @@ apart): the duel is what the last minute of the map exists for.
 
 ## How the bots behave in the picture
 
-Every knob here answers a complaint from the stream, and none of them is the engine default:
+Every knob here answers a complaint from the stream, and none of them is the engine default. The values
+are written by `infra/entrypoint.sh` into `addons/yapb/conf/yapb.cfg` on every start: that file is
+re-executed by YaPB on every map change and silently reverts anything set in `server.cfg` (verified -
+`yb_radio_mode` went back to 2 in the middle of a stream while `yb_quota` stayed put).
 
 | Symptom on stream | Knob | Value |
 | --- | --- | --- |
-| a bot fighting with a knife | `yb_random_knife_attacks`, `yb_stab_close_enemies` | 0, 0 |
-| a bot standing still in a corner | `yb_camping_allowed` | 0 |
+| a bot stabbing an enemy instead of shooting it | `yb_stab_close_enemies`, `yb_random_knife_attacks` | 0, 0 (`BOT_KNIFE_ATTACKS`) |
+| a bot pushing into the back of a teammate | `team_semiclip_radius` (see below) | 36 units - just above the player hull |
+| a bot standing still in a corner for the whole map | `yb_camping_allowed`, `yb_camping_time_min/max`, `yb_walking_allowed` | 1, 4.0 / 12.0, 0 - holding an angle is human, a third of a fight is not |
 | a bot creeping at shift speed | `yb_walking_allowed` | 0 |
+| a bot shooting at a remembered enemy through a wall | `yb_shoots_thru_walls` | 0 |
+| a bot that reacts like a machine | `yb_difficulty` | 2 - Normal, 0.4-0.6 s reaction (`BOT_DIFFICULTY`) |
 | a bot staring at a teammate without shooting | `yb_csdm_mode` | 2 (free for all targeting) |
 | a bot out of bullets doing nothing | `csdm_lite_ammo`, `csdm_lite_ammo_reserve` | 1, 200 |
+| a bot grinding into a wall | `bot_antistuck` (see below) | nudge after 1.5 s of no movement with a wall in front |
+
 
 `mp_infinite_ammo` stays 0: that engine mode fills the magazine and removes the reload entirely. The
 endless part is the **reserve**: `csdm_lite` tops it up once a second for every alive bot, so a
@@ -238,6 +258,161 @@ topping them up would hand a bot 200 grenades.
 
 Deploying any of it: `infra/build-image.ps1` then `infra/compose.ps1 up -d --force-recreate hlds`.
 A plain `docker restart` keeps the old image and the old config.
+
+### Why the bots walked into walls (measured 2026-10-31)
+
+Read from the live container's log, not guessed - every map load said:
+
+```
+Unable to open Pathmatrix file for writing (filename: '/hlds/cstrike/addons/yapb/data/train/fy_iceworld.pmx')
+Unable to open Vistable file for writing (filename: '/hlds/cstrike/addons/yapb/data/train/fy_iceworld.vis')
+```
+
+`ls -ld addons/yapb/data/{train,pwf,logs,graph}` answered `drwxr--r--` with `0644`: the YaPB archive
+ships those as **directories** with the mode of a file, and a directory without the execute bit cannot be
+written into. The bot therefore rebuilt its path matrix every round and never persisted which connections
+are actually clear - a bot that mis-guesses a link walks into the wall it points at. Both the image
+(`infra/Dockerfile`) and the entrypoint (`chmod 755`, idempotent) fix the mode, because a named volume
+keeps the mode of its first seed forever.
+
+Check after a start:
+
+```bash
+docker exec cs16-youtube-hlds-1 ls -ld /hlds/cstrike/addons/yapb/data/train   # drwxr-xr-x
+docker exec cs16-youtube-hlds-1 ls /hlds/cstrike/addons/yapb/data/train        # <map>.pmx after a map load
+docker logs cs16-youtube-hlds-1 2>&1 | grep -c Pathmatrix                      # 0
+```
+
+### `team_semiclip`: teammates do not block each other
+
+`plugins/team_semiclip/team_semiclip.sma` runs one pass every 0.025 s: every alive player is restored to
+`SOLID_SLIDEBOX`, then any two alive players of the same team closer than `team_semiclip_radius` (36) units
+are both set to `SOLID_NOT` for the next pass. Enemies stay solid - a bot passing through an enemy would make
+a firefight unreadable. The restore comes first in the pass, before every early return, so nothing can stay
+transparent after a death, a team change, a map end or `team_semiclip_enabled 0`.
+
+Why: twenty bots in a room the size of a bus, and the engine keeps teammates solid. A bot whose doorway is
+occupied pushes into the back of the bot standing there and stays for the round - on a 9:16 stream that is
+the "bots just sit there" complaint. YaPB is told the same thing from its own side,
+`yb_has_team_semiclip 1` in `infra/entrypoint.sh`, otherwise it still refuses to path through the body.
+
+```bash
+amx_semiclip            # team_semiclip: enabled=1 radius=36 transparent=4
+```
+
+The cost is known: while two teammates overlap, hitscan passes through them. `mp_friendlyfire` is 0 in
+`infra/server.cfg`, so nothing is lost today - with friendly fire on, a team kill at that distance would stop
+being possible. The radius sits just above the 32-unit player hull, so the window is the moment the two
+actually touch.
+
+### `bot_antistuck`: the bot that still grinds a wall
+
+`plugins/bot_antistuck/bot_antistuck.sma` is the safety net, not the fix. Every 0.5 s (a constant: the
+scan period is what the time bookkeeping uses, a cvar there would only desync the two) it looks at each
+alive bot that is on the ground, has not moved `bot_antistuck_units` (24) units in `bot_antistuck_secs`
+(1.5 s) and has a **wall** within `bot_antistuck_wall` (48) units in front of its view (a trace; floors and
+ceilings are ignored). Such a bot gets a shove away from the wall plus a jump, at most once per
+`bot_antistuck_cooldown` (3 s), and the horizontal part is re-applied every 0.05 s for 0.3 s: a bot's own
+usercmd replaces the velocity on the next tick, so a single write was a bot hopping in place against the
+wall rather than leaving it. The first 20 shoves of a plugin load are logged - `antistuck: shoved <name> at
+<x> <y> <z> after <n> s` - so the net can be watched from `docker logs` without RCON.
+
+That front trace has one blind spot, from the stream: a bot backed into a corner or standing on a ledge has
+its wall **behind** it, so the trace sees an open room and the bot stood there 8.4 s and 10.4 s before it
+happened to turn (both in the 2026-11-01 log). The trace is deliberately strict because a camper also stands
+still, and camping is bounded by `yb_camping_time_max` (12 s), so past `bot_antistuck_patience` (14 s)
+nobody is holding an angle any more: four traces are cast instead of one and the bot is shoved towards the
+most open direction, logged with a `(no wall in view)` suffix. **Keep the patience above
+`yb_camping_time_max`**, or campers are shoved out of their angle; `test/bot-antistuck-contract.test.ts`
+fails if the two ever cross.
+
+```bash
+amx_antistuck          # bot_antistuck: nudged=N respawned=M armed=1
+```
+
+A teleport is **not** used: `set_user_origin` is already rejected in this project (`docs/runbook.md`,
+"the respawn meat grinder") - the engine leaves the bot's navigation graph pointing where it was and the bot
+freezes for the rest of the round. With `bot_antistuck_respawn 1` the fallback after
+`bot_antistuck_stuck_secs` (10 s) of no progress is `user_kill` with the silent flag, so the existing
+`csdm_lite` grinder brings the bot back on a spawn point that is on the graph. Default is 0: a false
+positive costs a visible death on camera, and the mode is only worth it if the counters prove it is needed.
+
+**Reading the net.** It logs its first `NUDGE_LOG_LIMIT` (20) shoves per plugin load, so the log witnesses the
+phenomenon but is not a rate: 20 lines means "at least 20 since the last restart". What was measured on
+2026-11-01 with the dense graphs and `yb_camping_time_*` 4-12 s, 20 bots on `fy_snow`/`fy_iceworld`: six
+logged shoves inside ten minutes, most of them after 1.4 s of no progress (the net's own detection time) and
+two after 8.4 s and 10.4 s, when the bot had turned away from the wall the trace looks for. That is a viewer
+saying "one bot is being weird", not "the bots are broken" - so the net stays on `bot_antistuck_respawn 0`.
+A shove every few seconds would instead point at the **graph** for that map, not at the shove.
+
+```bash
+# what the net did since the last restart (capped at 20 lines per load, see above)
+docker run --rm -v cs16-youtube_server-data:/hlds:ro --entrypoint sh cs16-stream:local -c "grep -h 'antistuck: shoved' /hlds/cstrike/addons/amxmodx/logs/*.log | tail -20"
+# the exact counters, from RCON - the number the log cannot cap
+amx_antistuck          # bot_antistuck: nudged=N respawned=M armed=1
+# and the values the running server actually uses, not what the repository says
+docker run --rm -v cs16-youtube_server-data:/hlds:ro --entrypoint sh cs16-stream:local -c "grep -E '^yb_(camping|walking|random_knife|graph_analyze_distance)' /hlds/cstrike/addons/yapb/conf/yapb.cfg"
+```
+
+### Navigation graphs: the bot reads a `.graph`, never a `.nav`
+
+YaPB 4.4 logs `Loaded Bots Graph data v2` from `addons/yapb/data/graph/<map>.graph`; the `.nav` files next
+to the maps are Quake leftovers that nothing reads (an earlier version of `infra/maps/README.md` claimed
+otherwise). The archive ships a graph for the stock maps only, so each fight-yard map is analyzed on the
+server itself. Six of those results are pinned in `infra/maps/graph/`, and `infra/entrypoint.sh` copies one
+in **only when the volume has no graph of that name** (`yapb graphs: N file(s) added`): a graph the bot built
+on the running server was analyzed with the current `yb_graph_analyze_*` values, so overwriting it on every
+start is exactly how the tuning below never took effect. The repository copy is the baseline for a fresh
+volume.
+
+```bash
+# force a re-analysis: a .graph that exists in the volume is never analyzed again
+docker run --rm -v cs16-youtube_server-data:/hlds --entrypoint sh cs16-hlds:local \
+  -c 'rm -f /hlds/cstrike/addons/yapb/data/graph/fy_aztec.graph'
+# load the map, wait for "Completed map analysis", then pin the result
+docker cp cs16-youtube-hlds-1:/hlds/cstrike/addons/yapb/data/graph/fy_aztec.graph infra/maps/graph/
+```
+
+Before blaming a map, check that the graph in the volume is the pinned one: `entrypoint.sh` never overwrites
+a graph that exists, so a volume seeded before a denser analysis keeps the sparse build (that is how
+`fy_buzzkill` stayed at 61 nodes while the repository had 1711). `infra/verify-graphs.ps1` compares each
+pinned file with the volume by content and prints `STALE` for a mismatch - one `cmp` per map, no server and
+no RCON needed:
+
+```powershell
+./infra/verify-graphs.ps1        # same fy_aztec.graph (49 KB) ... all 6 pinned graph(s) match the volume
+```
+
+The same analysis runs off-stream, which is how the numbers below were produced: a throwaway container with
+`-e MAP=<map>` and its own directory for `/hlds/cstrike/addons/yapb/data`, two minutes on a spare core and no
+interruption of the picture. Not with a **Windows bind mount** for that directory: YaPB writes the graph and
+then fails to `_stat` it, so the log says `Unable to load Graph` although the file is complete. A named
+volume, or the live server, reads it back fine.
+
+How dense a graph is can be read without parsing it: the fourth uint32 of the header is the node count.
+
+| map | archive-style analysis (64, optimized) | `yb_graph_analyze_distance 48`, not optimized |
+|---|---|---|
+| `fy_buzzkill` | 61 nodes, 3.2 KB | 1711 nodes, 78 KB |
+| `fy_pool_day` | 187 nodes, 11.9 KB | 443 nodes, 23 KB |
+| `fy_iceworld` | 215 nodes, 12.8 KB | 594 nodes, 28 KB |
+| `fy_snow` | 203 nodes, 14.6 KB | 1076 nodes, 48 KB |
+| `fy_aztec` | 336 nodes, 21.4 KB | 1118 nodes, 50 KB |
+| `fy_dustworld` | 447 nodes, 25.4 KB | 925 nodes, 45 KB |
+
+`fy_buzzkill` is the one that mattered: 61 nodes on a map that is all crates is a bot with nowhere to route
+to, so it pushes into the wall in front of it and jumps there. The other five were 3-5x under-noded too.
+
+`yb_graph_analyze_distance` is 48 instead of the archive's 64 (**not** 40: YaPB clamps the cvar to
+42..128 and answers `Bogus value for cvar 'yb_graph_analyze_distance'` for anything outside, keeping 64) and
+`yb_graph_analyze_optimize_nodes_on_finish` is 0: on a tight fight-yard map 64 units leaves too few links
+in a doorway, and the optimizer deletes nodes a corridor needs.
+
+Six graphs, one per map, are pinned in `infra/maps/graph/` (copied out of a live server on 2026-10-31).
+They were analyzed with the archive's 64, and a pinned file wins over the volume, so they keep 64 until
+somebody regenerates them - the point of pinning is that a fresh volume does not start with a bot
+analyzing a map instead of playing it. To pick up the denser setting for one map: delete both copies, load
+the map, copy the result back (`yapb graphs: N file(s) synced` then confirms the copy on the next start).
 
 ## chaos_core: the chaos mod
 
