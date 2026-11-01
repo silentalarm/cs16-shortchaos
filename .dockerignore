@@ -1,0 +1,41 @@
+# Build context filter for the two images: infra/Dockerfile and infra/stream/Dockerfile.
+#
+# Both Dockerfiles COPY a known, small set - src/music.ts, src/sound.ts, plugins/, and
+# infra/{sounds,music,models,stream,entrypoint.sh,server.cfg,plugins.ini,build-hlds.sh,
+# build-plugin.sh}. Everything listed below is either not read by any stage or must not leave the
+# host at all, and together they were ~180 MB of the context on every build.
+#
+# The list is deliberately short: a pattern here that matches a COPY source breaks the build with a
+# "not found" that says nothing about the cause, so nothing under src/, plugins/, infra/ or config/
+# is filtered.
+
+# History and VCS metadata: never needed, and .git alone is ~10 MB.
+.git
+.gitignore
+.gitattributes
+
+# Secrets. .env is not COPYed by any stage, but it is the one file that must not be handed to the
+# Docker daemon in the first place: it holds the RCON password, the panel token and the stream key.
+.env
+.env.*
+
+# The cheap-mode runtime state: the panel's SQLite database, the OAuth token file and the override.
+data
+
+# Build and test output: out/ is ~130 MB of renders and recordings, node_modules/ ~32 MB.
+out
+node_modules
+.tmp-*
+
+# Local scratch: build logs at the repository root, and the operator's own capture files.
+*.log
+logs
+
+# Material that only developers read. The API and the encoder run from this repository mounted into
+# the container, not from the image, so none of it is needed at build time.
+docs
+test
+scripts
+assets
+overlay
+public

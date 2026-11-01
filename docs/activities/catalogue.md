@@ -48,7 +48,7 @@ still lets the subtitle be read.
 |---|---|---|---|---|---|
 | 18 | `fire_grenades` | an HE sets bots on fire: 60 damage a tick for 15 s, orange sprite | 30 | `damage=60 burn=15 radius=300` | ready (off sale, own blast, live-run) |
 | 19 | `freeze_nades` | a flashbang freezes everybody in the blast for 6 s under an ice-white shell, with ice shards on the blast and its own ice crack (`freeze/ice_crack.wav`) | 30 | `freeze=6 radius=300` | ready (off sale, own pulse, live-run) |
-| 20 | `bazooka_drop` | one bot holds the launcher and fires rockets: 500 blast damage inside 320 units, camera on it | 30 | `damage=500 radius=320` | ready (off sale, weapon + rocket, live-run pending) |
+| 20 | `bazooka_drop` | one bot holds the launcher and fires rockets: 500 blast damage inside 320 units, camera on it | 30 | `damage=500 radius=320` | on sale (stream watch pending: the launcher in hand is unconfirmed by eye) |
 | 21 | `plasma_rifle` | one bot with an energy rifle: 90 damage, blue tracers, 50 rounds | 30 | `damage=90 ammo=50` | planned |
 | 22 | `laser_mines` | three mines on the map, a beam burns whoever crosses it | 45 | `count=3 damage=40` | planned |
 

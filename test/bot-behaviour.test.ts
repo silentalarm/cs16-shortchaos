@@ -18,11 +18,19 @@ function body(name: string): string {
   return found[0];
 }
 
-test("a bot never fights with a knife, and never stands still instead of shooting", () => {
-  // Both knife behaviours belong to YaPB itself, not to the engine: left on, a bot decides on its
-  // own to run at someone with a knife, which on the stream looks like a broken bot.
-  assert.match(serverCfg, /^yb_random_knife_attacks 0$/m, "bots still attack with a knife at random");
+test("a bot never fights with a knife, but may carry one while it rushes", () => {
+  // Two different knobs, and only one of them was the complaint. `yb_stab_close_enemies` makes a bot
+  // decide on its own to stab a nearby enemy instead of shooting it - that is what reads as broken on
+  // the stream, so it is off. `yb_random_knife_attacks` is the opposite: a bot rushing with no enemy
+  // nearby runs with the knife out, the way a human rotates, so it is on (`BOT_KNIFE_ATTACKS=1`) and a
+  // bot holding a rifle in an empty corridor is the thing that looks frozen.
+  assert.match(serverCfg, /^yb_random_knife_attacks 1$/m, "bots rush with a rifle in hand again");
   assert.match(serverCfg, /^yb_stab_close_enemies 0$/m, "bots still stab a close enemy");
+  // server.cfg is re-executed away by YaPB on every map change, so the value that wins is the one
+  // infra/entrypoint.sh writes into yapb.cfg - and its default has to agree with server.cfg: 1 makes a
+  // rushing bot carry the knife, 0 turns that off.
+  assert.ok(entrypoint.includes("BOT_KNIFE_ATTACKS:-1}"), "the knife-out fallback does not match server.cfg");
+  assert.equal(entrypoint.includes("BOT_KNIFE_ATTACKS:-0}"), false, "a leftover 0 would override server.cfg on every map change");
   // Camping and shift-walking are what "стоял и смотрел" looks like from the camera. YaPB re-executes its
   // own conf/yapb.cfg on every map change, so server.cfg cannot pin either of them: the values that win are
   // the block infra/entrypoint.sh writes into that file. 4-12 s of holding an angle is human; the first

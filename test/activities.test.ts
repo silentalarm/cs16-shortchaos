@@ -27,9 +27,10 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
   assert.equal(config.minAmount, 50);
   // Forty codes: the five 2025-10 events, `he_party` (kept off sale), the six round modes of S1,
   // the five classes of S2, the three items of S3, the five skills of S4, the five chases of S5, the
-  // six physics codes of S6 and the four sound codes of S8. Everything past the original five is off sale:
-  // it is in the catalogue so the plugin cannot keep a handler nobody can trigger, and `enabled: false`
-  // keeps it out of the random roll until the live check is done.
+  // six physics codes of S6 and the four sound codes of S8. Everything past the original five is off
+  // sale except `bazooka_drop`, the first S3 item checked on a live server: it is in the catalogue so
+  // the plugin cannot keep a handler nobody can trigger, and `enabled: false` keeps a code out of the
+  // random roll until that live check is done.
   assert.equal(config.activities.length, 40, "five events, he_party, six round modes, five classes, three items, five skills, five chases, six physics codes, four sound codes");
 
   const codes = config.activities.map((activity) => activity.code);
@@ -58,11 +59,15 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
     runners: 45,
     jumpers: 30,
     regenerators: 45,
+    // The first S3 item on sale: 30 seconds is the launcher's lifetime, not the event's - the carrier
+    // holds a single weapon model and the rocket needs a flight to be seen.
+    bazooka_drop: 30,
   };
   const onSale = config.activities.filter((activity) => activity.enabled);
   assert.deepEqual(
     onSale.map((activity) => activity.code).sort(),
     [
+      "bazooka_drop",
       "brutes",
       "chaos_plague",
       "glass_cannon",
@@ -80,7 +85,7 @@ test("shipped catalogue is valid and matches the agreed deal", () => {
       "sniper",
       "survivor",
     ],
-    "sixteen events on sale",
+    "seventeen events on sale",
   );
   for (const activity of onSale) {
     const seconds = longer[activity.code] ?? 15;

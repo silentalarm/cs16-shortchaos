@@ -7,7 +7,8 @@
 3. pinned ReHLDS image + YaPB + `donation_events` Pawn plugin;
 4. end-to-end: real 50 RUB donation -> activity in game -> row in DB;
 5. stream: ffmpeg -> private YouTube RTMP;
-6. VPS, backups, health checks.
+6. VPS, backups, health checks (the operator path is `docs/deploy.md`, the one command is
+   `bash infra/deploy.sh`).
 
 ## The team race (`plugins/team_war`)
 
@@ -239,7 +240,8 @@ re-executed by YaPB on every map change and silently reverts anything set in `se
 
 | Symptom on stream | Knob | Value |
 | --- | --- | --- |
-| a bot stabbing an enemy instead of shooting it | `yb_stab_close_enemies`, `yb_random_knife_attacks` | 0, 0 (`BOT_KNIFE_ATTACKS`) |
+| a bot stabbing an enemy instead of shooting it | `yb_stab_close_enemies` | 0 - a knife fight reads as a broken bot |
+| a bot running the map with a rifle in hand, no enemy near | `yb_random_knife_attacks` | 1 (`BOT_KNIFE_ATTACKS`) - a rushing bot carries the knife the way a human rotates |
 | a bot pushing into the back of a teammate | `team_semiclip_radius` (see below) | 36 units - just above the player hull |
 | a bot standing still in a corner for the whole map | `yb_camping_allowed`, `yb_camping_time_min/max`, `yb_walking_allowed` | 1, 4.0 / 12.0, 0 - holding an angle is human, a third of a fight is not |
 | a bot creeping at shift speed | `yb_walking_allowed` | 0 |

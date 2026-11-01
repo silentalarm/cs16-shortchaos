@@ -542,7 +542,7 @@
       "rounds": null,
       "cooldownSec": 60,
       "globalCooldownSec": 20,
-      "enabled": false,
+      "enabled": true,
       "params": {
         "seconds": 30,
         "maxNameLength": 16,

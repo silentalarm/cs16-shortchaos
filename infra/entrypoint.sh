@@ -119,7 +119,12 @@ if [ -f "$YAPB_CFG" ]; then
     # is removed by team_semiclip (plugins/team_semiclip), and without this line a bot still refuses to
     # path through the body standing in the doorway.
     echo "yb_has_team_semiclip \"1\""
-    echo "yb_random_knife_attacks \"${BOT_KNIFE_ATTACKS:-0}\""
+    # yb_random_knife_attacks is not "bot duels with a knife": it lets a bot run with the knife out
+    # while it rushes and no enemy is nearby, which is exactly what a human does on a rotation and what
+    # a bot holding a rifle in an empty corridor does not. The knife *fight* is the other knob -
+    # yb_stab_close_enemies - and that one stays 0 in server.cfg, because a bot that stabs instead of
+    # shooting reads as broken. Verified against the cvar comments in cfg/addons/yapb/conf/yapb.cfg.
+    echo "yb_random_knife_attacks \"${BOT_KNIFE_ATTACKS:-1}\""
     # Navigation graph density for the fy_* pool, which the bot analyzes itself (the archive ships no
     # graph for those maps): 64 units between nodes leaves too few links in a tight corner, and the
     # optimizer drops nodes a corridor needs. 48 is as dense as the bot accepts - YaPB clamps the value

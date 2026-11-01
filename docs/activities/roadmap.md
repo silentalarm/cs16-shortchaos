@@ -205,8 +205,9 @@ log. What is missing is the .mdl, and the on-sale step once the picture is confi
       black), so the rocket has no model at all now: it is the collider, and what the viewer sees is the
       beam streak. And the launcher in the hand sat at the bot's feet: the engine draws a player's weapon
       model in the model's own space, and the stock p_ files put their geometry at the hand's rest position
-      (`HAND` in `infra/models/build/bazooka.mjs`), which is where the mesh is built now. Left: the on-sale
-      step and a stream watch;
+      (`HAND` in `infra/models/build/bazooka.mjs`), which is where the mesh is built now. The on-sale step
+      is done (2026-11-01: `enabled: true`, 30 s); left: a stream watch, because the launcher in the hand
+      and the carrier's rockets are still unconfirmed by eye;
 - [ ] plasma rifle and laser mines only if the bazooka is stable.
 
 **Done when:** one custom weapon survives a full respawn cycle and its model is visible in the stream.

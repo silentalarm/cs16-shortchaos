@@ -210,6 +210,16 @@ export const TRACKS: Record<string, TrackSpec> = {
     bass: "D2 D2 D2 D2 E2 E2 E2 E2".split(" "),
     drums: 0.8,
   },
+  bazooka_drop: {
+    // The first S3 item on sale. One tube and a long reload: a stomp, then a hole where the rocket
+    // goes, which is what the carrier's own rhythm looks like from the camera.
+    bpm: 100,
+    wave: "saw",
+    seconds: 30,
+    lead: "D3 - - - D3 - F3 - G3 - - - F3 - D3 - C3 - - - C3 - E3 - F3 - - - D3 - - -".split(" "),
+    bass: "D2 D2 D2 D2 D2 D2 D2 D2 C2 C2 C2 C2 C2 C2 C2 C2".split(" "),
+    drums: 1,
+  },
   // S8 sound. The air-raid siren is synthesised here instead of shipped as `infra/sounds/siren.mp3`:
   // a note table cannot sweep, but alternating A5/E5 every two seconds reads as wee-woo on a phone
   // speaker, and the repository stays free of audio binaries and licences (docs/activities/assets.md).

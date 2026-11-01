@@ -116,6 +116,18 @@ docker logs -f cs16-youtube-hlds-1               # wait for "donation_events loa
 Then point the control API at it (`RCON_PASSWORD` in `.env`, `npm start`) and check the
 contract: the API logs `plugin.contract_ok` when `amx_de codes` matches the catalogue.
 
+## Deploying on a VPS
+
+`docs/deploy.md` is the whole path from an empty host to a live stream: sizing (x86_64, 4 vCPU,
+8 GB, 60 GB), the Docker install, `.env`, firewall, YouTube key, backups and troubleshooting. On
+Linux the PowerShell scripts have bash twins, so one command does the deploy:
+
+```bash
+sudo chown -R 1000:1000 data      # the control API writes its SQLite history as uid 1000
+bash infra/deploy.sh              # checks the host, builds both images, recreates the stack
+bash infra/deploy.sh --check      # read-only health report, safe on a live server
+```
+
 ## Streaming
 
 `src/stream.ts` builds and supervises the ffmpeg pipeline; `scripts/stream.ts` is the CLI.
