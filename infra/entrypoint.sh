@@ -3,11 +3,11 @@
 set -euo pipefail
 
 : "${RCON_PASSWORD:?RCON_PASSWORD must be set, refusing to run an open server}"
-MAP="${MAP:-fy_iceworld}"
+MAP="${MAP:-aim_map}"
 # The map cycle the engine falls back to (nextmap, a bare `changelevel`). mp_timelimit is 0 and the
 # duel owns the rotation, so this is only a safety net - but it must not list stock maps either:
 # that is how a stream ends up on de_dust2 after an unrelated restart. One name per line.
-MAPCYCLE="${MAPCYCLE:-fy_iceworld,fy_pool_day,fy_snow,fy_buzzkill,fy_aztec,fy_dustworld}"
+MAPCYCLE="${MAPCYCLE:-aim_map,aim_headshot,aim_map_2010,aim_aztecplace,aim_dust2011,aim_aspect,fy_iceworld}"
 MAXPLAYERS="${MAXPLAYERS:-22}"
 PORT="${PORT:-27015}"
 SERVER_CFG=/hlds/cstrike/server.cfg

@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "enabled": true,
+  "intervalSec": 180,
+  "quietAfterPaidSec": 60,
+  "free": [
+    "he_party",
+    "meteor_shower",
+    "one_bullet",
+    "red_light",
+    "jumpers",
+    "glass_cannon",
+    "lightsaber_duel",
+    "bazooka_drop"
+  ],
+  "chaos": [
+    "he_party",
+    "meteor_shower",
+    "jumpers",
+    "bazooka_drop",
+    "one_bullet"
+  ]
+}

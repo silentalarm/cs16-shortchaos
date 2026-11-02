@@ -16,8 +16,8 @@ services:
     cpuset: ${HLDS_CPUSET:-}
     environment:
       # Fight-yard pool only: the stream must never start - or fall back - on a stock map.
-      MAP: ${MAP:-fy_iceworld}
-      MAPCYCLE: ${MAPCYCLE:-fy_iceworld,fy_pool_day,fy_snow,fy_buzzkill,fy_aztec,fy_dustworld}
+      MAP: ${MAP:-aim_map}
+      MAPCYCLE: ${MAPCYCLE:-aim_map,aim_headshot,aim_map_2010,aim_aztecplace,aim_dust2011,aim_aspect,fy_iceworld}
       # First person camera (plugins/stream_cam): 0 = chase camera only, 1 = cut into the bot's eyes
       # for a moment after a kill. Off by default - this is the pilot switch for the feature.
       STREAM_POV: ${STREAM_POV:-0}

@@ -120,13 +120,18 @@ test("nothing outside the fight-yard pool can start or catch the stream", () => 
   const compose = readFileSync(new URL("../infra/docker-compose.yml", import.meta.url), "utf8");
 
   const startMap = /MAP="\$\{MAP:-([a-z0-9_]+)\}"/.exec(entrypoint)?.[1] ?? "";
-  assert.match(startMap, /^fy_/, `the server starts on ${startMap || "?"} instead of a fight-yard map`);
+  assert.match(
+    startMap,
+    /^(?:fy|aim|awp)_/,
+    `the server starts on ${startMap || "?"} instead of a fight-yard map`,
+  );
   assert.ok(compose.includes(`MAP: \${MAP:-${startMap}}`), "compose and the entrypoint disagree on the start map");
 
   const cycle = /MAPCYCLE="\$\{MAPCYCLE:-([^"}]+)\}"/.exec(entrypoint)?.[1] ?? "";
   const cycleMaps = cycle.split(",").filter((map) => map !== "");
   assert.deepEqual(cycleMaps, [
-    "fy_iceworld", "fy_pool_day", "fy_snow", "fy_buzzkill", "fy_aztec", "fy_dustworld",
+    "aim_map", "aim_headshot", "aim_map_2010", "aim_aztecplace", "aim_dust2011", "aim_aspect",
+    "fy_iceworld",
   ]);
   assert.match(entrypoint, /mapcycle\.txt/, "the stock mapcycle is never rewritten");
 });
@@ -156,10 +161,15 @@ test("the rotation is fight-yard maps only, and every one of them is fetched", (
   const configured = /register_cvar\("map_duel_maps",\s*"([^"]+)"\)/.exec(plugin)?.[1] ?? "";
   const rotation = configured.split(",").filter((map) => map !== "");
   assert.deepEqual(rotation, [
-    "fy_iceworld", "fy_pool_day", "fy_snow", "fy_buzzkill", "fy_aztec", "fy_dustworld",
+    "aim_map", "aim_headshot", "aim_map_2010", "aim_aztecplace", "aim_dust2011", "aim_aspect",
+    "fy_iceworld",
   ]);
   for (const map of rotation) {
-    assert.match(map, /^fy_/, `${map} is not a fight-yard map - the pool is fy_* only`);
+    assert.match(
+      map,
+      /^(?:fy|aim|awp)_/,
+      `${map} is not a fight-yard map - the pool is fy_/aim_/awp_ only`,
+    );
   }
 
   // changelevel onto a map the server does not have hangs the stream, so a name has to be backed by
@@ -187,6 +197,29 @@ test("the rotation is fight-yard maps only, and every one of them is fetched", (
   // removed with the 2026-10 reset; when S5 of docs/activities/roadmap.md brings a map rotation back,
   // this is the test that pins it against the cvar the duel uses.
   assert.ok(rotation.length > 0, "the map rotation is empty");
+});
+
+test("the duel rotation, the fallback cycle and the start map name the same pool", () => {
+  const configured = /register_cvar\("map_duel_maps",\s*"([^"]+)"\)/.exec(plugin)?.[1] ?? "";
+  const rotation = configured.split(",").filter((map) => map !== "");
+
+  const compose = readFileSync(new URL("../infra/docker-compose.yml", import.meta.url), "utf8");
+  const entrypoint = readFileSync(new URL("../infra/entrypoint.sh", import.meta.url), "utf8");
+
+  // Both defaults are a second and a third copy of the pool, and neither is read by the duel: MAPCYCLE
+  // is what mapcycle.txt is rewritten from on every start, so a name the pool dropped would keep the
+  // engine's own fallback (`nextmap`, a bare `changelevel`) pointing at a map that is no longer there.
+  // Swapping the pool is one edit in three files, which is exactly the kind that goes half-done.
+  const cycle = /\n\s*MAPCYCLE: \$\{MAPCYCLE:-([^}]+)\}/.exec(compose)?.[1] ?? "";
+  const fallback = /\nMAPCYCLE="\$\{MAPCYCLE:-([^}]+)\}"/.exec(entrypoint)?.[1] ?? "";
+  assert.equal(cycle, rotation.join(","), "the compose MAPCYCLE default drifted from map_duel_maps");
+  assert.equal(fallback, rotation.join(","), "the entrypoint MAPCYCLE fallback drifted from map_duel_maps");
+
+  // And the server has to start on a map the pool still rotates through: a stale start map is a server
+  // that boots onto the one arena the operator wanted gone.
+  const start = /\n\s*MAP: \$\{MAP:-([^}]+)\}/.exec(compose)?.[1] ?? "";
+  assert.ok(start !== "", "infra/docker-compose.yml has no MAP default");
+  assert.ok(rotation.includes(start), `${start} is the start map but is not in the pool`);
 });
 
 test("every map in the pool has a pinned navigation graph", () => {

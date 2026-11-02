@@ -67,6 +67,14 @@ foreach ($entry in $manifest.maps) {
         continue
     }
 
+    # A map that is not on GameBanana (aim_aspect came from DS-Servers by hand) has no `mod`: there is
+    # nothing to fetch and nothing to verify against an archive, so the reviewed .bsp in git is the
+    # source of truth and this loop leaves it alone.
+    if ($null -eq $entry.mod) {
+        Write-Host ("{0}: hand-added, not fetched (no GameBanana mod id)" -f $entry.name)
+        continue
+    }
+
     try {
         $file = Get-NewestFile $entry.mod
         Write-Host ("{0}: {1} ({2} KB, {3})" -f $entry.name, $file._sFile, [int]($file._nFilesize / 1KB), $file._sDownloadUrl)

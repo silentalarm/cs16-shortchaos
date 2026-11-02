@@ -189,7 +189,7 @@ amx_map_duel status   map_duel status: state=<idle|live|done> winner=<name|->
 
 Cvars: `map_duel_enabled` (1), `map_duel_minutes` (10), `map_duel_prepare` (45),
 `map_duel_limit` (60), `map_duel_weapons` (`ak47,m4a1,awp,xm1014,p90,mp5navy`), `map_duel_maps`
-(`fy_iceworld,fy_pool_day,fy_snow,fy_buzzkill,fy_aztec,fy_dustworld`, wraps around).
+(`aim_map,aim_headshot,aim_map_2010,aim_aztecplace,aim_dust2011,aim_aspect,fy_iceworld`, wraps around).
 
 The rotation is fight-yard maps only, and deliberately **small** ones. A vertical 9:16 feed has a
 second or two to stop a thumb, and on de_dust2 the bots spend five of them running to each other with
@@ -222,10 +222,10 @@ and the whole thing looks like "the map change was ignored". The capture contain
 from the server volume on every start (`--skip-old-files`), otherwise CS16Client could not join a map
 that was added after its volume was created.
 
-Adding a map means editing both `map_duel_maps` and `params.maps` of the `map_change` activity -
-`test/map-duel-contract.test.ts` fails if they disagree, if a listed map has no `.bsp`, if a fetched
-map has no pin, or if the wad is routed to the wrong directory. `infra/maps/README.md` has the short
-version.
+Adding a map means editing `map_duel_maps` in `plugins/map_duel/map_duel.sma`, the `MAPCYCLE` default in
+`infra/docker-compose.yml` and the same fallback in `infra/entrypoint.sh` - `test/map-duel-contract.test.ts`
+fails if the three disagree, if a listed map has no `.bsp` or no pinned graph, if a fetched map has no
+pin, or if the wad is routed to the wrong directory. `infra/maps/README.md` has the short version.
 
 A finalist that picks a bomb site as his goal and runs off is pulled back next to his opponent every
 three seconds while the fight runs (`TaskKeepTogether`, only when the two are more than 400 units
@@ -240,7 +240,7 @@ re-executed by YaPB on every map change and silently reverts anything set in `se
 
 | Symptom on stream | Knob | Value |
 | --- | --- | --- |
-| a bot stabbing an enemy instead of shooting it | `yb_stab_close_enemies` | 0 - a knife fight reads as a broken bot |
+| a bot stabbing an enemy instead of shooting it | `yb_stab_close_enemies` | 0 - a knife fight reads as a broken bot, **except** while a knife-only event runs: the plugin flips it to 1 for as long as half the field has no gun, see "The HE party" |
 | a bot running the map with a rifle in hand, no enemy near | `yb_random_knife_attacks` | 1 (`BOT_KNIFE_ATTACKS`) - a rushing bot carries the knife the way a human rotates |
 | a bot pushing into the back of a teammate | `team_semiclip_radius` (see below) | 36 units - just above the player hull |
 | a bot standing still in a corner for the whole map | `yb_camping_allowed`, `yb_camping_time_min/max`, `yb_walking_allowed` | 1, 4.0 / 12.0, 0 - holding an angle is human, a third of a fight is not |
@@ -601,17 +601,18 @@ API writes. Nothing is drawn by the game client: that is what made the old HUD f
 ```
 amx_full_status ────┐
                     └─▶ game-poller (RCON, 1 Hz) ─┐
-donations + queue (SQLite, per poll) ─────────────┴─▶ ui-state ─▶ ui/panel.ts ─▶ 10 text files
+donations + rotation (SQLite, per poll) ──────────┴─▶ ui-state ─▶ ui/panel.ts ─▶ 11 text files
                                                                                     │
-                          ffmpeg: x11grab ─crop/scale─▶ drawtext×10 ─▶ x264 ─▶ RTMP ◀─┘
+                          ffmpeg: x11grab ─crop/scale─▶ drawtext×11 ─▶ x264 ─▶ RTMP ◀─┘
 ```
 
 - `src/game-poller.ts` - one console command a second (`amx_full_status`); a failed poll keeps the
   last numbers and only sets `stale`, so the panel says `NO SIGNAL` instead of showing stale numbers
   as fresh. A server without the command (image not rebuilt yet) is detected on the first tick and
   the three old probes are used instead, so a code deploy does not blank the panel;
-- `src/ui/state.ts` - the model (`score`, `target`, donation line, menu line, queue size, theme);
-  the donation lines come from `buildOverlay()`, so the panel and the text fallback cannot disagree;
+- `src/ui/state.ts` - the model (`score`, `target`, the donation line, the rotation line, queue size,
+  theme); the donation and countdown lines come from `buildOverlay()`, so the panel and the text
+  fallback cannot disagree;
 - `src/ui/panel.ts` - the panel itself: which file holds which line, the limits, and the score bar.
   `THEMES` in `src/ui/state.ts` maps activity codes to accent colours - a new visual variant is one
   line there plus a branch here;
@@ -655,10 +656,10 @@ Left edge and right edge are identical; the meeting point moved by 216 px.
 
 Knobs: `UI_RENDER` (1), `UI_INTERVAL_MS` (200), `STREAM_UI_TEXT` (1), `STREAM_UI_DIR`
 (`/overlay/ui`), `STREAM_UI_SIZE_BAR` (40), `STREAM_UI_SIZE_SCORE` (28),
-`STREAM_UI_SIZE_TOP`/`_TARGET`/`_LAST`/`_MENU` (30/36/30/24), `STREAM_UI_MARGIN` (52),
+`STREAM_UI_SIZE_TOP`/`_TARGET`/`_LAST`/`_NEXT` (30/36/26/24), `STREAM_UI_MARGIN` (52),
 `STREAM_UI_TOP` (36), `STREAM_UI_BOTTOM` (186),
-`STREAM_UI_COLOR_T`/`_CT`/`_TEXT`/`_MUTED` (`0xDD3333`, `0x3366DD`, `white`, `0xB9C2CF`). The whole
-look is `.env`: no template to edit, no image to rebuild.
+`STREAM_UI_COLOR_T`/`_CT`/`_TEXT`/`_MUTED`/`_NEXT` (`0xDD3333`, `0x3366DD`, `white`, `0xB9C2CF`,
+`0xE0A856`). The whole look is `.env`: no template to edit, no image to rebuild.
 
 The panel lives in a subdirectory of the overlay volume because the capture container is
 unprivileged: `writeUiFrame` creates `overlay/ui` and opens it up (`0777`). Without the control API
@@ -669,7 +670,7 @@ twice).
 Editing the look without Docker:
 
 ```powershell
-npm run ui-preview      # http://127.0.0.1:4399 - the ten lines laid out at the encoder's geometry
+npm run ui-preview      # http://127.0.0.1:4399 - the files laid out at the encoder's geometry
 $env:UI_PREVIEW_ACTIVITY='bounty'; npm run ui-preview   # another theme
 $env:UI_PREVIEW_T='4'; npm run ui-preview               # the bar leans to CT
 ```
@@ -677,18 +678,49 @@ $env:UI_PREVIEW_T='4'; npm run ui-preview               # the bar leans to CT
 Limits on purpose: text only (no icons, no rounded panels), one write per state change, and a fixed
 20-block bar - a wider vocabulary needs a renderer, and the renderer froze on a live stream.
 
+## The free rotation (one event every three minutes)
+
+`config/auto-events.json` + `src/auto-events.ts` + `AutoRotation` in `src/main.ts`:
+
+- `intervalSec` (180) is the clock. A one second timer in the control API fires the slot that came
+  due as the same `amx_de <code> ...` line a donation would send: no donation, no cooldown, no money;
+- `free` is a **ranked** rotation (slot 0 first, then 1, ... and back to 0). The cursor lives in
+  SQLite (`events.slot`, `events.next_at`), so a restart neither resets the clock nor re-fires the
+  event that just ran, and a host that slept through several slots fires **one** effect, not a burst;
+- a paid effect keeps the screen: when a donation reached the game less than `quietAfterPaidSec`
+  (60 s) ago the slot is skipped (`events.deferred`) and the cadence stays - the free event does not
+  overwrite what somebody just bought;
+- the picture announces it: `ДАЛЬШЕ 2:31 · HE PARTY` in `next.txt`, rewritten once a second;
+- ranked free list - short, self-explanatory, safe to repeat: `he_party` (60 s), `meteor_shower`
+  (15 s), `one_bullet` (15 s), `red_light` (15 s), `jumpers` (30 s), `glass_cannon` (15 s),
+  `lightsaber_duel` (30 s), `bazooka_drop` (30 s);
+- paid only, never in the rotation: the hero modes with the camera locked (`nemesis`, `survivor`,
+  `juggernaut`, `sniper`, `outbreak`, `chaos_plague`) and the class waves (`raptors`, `brutes`,
+  `runners`, `regenerators`). These are what a viewer buys - giving them away removes the reason to
+  donate;
+- `chaos` is the subset a chaos burst may fire: only effects that read as chaos, all of them from the
+  free list - `he_party`, `meteor_shower`, `jumpers`, `bazooka_drop`, `one_bullet`. An empty list
+  keeps `amx_chaos force` (the plugin's own dice, `docs/runbook.md` "chaos_core");
+- validation fails at startup, not on stream: a code the catalogue does not have, a chaos code
+  outside the free list, or a free effect longer than its own slot stops the process;
+- `enabled: false` switches the clock off and the bottom line goes back to `NEXT: <cheapest>`.
+
 ## The donation overlay (fallback, no panel)
 
 `src/overlay.ts` writes three lines that the encoder draws over the picture with ffmpeg `drawtext`:
 
 ```
 DONATE IN CHAT -> CHANGE THE GAME
-LAST: Vasya 130 RUB - BOT RAIN
-NEXT: 50 BOT NICKNAME | 60 MEAT ROUND
+Vasya 130 RUB
+ДАЛЬШЕ 2:31 · HE PARTY
 ```
 
 - the control API rewrites `overlay.txt` + `overlay.json` on every poll tick (`OVERLAY_DIR`, inside
   compose the host directory `data/overlay` mounted at `/app/overlay` and at `/overlay`);
+- the last donation is the nickname and the amount only: the viewer message moved the centred line,
+  and what the money bought is in the log and in the rotation line;
+- the last line is the countdown to the next free event (`auto-events.ts`). Without
+  `config/auto-events.json` it falls back to `NEXT: <two cheapest activities>`;
 - the capture container reads `/overlay/overlay.txt` (`STREAM_OVERLAY_TXT`) with `reload=1`, so a
   donation shows up within one poll without restarting ffmpeg;
 - always three lines: a changing line count would make the block jump, and `textfile` keeps viewer
@@ -760,20 +792,47 @@ when they apply.
 
 ## The HE party: a repeating clock
 
-`he_party` (70 RUB) takes every weapon away and leaves 20 bots with a knife and endless HE grenades
-for 60 seconds (`amx_de he_party seconds=60`). It keeps its own repeating task instead of the generic
-one, because it has to re-arm the field twice a second, not only end itself.
+`he_party` takes every weapon away - guns and the knife - and leaves 20 bots with an HE grenade and
+nothing else for 60 seconds (`amx_de he_party seconds=60`). It keeps its own repeating task instead of
+the generic one, because it has to re-arm the field twice a second, not only end itself. The kit lock
+(`KitWeapon`) hands the grenade back for the whole event: a knife in a bot's hand is what a viewer
+reads as a broken knife round instead of a grenade party.
 
 ```
 every 0.5 s, for the declared length:
-  bot has anything but a knife or a grenade -> strip, give knife
-  bot has no HE in hand                     -> give one back
+  bot has a gun or a knife          -> strip everything
+  bot has no HE in hand             -> give one back
+  every 3rd pass                    -> the party's own blast (TE_EXPLOSION, 20 damage, 260 units)
 ```
 
 - the re-arm repeats on purpose: it hands a thrown grenade straight back, and it undoes the rifle
   `csdm_lite` gives a bot that died during the party (that respawn is what a one-shot arm would miss);
 - the whole weapon list is checked, not the weapon in hand - a rifle left in the backpack comes out
   the moment the bot sees somebody;
+- **the knife rule is flipped while the field is disarmed.** `yb_stab_close_enemies` is 0 in
+  `yapb.cfg` (a bot that stabs while holding a rifle reads as broken), and with every gun stripped it
+  also stops the knife from ever swinging: measured on the live server, `he_party` produced **0 kills
+  in 60 s**. One second `TaskMeleeWatch` counts the alive bots that hold no gun at all and sets the
+  cvar to 1 while at least half of them are like that, back to 0 when they are armed again (the same
+  minute then had 5 knife kills). It is derived from the field rather than remembered per event, so
+  every knife-only code inherits it, and a map change - which re-executes `yapb.cfg` and resets the
+  cvar - is repaired within a second;
+- **the party throws its own grenades, and hands them out endlessly.** A thrown grenade leaves the
+  weapon entity in the bot's inventory with no rounds in it, so `user_has_weapon` keeps answering yes
+  and a bot that is "given a grenade once" throws exactly one per party (measured on the stream).
+  `DisarmField` therefore tops the reserve up on every pass (`cs_set_user_bpammo`, two rounds), which
+  is what makes it endless;
+- **a flashbang next to the HE.** One throwable is not enough for YaPB to keep throwing: the same
+  25 second party produced 29 HE throws with the grenade alone and 342 throws with a flashbang added,
+  so the field gets both (`CSW_FLASHBANG` is in `HasGun`'s skip list - it is a throwable, not a gun,
+  and stripping it every pass would be pure churn). The end of the party logs the count:
+  `he_party: over, 342 grenades thrown by the bots`;
+- **with the knife gone the bots do throw.** With a knife in the first slot YaPB kept choosing it and
+  never touched the grenade; a bot holding a grenade and nothing else throws it at the first enemy in
+  sight. That is why the field is grenades only, not "knives and grenades";
+- the event's own blast (`HePartyBlast`) stays as the floor of the show: a `TE_EXPLOSION` with the
+  stock grenade sound and 20 damage in 260 units at a random bot every 1.5 s, so a quiet second still
+  has an explosion in it;
 - nothing is restored at the end: bots keep the knife until they die, and the next spawn arms them
   again. A map change also ends it, because the plugin is re-initialised and the task is dropped.
 

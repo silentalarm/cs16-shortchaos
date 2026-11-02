@@ -44,6 +44,69 @@ test("a bot never fights with a knife, but may carry one while it rushes", () =>
   assert.match(serverCfg, /^mp_friendlyfire 0$/m, "friendly fire would hand the other side free frags");
 });
 
+test("a knife-only event turns the knife rule on, and puts it back afterwards", () => {
+  // Server config keeps `yb_stab_close_enemies 0`: a bot that stabs while holding a rifle reads as
+  // broken. With every gun stripped the same value means nobody ever swings - measured on the live
+  // server, `he_party` produced 0 kills in 60 s, and the same minute produced 5 knife kills once the
+  // cvar was set to 1 by hand. The plugin therefore flips it, and derives the state from the field
+  // instead of remembering it per event, so a map change (which re-executes yapb.cfg) repairs itself.
+  const plugin = readFileSync(new URL("../plugins/donation_events/donation_events.sma", import.meta.url), "utf8");
+
+  // Through the engine's command path: a direct cvar write is invisible to YaPB (measured - the cvar
+  // read back as 1 while the bots kept standing still).
+  assert.match(plugin, /server_cmd\("yb_stab_close_enemies %d", want \? 1 : 0\)/, "the knife rule is never turned on");
+  assert.match(plugin, /#define MELEE_WATCH_TICK 1\.0/, "the watch is not a one second task");
+  assert.match(plugin, /StartMeleeWatch\(\);/, "the watch is never started");
+  // Half the field without a gun is a knife event; one disarmed bot is a bot that found a weapon box.
+  assert.match(plugin, /knives \* 2 >= alive/, "the rule would flip on a single disarmed bot");
+  assert.match(plugin, /if \(!HasGun\(id\)\)/, "a gun in the backpack stops counting");
+});
+
+test("the HE party throws its own grenades, because the bots never throw one", () => {
+  // YaPB does not use the grenade slot at all: zero grenade events in a minute with twenty bots
+  // holding one. The party's own TE_EXPLOSION with `DMG_BLAST` is what the announcement promises.
+  const plugin = readFileSync(new URL("../plugins/donation_events/donation_events.sma", import.meta.url), "utf8");
+  const found = /stock HePartyBlast\(\)\s*\{[\s\S]*?\n\}/.exec(plugin);
+  assert.ok(found !== null, "no HePartyBlast() in the plugin");
+
+  assert.match(found[0], /TE_EXPLOSION/, "the blast is invisible");
+  assert.match(found[0], /DMG_BLAST/, "the blast does no damage");
+  assert.match(found[0], /PlaySoundAt\(center, SPARK_SOUND/, "the blast is silent");
+  assert.match(plugin, /HePartyBlast\(\);/, "the party never throws its grenade");
+  // One blast every three seconds of a 0.5 s task: rare enough that the knife fight stays the show.
+  // One blast every second of a 0.5 s task: with no knife in the field the explosions carry the show.
+  assert.match(plugin, /#define HE_BLAST_TICKS 2/, "the blast cadence drifted");
+  assert.match(plugin, /if \(!wasActive\)\s*\{\s*g_heBlastTicks = 0;/, "a new party inherits the old blast counter");
+
+  // The field is grenades and nothing else: the disarm takes the knife too, and the kit lock hands the
+  // grenade back instead of a knife, or a viewer reads a knife round.
+  const disarm = /stock DisarmField\(\)\s*\{[\s\S]*?\n\}/.exec(plugin)?.[0] ?? "";
+  assert.ok(disarm !== "", "no DisarmField() in the plugin");
+  assert.match(disarm, /user_has_weapon\(id, CSW_KNIFE\)/, "the knife survives the disarm");
+  assert.doesNotMatch(disarm, /give_item\(id, "weapon_knife"\)/, "the party still hands out knives");
+  // "Endless" is the reserve, not the weapon: a thrown grenade leaves the entity in the inventory with
+  // no rounds in it, so a bot given one grenade throws exactly one and stands still afterwards.
+  assert.match(
+    disarm,
+    /cs_set_user_bpammo\(id, CSW_HEGRENADE, HE_PARTY_GRENADES\)/,
+    "the grenade is handed out once per party instead of endlessly",
+  );
+  // A flashbang beside the HE: two throwables make the bots reach for one far more often (29 throws in
+  // 25 s with the HE alone, 342 with the pair), and it is not a gun, so the disarm must not strip it.
+  assert.match(disarm, /give_item\(id, "weapon_flashbang"\)/, "the party hands out one kind of throwable only");
+  const hasGun = /stock bool:HasGun\(id\)\s*\{[\s\S]*?\n\}/.exec(plugin)?.[0] ?? "";
+  assert.match(hasGun, /CSW_FLASHBANG/, "the disarm strips the flashbang it just gave");
+  // And the log has to say whether the bots really threw: the counter is the only measurement there is.
+  assert.match(disarm, /g_heThrown\+\+/, "the party no longer counts what the bots throw");
+  assert.match(plugin, /he_party: over, %d grenades thrown by the bots/, "the throw count never reaches the log");
+  assert.match(
+    plugin,
+    /if \(g_hePartyActive\)\s*\{\s*copy\(out, len, "weapon_hegrenade"\);/,
+    "the kit lock does not hand the grenade back",
+  );
+  assert.match(plugin, /wantId != CSW_HEGRENADE/, "the kit lock puts a knife next to the grenade");
+});
+
 test("dropped weapons are swept off the map", () => {
   // 20 bots dying every couple of seconds leave one weapon box each, and CS 1.6 has no "never drop"
   // switch: the litter has to be removed. A sweep, not a per-death hook - the engine's own drop runs

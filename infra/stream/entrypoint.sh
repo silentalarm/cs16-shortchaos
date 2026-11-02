@@ -205,7 +205,7 @@ UI_SIZE_SCORE="${STREAM_UI_SIZE_SCORE:-28}"
 UI_SIZE_TOP="${STREAM_UI_SIZE_TOP:-30}"
 UI_SIZE_TARGET="${STREAM_UI_SIZE_TARGET:-36}"
 UI_SIZE_LAST="${STREAM_UI_SIZE_LAST:-26}"
-UI_SIZE_MENU="${STREAM_UI_SIZE_MENU:-24}"
+UI_SIZE_NEXT="${STREAM_UI_SIZE_NEXT:-24}"
 UI_SIZE_CHAOS="${STREAM_UI_SIZE_CHAOS:-26}"
 UI_MARGIN="${STREAM_UI_MARGIN:-52}"
 UI_TOP="${STREAM_UI_TOP:-36}"
@@ -215,9 +215,11 @@ UI_COLOR_CT="${STREAM_UI_COLOR_CT:-0x3366DD}"
 UI_COLOR_TEXT="${STREAM_UI_COLOR_TEXT:-white}"
 UI_COLOR_MUTED="${STREAM_UI_COLOR_MUTED:-0xB9C2CF}"
 UI_COLOR_CHAOS="${STREAM_UI_COLOR_CHAOS:-0xE0A856}"
+# The rotation line: gold like the meter, because both are a promise of something coming.
+UI_COLOR_NEXT="${STREAM_UI_COLOR_NEXT:-0xE0A856}"
 UI_READY="ui.json"
-# The two bottom lines (the last donation and how to buy the next activity) can be switched off on
-# their own: the panel then keeps the race and the bot on camera and leaves the Shorts strip clean.
+# The bottom strip (the meter, the last donation, the rotation countdown) can be switched off on its
+# own: the panel then keeps the race and the bot on camera and leaves the Shorts strip clean.
 UI_DONATE="${STREAM_UI_DONATE:-1}"
 PANEL_LAYERS=0
 PANEL_VF=""
@@ -245,11 +247,12 @@ panel_setup() {
   local row_top=$((UI_TOP + 72))
   local row_target=$((UI_TOP + 124))
   local row_notice=$((UI_TOP + 174))
-  local row_last=$((UI_BOTTOM + 60))
-  # "ВЫПАЛО:" under the donation line: one row per donation is not enough for a batch of five.
-  local row_won=$((UI_BOTTOM + 32))
-  # Above the donation line: the meter is a reason to donate, the last donation is the receipt.
-  local row_chaos=$((UI_BOTTOM + 96))
+  # The bottom strip, from the frame edge up: the rotation countdown, the last donation, the meter.
+  # The queue line is gone - it was a number a viewer could not act on, and the countdown is the one
+  # thing that gives a quiet minute a reason to wait one more minute.
+  local row_next=$UI_BOTTOM
+  local row_last=$((UI_BOTTOM + 34))
+  local row_chaos=$((UI_BOTTOM + 70))
 
   # The bar first: the red run anchored to the left margin, the blue one to the right margin, so
   # both outer edges are fixed and only the meeting point moves. The colours are the ones the game
@@ -271,8 +274,7 @@ panel_setup() {
   if [ "$UI_DONATE" = 1 ]; then
     panel_add chaos.txt "$UI_SIZE_CHAOS" "$UI_COLOR_CHAOS" "(w-text_w)/2" "h-$row_chaos" "$box"
     panel_add last.txt "$UI_SIZE_LAST" "$UI_COLOR_TEXT" "(w-text_w)/2" "h-$row_last" "$box"
-    panel_add won.txt "$UI_SIZE_MENU" "$UI_COLOR_TEXT" "(w-text_w)/2" "h-$row_won" "$box"
-    panel_add menu.txt "$UI_SIZE_MENU" "$UI_COLOR_MUTED" "(w-text_w)/2" "h-${UI_BOTTOM}" "$box"
+    panel_add next.txt "$UI_SIZE_NEXT" "$UI_COLOR_NEXT" "(w-text_w)/2" "h-$row_next" "$box"
   fi
   log "ui: $UI_DIR, ${PANEL_LAYERS} drawtext layers, bar ${UI_SIZE_BAR}px at ${UI_MARGIN}px margin,"\
 " donation lines $([ "$UI_DONATE" = 1 ] && echo on || echo off)"

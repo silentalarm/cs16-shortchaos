@@ -43,54 +43,44 @@ function cheapestMenu(count = 2): string {
 test("without donations the overlay invites the first one and lists the cheapest options", () => {
   const overlay = buildOverlay({ recent: [], catalog, now: NOW });
 
-  assert.equal(overlay.lines.length, 4);
+  assert.equal(overlay.lines.length, 3);
   assert.equal(overlay.lines[0], HEADER);
   assert.equal(overlay.lines[1], "NO DONATIONS YET - BE THE FIRST");
-  assert.equal(overlay.lines[2], "");
-  assert.equal(overlay.lines[3], `NEXT: ${cheapestMenu()}`);
+  assert.equal(overlay.lines[2], `NEXT: ${cheapestMenu()}`);
   assert.equal(overlay.text, overlay.lines.join("\n"));
 });
 
-test("the last donation is shown with its amount, and what it bought on its own line", () => {
-  const overlay = buildOverlay({ recent: [donation()], catalog, now: NOW });
-
-  assert.equal(overlay.lines[1], "LAST: Vasya 130 RUB");
-  assert.equal(overlay.lines[2], "ВЫПАЛО: ПУШКА");
-});
-
-test("a batch keeps every name: one strip could hold only the first one", () => {
+test("the last donation is the nickname and the amount, nothing else", () => {
+  // The viewer message used to ride along and pushed the line off centre; it is gone on purpose.
   const overlay = buildOverlay({
-    recent: [donation({ activityCode: "glass_cannon+he_party" })],
+    recent: [donation({ message: "please knives" })],
     catalog,
     now: NOW,
   });
-  assert.equal(overlay.lines[2], "ВЫПАЛО: ПУШКА, HE PARTY");
+
+  assert.equal(overlay.lines[1], "Vasya 130 RUB");
 });
 
-test("a queued donation is marked as waiting, not as applied", () => {
-  const overlay = buildOverlay({ recent: [donation({ status: "queued", activityCode: "meteor_shower" })], catalog, now: NOW });
-
-  assert.equal(overlay.lines[1], "LAST: WAITING Vasya 130 RUB");
-  assert.equal(overlay.lines[2], "ВЫПАЛО: МЕТЕОР");
-});
-
-test("the queue depth replaces the menu headline", () => {
+test("the rotation line counts down to the next free event", () => {
   const overlay = buildOverlay({
     recent: [donation()],
     catalog,
-    pending: [
-      { donationId: 2, username: "B", amount: 90, source: "da", activityCode: "moon_gravity", command: "amx_de moon_gravity gravity=200", reason: "donor_cooldown", enqueuedAt: NOW, dueAt: NOW + 1000 },
-    ],
+    next: { code: "he_party", title: "HE party", secondsLeft: 151 },
     now: NOW,
   });
 
-  assert.equal(overlay.lines[3], `QUEUE: 1 | ${cheapestMenu()}`);
+  assert.equal(overlay.lines[2], "ДАЛЬШЕ 2:31 · HE PARTY");
 });
 
-test("an activity that left the catalogue falls back to a generic label", () => {
+test("a queued donation is still one line: the waiting marker went with the message", () => {
+  const overlay = buildOverlay({ recent: [donation({ status: "queued" })], catalog, now: NOW });
+
+  assert.equal(overlay.lines[1], "Vasya 130 RUB");
+});
+
+test("an activity that left the catalogue does not break the donation line", () => {
   const overlay = buildOverlay({ recent: [donation({ activityCode: "removed" })], catalog, now: NOW });
-  assert.equal(overlay.lines[1], "LAST: Vasya 130 RUB");
-  assert.equal(overlay.lines[2], "ВЫПАЛО: QUEUED");
+  assert.equal(overlay.lines[1], "Vasya 130 RUB");
 });
 
 test("long names are clipped so the line fits the frame", () => {

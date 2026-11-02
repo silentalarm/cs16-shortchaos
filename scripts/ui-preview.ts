@@ -8,6 +8,7 @@
  */
 import { createServer } from "node:http";
 import { loadActivities } from "../src/activities.ts";
+import type { NextAutoEvent } from "../src/auto-events.ts";
 import type { StoredDonation } from "../src/db.ts";
 import { PANEL_FILES, PANEL_LAYOUT, panelLayers } from "../src/ui/panel.ts";
 import { buildUiState, type UiState } from "../src/ui/state.ts";
@@ -15,13 +16,19 @@ import { buildUiState, type UiState } from "../src/ui/state.ts";
 const port = Number(process.env["UI_PREVIEW_PORT"] ?? 4399);
 const catalog = loadActivities("config/activities.json");
 
+/**
+ * A fixed countdown: the preview is about geometry and wording, not about the real slot. The real
+ * number comes from `AutoRotation` in `src/main.ts` and changes once a second.
+ */
+const demoNext: NextAutoEvent = { code: "he_party", title: "HE party", secondsLeft: 151 };
+
 const demoDonation: StoredDonation = {
   id: 1,
   username: "Vasya",
   amount: 130,
   currency: "RUB",
   status: "applied",
-  activityCode: process.env["UI_PREVIEW_ACTIVITY"] ?? "chaos_burst",
+  activityCode: process.env["UI_PREVIEW_ACTIVITY"] ?? "bazooka_drop",
   receivedAt: new Date().toISOString(),
   source: "da",
 };
@@ -33,14 +40,16 @@ function demoState(): UiState {
     target: { name: "Mr Smith", hp: 87, armor: 42 },
     recent: [demoDonation],
     catalog,
+    next: demoNext,
+    chaos: { total: 600, threshold: 1000 },
   });
 }
 
-/** Lays the ten files out the way drawtext does, so the sizes and the margins can be checked. */
+/** Lays the files out the way drawtext does, so the sizes and the margins can be checked. */
 function frame(state: UiState): string {
   const text = new Map(panelLayers(state).map((layer) => [layer.file, layer.text]));
   const at = (file: string): string => text.get(file) ?? "";
-  const { barSize, scoreSize, topSize, targetSize, lastSize, menuSize, margin, top, bottom } =
+  const { barSize, scoreSize, topSize, targetSize, lastSize, nextSize, chaosSize, margin, top, bottom } =
     PANEL_LAYOUT;
   const row = (offset: number): number => top + offset;
 
@@ -59,8 +68,9 @@ function frame(state: UiState): string {
   </div>
   <div class="line center" style="top:${row(124)}px;font-size:${targetSize}px">${at(PANEL_FILES.target)}</div>
   <div class="line center" style="top:${row(174)}px;font-size:${topSize}px">${at(PANEL_FILES.notice)}</div>
-  <div class="line center" style="top:${1280 - bottom - 52}px;font-size:${lastSize}px">${at(PANEL_FILES.last)}</div>
-  <div class="line center" style="top:${1280 - bottom}px;font-size:${menuSize}px">${at(PANEL_FILES.menu)}</div>
+  <div class="line center" style="top:${1280 - bottom - 70}px;font-size:${chaosSize}px">${at(PANEL_FILES.chaos)}</div>
+  <div class="line center" style="top:${1280 - bottom - 34}px;font-size:${lastSize}px;color:#fff">${at(PANEL_FILES.last)}</div>
+  <div class="line center" style="top:${1280 - bottom}px;font-size:${nextSize}px;color:#e0a856">${at(PANEL_FILES.next)}</div>
 </div>`;
 }
 
@@ -92,8 +102,8 @@ function page(state: UiState): string {
 <main>
   <div class="wrap">${frame(state)}</div>
   <div class="note">
-    <p>These are the ten files the control API writes; ffmpeg draws them with drawtext at
-    720x1280. This page is an approximation of that frame, good enough to tune sizes and margins.</p>
+    <p>These are the files the control API writes; ffmpeg draws them with drawtext at 720x1280.
+    This page is an approximation of that frame, good enough to tune sizes and margins.</p>
     <p><code>UI_PREVIEW_ACTIVITY</code> picks the theme, <code>UI_PREVIEW_T</code> the terrorist
     frags (the bar moves with them).</p>
     <details><summary>files</summary><pre>${layers

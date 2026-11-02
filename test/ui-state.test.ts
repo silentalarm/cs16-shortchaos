@@ -42,14 +42,14 @@ function pending(count: number): PendingActivity[] {
   }));
 }
 
-test("the panel repeats the donation lines the text fallback already owns", () => {
+test("the panel repeats the donation and rotation lines the text fallback already owns", () => {
   const recent = [donation()];
-  const overlay = buildOverlay({ recent, catalog, pending: pending(2), now: NOW });
-  const state = buildUiState({ score: null, recent, catalog, pending: pending(2), now: NOW });
+  const next = { code: "he_party", title: "HE party", secondsLeft: 90 };
+  const overlay = buildOverlay({ recent, catalog, next, now: NOW });
+  const state = buildUiState({ score: null, recent, catalog, pending: pending(2), next, now: NOW });
 
   assert.equal(state.donation, overlay.lines[1]);
-  assert.equal(state.won, overlay.lines[2]);
-  assert.equal(state.menu, overlay.lines[3]);
+  assert.equal(state.next, overlay.lines[2]);
   assert.equal(state.queueSize, 2);
 });
 
@@ -77,18 +77,26 @@ test("the score and the target travel through untouched", () => {
 
 test("the theme follows the paid activity and nothing else", () => {
   assert.equal(themeFor(null), "default");
-  assert.equal(themeFor("chaos_burst"), "chaos");
-  assert.equal(themeFor("moon_gravity"), "chaos");
-  assert.equal(themeFor("bounty"), "fight");
-  assert.equal(themeFor("boss_raid"), "fight");
-  assert.equal(themeFor("bot_rain"), "event");
+  assert.equal(themeFor("he_party"), "chaos");
+  assert.equal(themeFor("chaos_plague"), "chaos");
+  assert.equal(themeFor("nemesis"), "fight");
+  assert.equal(themeFor("sniper"), "fight");
+  assert.equal(themeFor("runners"), "event");
+  // The codes the first version listed left the catalogue long ago: an unknown one must not throw.
   assert.equal(themeFor("bot_nick"), "default");
-  // An override file may add codes: an unknown one must not throw.
   assert.equal(themeFor("some_new_activity"), "default");
 
-  const withActivity = buildUiState({ score: null, recent: [donation({ activityCode: "bounty" })], catalog, now: NOW });
+  const withActivity = buildUiState({ score: null, recent: [donation({ activityCode: "nemesis" })], catalog, now: NOW });
   assert.equal(withActivity.theme, "fight");
-  assert.equal(withActivity.activityCode, "bounty");
+  assert.equal(withActivity.activityCode, "nemesis");
+});
+
+test("the countdown reaches the picture, and only the second changes it", () => {
+  const base = buildUiState({ score: null, recent: [], catalog, now: NOW, next: { code: "he_party", title: "HE party", secondsLeft: 90 } });
+  const later = buildUiState({ score: null, recent: [], catalog, now: NOW, next: { code: "he_party", title: "HE party", secondsLeft: 89 } });
+
+  assert.match(base.next, /1:30/u);
+  assert.notEqual(uiSignature(base), uiSignature(later), "the strip would freeze on one second");
 });
 
 test("the winner of the duel reaches the picture and leaves with the map", () => {

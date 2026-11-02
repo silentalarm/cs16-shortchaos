@@ -3,8 +3,9 @@ import { loadActivities } from "./activities.ts";
 import type { Activity } from "./activities.ts";
 import { applyOverrides, OverrideStore } from "./activities-override.ts";
 import { createAdminServer } from "./admin/server.ts";
+import { AutoRotation, chaosCodeAt, loadAutoEvents, type AutoCursor } from "./auto-events.ts";
 import { addToChaos, CHAOS_THRESHOLD } from "./chaos-meter.ts";
-import { CODES_PROBE, sanitizePhrase } from "./command.ts";
+import { buildActivityCommand, CODES_PROBE, sanitizePhrase } from "./command.ts";
 import type { DonationRow } from "./db.ts";
 import { openStore } from "./db.ts";
 import { fetchDonations } from "./donationalerts.ts";
@@ -27,6 +28,12 @@ const baseCatalog = loadActivities(env.activitiesPath);
 // whose prices differ from what the owner sees in the panel.
 const overrideStore = new OverrideStore(env.admin.overridePath);
 let catalog = applyOverrides(baseCatalog, overrideStore.read());
+/**
+ * The free rotation (`config/auto-events.json`): one paid-style activity every few minutes, on the
+ * house. Read once at startup against the shipped catalogue; the override file only changes prices
+ * and params, not which codes exist.
+ */
+const autoEvents = loadAutoEvents(env.autoEventsPath, baseCatalog);
 const store = openStore(env.dbPath);
 /**
  * Paid activities that hit a cooldown wait here instead of being rejected. The entries themselves are
@@ -197,6 +204,21 @@ async function apply(command: string): Promise<string> {
 }
 
 /**
+ * When a paid command last reached the game.
+ *
+ * The free rotation steps aside for `quietAfterPaidSec` after this moment: a viewer who paid 50 RUB
+ * must not watch a free `he_party` overwrite the effect they just bought. Only the paid paths go
+ * through `applyPaid` - the operator panel and the chaos burst are not donations.
+ */
+let lastPaidAt: number | null = null;
+
+async function applyPaid(command: string): Promise<string> {
+  const reply = await apply(command);
+  lastPaidAt = Date.now();
+  return reply;
+}
+
+/**
  * A read-only RCON call for the panel poller. Silent in a dry run: the poller fires twice a second
  * and a log line per poll would bury everything else.
  */
@@ -231,6 +253,12 @@ function refreshUiInputs(): void {
 let chaosTotal = Number.parseFloat(store.getState("chaos.total") ?? "0");
 if (!Number.isFinite(chaosTotal) || chaosTotal < 0) chaosTotal = 0;
 
+/**
+ * How many bursts already fired. The chaos list is walked in order, so the burst after `he_party` is
+ * a meteor shower and the rotation is predictable for a viewer who has watched for ten minutes.
+ */
+let chaosBursts = Number.parseInt(store.getState("chaos.bursts") ?? "0", 10) || 0;
+
 let chaosCursor = {
   at: store.getState("chaos.last_at") ?? "",
   id: Number.parseInt(store.getState("chaos.last_id") ?? "0", 10) || 0,
@@ -243,6 +271,72 @@ if (store.getState("chaos.last_at") === null) {
   store.setState("chaos.last_at", chaosCursor.at);
   store.setState("chaos.last_id", String(chaosCursor.id));
   log("chaos.meter_start", { after: chaosCursor });
+}
+
+/**
+ * The free rotation cursor: `events.slot` (which code runs next) and `events.next_at` (when).
+ *
+ * In SQLite for the same reason as the meter: a restart must not reset the three minute clock, and a
+ * host that was down for an hour must not fire the whole rotation on boot (`AutoRotation.tick` folds
+ * a missed window into one interval).
+ */
+const storedSlot = Number.parseInt(store.getState("events.slot") ?? "0", 10);
+const storedNextAt = Number.parseFloat(store.getState("events.next_at") ?? "");
+const autoCursor: AutoCursor = {
+  slot: Number.isFinite(storedSlot) && storedSlot > 0 ? storedSlot : 0,
+  nextAt:
+    Number.isFinite(storedNextAt) && storedNextAt > 0
+      ? storedNextAt
+      : Date.now() + autoEvents.intervalSec * 1000,
+};
+
+const autoRotation = new AutoRotation({
+  config: autoEvents,
+  // An accessor, not the value: the panel rewrites params at runtime, and the rotation must send the
+  // command this catalogue holds at the moment it fires.
+  activities: () => catalog,
+  cursor: autoCursor,
+});
+
+if (store.getState("events.next_at") === null) {
+  store.setState("events.slot", String(autoCursor.slot));
+  store.setState("events.next_at", String(autoCursor.nextAt));
+  log("events.start", {
+    slot: autoCursor.slot,
+    intervalSec: autoEvents.intervalSec,
+    free: autoEvents.free.length,
+  });
+}
+
+/**
+ * Fires the free event of the current slot when `auto-events.json` says it is due.
+ *
+ * Driven by a one second interval rather than by the donation poll: the countdown on the picture is
+ * read every second anyway, and a slot that came due must not wait for the next poll tick. The guard
+ * keeps a slow RCON answer from stacking two ticks on one slot.
+ */
+let autoRunning = false;
+async function runAutoEvent(): Promise<void> {
+  if (autoRunning) return;
+  autoRunning = true;
+  try {
+    const result = await autoRotation.tick({ lastPaidAt, run: apply });
+    if (result.kind === "idle") return;
+
+    const cursor = autoRotation.cursor;
+    store.setState("events.slot", String(cursor.slot));
+    store.setState("events.next_at", String(cursor.nextAt));
+
+    if (result.kind === "ran") {
+      log("events.ran", { code: result.code, command: result.command, reply: result.reply.slice(0, 120) });
+    } else if (result.kind === "deferred") {
+      log("events.deferred", { code: result.code, paidAgoSec: result.paidAgoSec });
+    } else {
+      log("events.failed", { code: result.code, command: result.command, error: result.error });
+    }
+  } finally {
+    autoRunning = false;
+  }
 }
 
 async function collectChaos(): Promise<void> {
@@ -267,12 +361,23 @@ async function collectChaos(): Promise<void> {
 
   log("chaos.meter_full", { bursts, total: chaosTotal, threshold: CHAOS_THRESHOLD });
   // One burst per full thousand: a 2500 RUB donation buys two effects and leaves 500 on the bar.
+  // The effect comes from the chaos list rather than from the plugin's own dice: only what reads as
+  // chaos belongs there, and `amx_chaos force` stays the fallback for an empty list.
   for (let index = 0; index < bursts; index += 1) {
+    const code = chaosCodeAt(autoEvents, chaosBursts);
+    const activity = code === null ? undefined : catalog.activities.find((item) => item.code === code);
+    if (activity === undefined && code !== null) {
+      log("chaos.missing", { code });
+      continue;
+    }
+    const command = activity === undefined ? "amx_chaos force" : buildActivityCommand(activity);
     try {
-      const reply = await apply("amx_chaos force");
-      log("chaos.fired", { reply: reply.slice(0, 120) });
+      const reply = await apply(command);
+      chaosBursts += 1;
+      store.setState("chaos.bursts", String(chaosBursts));
+      log("chaos.fired", { code: code ?? "plugin", command, reply: reply.slice(0, 120) });
     } catch (error) {
-      log("chaos.failed", { error: (error as Error).message });
+      log("chaos.failed", { code: code ?? "plugin", command, error: (error as Error).message });
     }
   }
 }
@@ -317,15 +422,16 @@ function currentUiState(): UiState {
     recent: uiRecent,
     catalog,
     pending: uiPending,
+    next: autoRotation.next(),
     chaos: { total: chaosTotal, threshold: CHAOS_THRESHOLD },
     stale: snapshot.stale,
   });
 }
 
 /**
- * Rewrites the text the encoder draws under the picture: last donation and what it bought, the
- * cheapest things a viewer can buy, how many paid activities are waiting. Best effort on purpose -
- * a read-only directory must never stop the donation loop.
+ * Rewrites the text the encoder draws under the picture when the panel is off: the last donation
+ * (nickname and amount) and the countdown to the next free event. Best effort on purpose - a
+ * read-only directory must never stop the donation loop.
  *
  * One read of the history serves both consumers: `refreshUiInputs()` fills the panel state and the
  * overlay is built from that snapshot, instead of asking SQLite the same question a second time in
@@ -336,7 +442,7 @@ function refreshOverlay(): void {
     refreshUiInputs();
     writeOverlay(
       env.overlayDir,
-      buildOverlay({ recent: uiRecent, catalog, pending: uiPending, now: Date.now() }),
+      buildOverlay({ recent: uiRecent, catalog, next: autoRotation.next(), now: Date.now() }),
     );
   } catch (error) {
     log("overlay.error", { error: (error as Error).message });
@@ -458,7 +564,7 @@ async function main(): Promise<void> {
 
   // Paid donations that were waiting for their cooldown when the process died are still `queued` in
   // SQLite. They go back into the queue before the first tick, so a restart does not swallow them.
-  const restored = restoreQueue({ store, catalog, apply, log, queue, voice });
+  const restored = restoreQueue({ store, catalog, apply: applyPaid, log, queue, voice });
   if (restored > 0) log("queue.restored", { entries: restored, pending: queue.size });
 
   let running = false;
@@ -467,12 +573,12 @@ async function main(): Promise<void> {
     running = true;
     try {
       // The queue goes first: a viewer who paid a minute ago must not wait behind a fresh poll.
-      const drained = await drainQueue({ store, catalog, apply, log, queue, voice });
+      const drained = await drainQueue({ store, catalog, apply: applyPaid, log, queue, voice });
       if (drained.applied + drained.requeued + drained.failed + drained.expired > 0) {
         log("queue.drained", { ...drained, pending: queue.size });
       }
 
-      const summary = await pollOnce({ store, catalog, fetchDonations: source, apply, log, queue, rates: env.currencyRates, voice });
+      const summary = await pollOnce({ store, catalog, fetchDonations: source, apply: applyPaid, log, queue, rates: env.currencyRates, voice });
       if (summary.seen > 0) log("poll.done", { ...summary });
       // The meter is topped up from the rows the poll just wrote, so a burst fires in the same tick
       // that filled it.
@@ -487,6 +593,9 @@ async function main(): Promise<void> {
   };
 
   await tick();
+  // The first free slot: due immediately only when the stored cursor already passed (a restart in
+  // the middle of a rotation), otherwise it fires when the countdown on screen reaches zero.
+  await runAutoEvent();
 
   // POLL_ONCE=1 turns the daemon into a single pass: used by smoke runs and by CI.
   if (process.env["POLL_ONCE"] === "1") {
@@ -504,10 +613,13 @@ async function main(): Promise<void> {
   const timer = setInterval(() => void tick(), env.pollSec * 1000);
   // Two seconds is enough for a round boundary and costs one RCON line per poll.
   const clock = setInterval(() => void followGameClock(), 2_000);
+  // One second: the strip counts down to the second, so the slot has to fire on that second.
+  const events = setInterval(() => void runAutoEvent(), 1_000);
 
   const shutdown = (): void => {
     clearInterval(timer);
     clearInterval(clock);
+    clearInterval(events);
     admin?.close();
     gamePoller.stop();
     uiLoop?.stop();

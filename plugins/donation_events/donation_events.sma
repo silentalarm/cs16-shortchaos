@@ -140,6 +140,35 @@ new g_duelHealth;
 new g_hePartyTicks;
 new bool:g_hePartyActive;
 
+/* A grenade in a bot's hand never goes off on its own: YaPB does not use the grenade slot (measured on
+   the live server - zero grenade events in a minute with twenty bots holding one), so the party throws
+   its own. This is the "endless HE" the announcement promises, and with no knife in the field it is
+   also the whole show, hence the short cadence. */
+#define HE_BLAST_TICKS 2
+#define HE_BLAST_RADIUS 300
+#define HE_BLAST_DAMAGE 15
+/* One in reserve, refilled every 0.5 s: a thrown grenade leaves the weapon entity in the inventory with
+   no rounds, so a bot that is only "given the grenade once" throws exactly one per party. Two rounds so
+   a bot still has one in hand between two passes of the task. */
+#define HE_PARTY_GRENADES 2
+new g_heBlastTicks;
+/* Counted so the log says whether the bots really throw: "the field threw 40 grenades" and "the event's
+   own blast fired 26 times" are two very different events to watch, and only one of them is a party. */
+new g_heThrown;
+/* 33 = the engine's 32 player slots plus the world, spelled out because MAX_SLOTS is defined further
+   down this file and a Pawn `#define` has to be seen before it is used. */
+new bool:g_heArmed[33];
+
+/* MELEE MODE. `yb_stab_close_enemies` is 0 in yapb.cfg on purpose (a bot that stabs while holding a
+   rifle reads as broken), and with every gun stripped it also stops the knife from ever swinging:
+   measured on the stream, he_party produced 0 kills in 60 s, and 5 knife kills in 30 s once the cvar
+   was set to 1 by hand. The flag is derived from the field instead of remembered per event, so every
+   code that strips weapons inherits it, and a map change (which re-executes yapb.cfg and resets the
+   cvar) repairs itself within a second. */
+#define TASK_MELEE_WATCH 4917
+#define MELEE_WATCH_TICK 1.0
+new bool:g_meleeMode;
+
 /* Every other lasting effect now has a clock too. With csdm_lite a round almost never ends, so
    waiting for Round_End meant a gravity change, a bounty or a boss raid could sit on the server until
    the next map. The task id is derived from the registry index, which gives exactly one timer per
@@ -370,6 +399,11 @@ new g_auraShare = 50;
 #define BURN_TICK 1.0
 #define FIRE_MAX_DAMAGE 500
 #define FIRE_MAX_BURN 60
+/* The same trap he_party was fixed for: a thrown grenade leaves the weapon entity in the inventory with
+   no rounds in it, so `user_has_weapon` keeps answering yes and a bot armed once throws exactly one
+   grenade for the whole event. What is endless is the reserve, topped up on every pass of
+   TaskFireParty - two rounds, so a bot still has one in hand between two passes of the task. */
+#define FIRE_PARTY_GRENADES 2
 
 /* Both grenade codes have the same open half: YaPB keeps a grenade in hand and never throws it (measured
    with an HE over 30 s - nobody burned). So neither event can wait for a bot's arm. Each gets a spark of its
@@ -394,6 +428,11 @@ new g_fireTicks[MAX_SLOTS];
    nothing" are the same log line otherwise. */
 new g_fireIgnited;
 new g_fireTicksApplied;
+/* Grenades the bots actually threw, counted the way he_party counts them: a bot armed on one pass and
+   holding no rounds on the next has let go of it. Without this the end line cannot tell "the reserve
+   refill works" from "the field never opened its hand", and the difference is the whole activity. */
+new g_fireThrown;
+new bool:g_fireArmed[MAX_SLOTS];
 
 /* Freeze grenades: a flashbang deals no damage, so `DMG_BLAST` in OnTakeDamage - the trigger the fire
    event leans on - never sees it. The engine leaves one trace instead: a thrown grenade is a `grenade`
@@ -773,6 +812,9 @@ public plugin_init()
 	RegisterDonationEffect("quotes_pack", "EffectQuotesPack");
 	RegisterDonationEffect("siren", "EffectSiren");
 	RegisterDonationEffect("music_swap", "EffectMusicSwap");
+
+	// The knife rule of every knife-only event: see TASK_MELEE_WATCH.
+	StartMeleeWatch();
 
 	log_amx("loaded, API %d, %d activities", API_VERSION, g_effectCount);
 }
@@ -1695,9 +1737,15 @@ public EffectHeParty()
 	// One repeating task for the whole run: a second `set_task` on the same id would be ignored by
 	// some AMXX builds and would double the counter on others.
 	if (!wasActive)
+	{
+		g_heBlastTicks = 0;
+		g_heThrown = 0;
+		for (new slot = 0; slot < MAX_SLOTS; slot++)
+			g_heArmed[slot] = false;
 		set_task(0.5, "TaskHeParty", TASK_HE_PARTY, "", 0, "b");
+	}
 
-	log_amx("he_party: knives and endless HE, +%d s (total %d s)", seconds, g_hePartyTicks / 2);
+	log_amx("he_party: grenades only, +%d s (total %d s)", seconds, g_hePartyTicks / 2);
 }
 
 public TaskHeParty()
@@ -1706,6 +1754,15 @@ public TaskHeParty()
 		return;
 
 	DisarmField();
+
+	// The party's own grenade: see HE_BLAST_* above. Rare enough to stay readable (one blast every
+	// three seconds), and the knife fight is what carries the minute.
+	g_heBlastTicks++;
+	if (g_heBlastTicks >= HE_BLAST_TICKS)
+	{
+		g_heBlastTicks = 0;
+		HePartyBlast();
+	}
 
 	g_hePartyTicks = g_hePartyTicks - 1;
 	if (g_hePartyTicks > 0)
@@ -1716,12 +1773,13 @@ public TaskHeParty()
 	Announce("HE GRENADES ARE OVER");
 	// Nothing to restore: the bots keep the knife until they die, and the next spawn gives them a
 	// real weapon again through csdm_lite.
-	log_amx("he_party: over, the next spawn arms the bots again");
+	log_amx("he_party: over, %d grenades thrown by the bots, the next spawn arms them again", g_heThrown);
 }
 
-/* Every alive bot: a knife and a grenade, nothing else. The check walks the whole weapon list, not
-   the weapon in hand: a bot that keeps a rifle in the backpack pulls it out the moment it sees
-   somebody, and the party is over without the timer ever firing. */
+/* Every alive bot: a grenade and nothing else. The whole weapon list is walked, not the weapon in hand:
+   a rifle left in the backpack comes out the moment the bot sees somebody. No knife on purpose - the
+   event is "HE grenades only", and a knife in a bot's hand is what a viewer reads as a broken knife
+   round instead of a grenade party. */
 stock DisarmField()
 {
 	new disarmed;
@@ -1731,20 +1789,38 @@ stock DisarmField()
 		if (!IsBotAlive(id))
 			continue;
 
-		if (HasGun(id))
+		// HasGun() is about guns; the knife has to be asked for separately, because it is not a gun and
+		// the engine hands it back with the kit.
+		if (HasGun(id) || user_has_weapon(id, CSW_KNIFE))
 		{
 			StripWeapons(id);
-			give_item(id, "weapon_knife");
 			disarmed++;
 		}
 
-		// The grenade is re-given after it is thrown, which is the "endless" part of the activity.
+		// The grenade is re-given after it is thrown, which is the "endless" part of the activity. Asking
+		// for the weapon alone is not enough: a thrown grenade leaves the entity in the inventory with no
+		// rounds in it, so `user_has_weapon` keeps answering yes and a bot throws exactly one grenade per
+		// party (measured on the stream). The reserve is topped up on every pass instead.
+		new ammo = cs_get_user_bpammo(id, CSW_HEGRENADE);
 		if (!user_has_weapon(id, CSW_HEGRENADE))
 			give_item(id, "weapon_hegrenade");
+
+		// A bot that was armed on the previous pass and has no rounds now has thrown its grenade.
+		if (g_heArmed[id] && ammo < 1)
+			g_heThrown++;
+
+		g_heArmed[id] = true;
+		cs_set_user_bpammo(id, CSW_HEGRENADE, HE_PARTY_GRENADES);
+
+		// A flashbang next to the HE: two throwables make YaPB reach for one twice as often, and the pop
+		// is the second kind of bang a viewer sees on a party.
+		if (!user_has_weapon(id, CSW_FLASHBANG))
+			give_item(id, "weapon_flashbang");
+		cs_set_user_bpammo(id, CSW_FLASHBANG, HE_PARTY_GRENADES);
 	}
 
 	if (disarmed > 0)
-		log_amx("he_party: %d bots disarmed", disarmed);
+		log_amx("he_party: %d bots disarmed to grenades", disarmed);
 }
 
 stock bool:HasGun(id)
@@ -1759,10 +1835,95 @@ stock bool:HasGun(id)
 			continue;
 		if (weapons[i] == CSW_HEGRENADE)
 			continue;
+		// The party hands out a flashbang as well: it is a throwable, not a gun, and stripping it every
+		// pass would be the churn the disarm loop exists to avoid.
+		if (weapons[i] == CSW_FLASHBANG)
+			continue;
 		return true;
 	}
 
 	return false;
+}
+
+/* One blast of the party's own: the TE_EXPLOSION a viewer reads as an HE, the stock grenade bang, and
+   `DMG_BLAST` on everybody inside the radius. Same shape as the fire_grenades spark, because the reason
+   is the same: the bot never lets go of the grenade it is holding. */
+stock HePartyBlast()
+{
+	new pivot = PickRandomBot();
+	if (!pivot)
+		return;
+
+	new Float:center[3];
+	pev(pivot, pev_origin, center);
+
+	message_begin(MSG_BROADCAST, SVC_TEMPENTITY);
+	write_byte(TE_EXPLOSION);
+	write_coord(floatround(center[0]));
+	write_coord(floatround(center[1]));
+	write_coord(floatround(center[2]));
+	write_short(g_meteorSprite);
+	write_byte(30);
+	write_byte(15);
+	write_byte(0);
+	message_end();
+
+	PlaySoundAt(center, SPARK_SOUND, CHAN_AUTO, PITCH_NORM);
+
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (!IsBotAlive(id))
+			continue;
+
+		new Float:where[3];
+		pev(id, pev_origin, where);
+		if (get_distance_f(center, where) > float(HE_BLAST_RADIUS))
+			continue;
+
+		ExecuteHamB(Ham_TakeDamage, id, 0, 0, float(HE_BLAST_DAMAGE), DMG_BLAST);
+	}
+}
+
+/* Flips `yb_stab_close_enemies` with the field, once a second for the life of the server: twenty bots
+   without a gun are a knife event, and the cvar is the only thing that makes them swing. */
+stock StartMeleeWatch()
+{
+	if (task_exists(TASK_MELEE_WATCH))
+		return;
+
+	set_task(MELEE_WATCH_TICK, "TaskMeleeWatch", TASK_MELEE_WATCH, "", 0, "b");
+	log_amx("melee watch: every %.1f s, flips yb_stab_close_enemies with the field", MELEE_WATCH_TICK);
+}
+
+public TaskMeleeWatch()
+{
+	new alive;
+	new knives;
+
+	for (new id = 1; id <= get_maxplayers(); id++)
+	{
+		if (!IsBotAlive(id))
+			continue;
+
+		alive++;
+		// A gun in the backpack counts: a bot holding a knife with a rifle behind it is not a knife event.
+		if (!HasGun(id))
+			knives++;
+	}
+
+	// Half the field on a knife and nothing else is a knife event; one disarmed bot is a bot that
+	// picked up a box. The two flags keep it on for the whole of a knife event: a second between two
+	// respawns can leave three armed bots on the field, and the rule must not blink off for it.
+	new bool:want = (g_hePartyActive || g_knivesActive || (alive > 0 && knives * 2 >= alive));
+	if (want == g_meleeMode)
+		return;
+
+	g_meleeMode = want;
+	// Through the engine's command path, not `set_cvar_num`: a direct cvar write is invisible to YaPB,
+	// which reads the value the engine last *executed* (measured - the cvar read back as 1 while the bots
+	// kept standing still, and the same value sent as a console command had them stabbing within seconds).
+	server_cmd("yb_stab_close_enemies %d", want ? 1 : 0);
+	log_amx("melee: %d of %d bots on knives, yb_stab_close_enemies=%d", knives, alive, want ? 1 : 0);
 }
 
 /* ---------- respawn hooks ---------- */
@@ -1912,9 +2073,15 @@ new g_kitSwept;
 /* What the running events say this bot holds, if anything. */
 stock bool:KitWeapon(id, out[], len)
 {
-	// The knife rules of the field: the duel, the physics event and the grenade party (which strips the
-	// field twice a second, so a rifle is a rifle its own task already removes).
-	if (g_duelActive || g_knivesActive || g_hePartyActive)
+	// The knife rules of the field: the duel and the physics event. The HE party is a grenade rule and
+	// comes first: the kit lock hands the grenade back, not a knife, or a viewer reads a knife round.
+	if (g_hePartyActive)
+	{
+		copy(out, len, "weapon_hegrenade");
+		return true;
+	}
+
+	if (g_duelActive || g_knivesActive)
 	{
 		copy(out, len, "weapon_knife");
 		return true;
@@ -2005,8 +2172,10 @@ stock EnforceKit(id)
 		return;
 
 	StripWeapons(id);
-	give_item(id, "weapon_knife");
-	if (wantId != CSW_KNIFE)
+	// The HE party's kit is the grenade alone: a knife beside it is exactly what the event took away.
+	if (wantId != CSW_HEGRENADE)
+		give_item(id, "weapon_knife");
+	if (wantId != CSW_KNIFE && wantId != CSW_HEGRENADE)
 		give_item(id, wanted);
 	engclient_cmd(id, wanted);
 
@@ -2200,8 +2369,12 @@ public ResetEventState()
 	g_fireActive = false;
 	g_fireIgnited = 0;
 	g_fireTicksApplied = 0;
+	g_fireThrown = 0;
 	for (new id = 0; id < MAX_SLOTS; id++)
+	{
 		g_fireTicks[id] = 0;
+		g_fireArmed[id] = false;
+	}
 
 	// The freeze is the same shape: a dropped task with a live flag is a bot that cannot move on the next
 	// map with nothing on the field to thaw it, and a remembered grenade from the old map would fire at its
@@ -4477,8 +4650,12 @@ public EffectFireGrenades()
 	g_fireActive = true;
 	g_fireIgnited = 0;
 	g_fireTicksApplied = 0;
+	g_fireThrown = 0;
 	for (new id = 0; id < MAX_SLOTS; id++)
+	{
 		g_fireTicks[id] = 0;
+		g_fireArmed[id] = false;
+	}
 
 	new owner = FindEffect("fire_grenades");
 	ClaimTake(CLAIM_WEAPONS, owner, 1);
@@ -4511,8 +4688,22 @@ public TaskFireParty()
 		if (!IsBotAlive(id))
 			continue;
 
+		new ammo = cs_get_user_bpammo(id, CSW_HEGRENADE);
+
 		if (!user_has_weapon(id, CSW_HEGRENADE))
 			give_item(id, "weapon_hegrenade");
+
+		// Armed on the previous pass and dry now: the bot threw it. The count is the only proof there
+		// is that the field is really throwing and not just holding - see g_fireThrown.
+		if (g_fireArmed[id] && ammo < 1)
+			g_fireThrown++;
+		g_fireArmed[id] = true;
+
+		// The weapon alone is not enough: a thrown grenade stays in the inventory with an empty reserve,
+		// so a bot handed one exactly once throws one grenade and then stands there for the rest of the
+		// event. The reserve is refilled on every pass, which is what makes the field keep throwing
+		// while the clock runs.
+		cs_set_user_bpammo(id, CSW_HEGRENADE, FIRE_PARTY_GRENADES);
 	}
 }
 
@@ -4629,8 +4820,10 @@ stock EndFireGrenades()
 	}
 
 	// Always, not only on a hit: "nothing caught fire" is a result the operator has to be able to read, the
-	// same reason `freeze_nades` reports its own count unconditionally.
-	log_amx("fire_grenades ended: %d bot(s) burned, %d tick(s) of fire", g_fireIgnited, g_fireTicksApplied);
+	// same reason `freeze_nades` reports its own count unconditionally. The throw count sits next to the
+	// burns because the two answer different questions: whether the field threw, and whether it burned.
+	log_amx("fire_grenades ended: %d bot(s) burned, %d tick(s) of fire, %d grenade(s) thrown",
+		g_fireIgnited, g_fireTicksApplied, g_fireThrown);
 
 	g_fireActive = false;
 	g_fireIgnited = 0;

@@ -43,6 +43,42 @@
                      "mod":  86116,
                      "sha256":  "8a345a6bc07a341f38cd238e547ff80af1f37f847506b2b52673b78610c9615b",
                      "note":  "dust textures, small symmetric arena"
+                 },
+                 {
+                     "name":  "aim_map",
+                     "mod":  82314,
+                     "sha256":  "7c1395ac1fb5ee9dbf9655fc36232449a699dd13eaa98d51a0967302b6426c48",
+                     "note":  "the classic aim arena: two spawns, one open middle"
+                 },
+                 {
+                     "name":  "aim_headshot",
+                     "mod":  94581,
+                     "sha256":  "8229a79fde996e09b43a387bbbc9c958b9b9a84f5b99888f7306d0e17f8fbbec",
+                     "note":  "flat aim box, contact in the first second"
+                 },
+                 {
+                     "name":  "aim_map_2010",
+                     "mod":  94710,
+                     "sha256":  "0aca90b26e7e1bd240653457f73523c2adc6f9e25dba19773180cdd8ce0db6f3",
+                     "note":  "the 2010 rebuild of aim_map"
+                 },
+                 {
+                     "name":  "aim_aztecplace",
+                     "mod":  93889,
+                     "sha256":  "e21dd5c9e4e5e745886d944b9f80259abf185b07f1e575fe490e9e3a2eba03bc",
+                     "note":  "aztec stone on an aim layout"
+                 },
+                 {
+                     "name":  "aim_dust2011",
+                     "mod":  94298,
+                     "sha256":  "16cebd6c1040bcd1d0591b5755a89100b7ed95ba46cd12267a9aec8ceffddb6a",
+                     "note":  "dust look on an aim layout"
+                 },
+                 {
+                     "name":  "aim_aspect",
+                     "source":  "https://ds-servers.com/maps/goldsrc/cstrike/aim_aspect.zip",
+                     "sha256":  "c2970c7e738a03efc5874abf5cbe27cd310623decf1ad2c68f404b80a8a54acb",
+                     "note":  "not on GameBanana: fetched by hand from DS-Servers, so the pin is the .bsp itself, not an archive"
                  }
              ]
 }

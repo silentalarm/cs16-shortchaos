@@ -95,8 +95,12 @@ public plugin_init()
 	// pinned by SHA256 in infra/maps/maps.json (test/map-duel-contract.test.ts checks both).
 	// fy_simpsons was dropped: the house has corners too tight for the bot's navigation graph, and a
 	// bot that grinds a wall there is the one thing a 9:16 feed cannot sell.
+	// The pool is fight-yard only: a vertical feed has a second or two to hook a viewer, and on a big
+	// map the bots spend five of them running at each other. aim_* are the same kind of box; awp_snow
+	// was tried and is out (its snowfall reads as noise on the feed), fy_iceworld is back because it is
+	// the densest of them and the only one whose two rooms meet in the first second.
 	register_cvar("map_duel_maps",
-		"fy_iceworld,fy_pool_day,fy_snow,fy_buzzkill,fy_aztec,fy_dustworld");
+		"aim_map,aim_headshot,aim_map_2010,aim_aztecplace,aim_dust2011,aim_aspect,fy_iceworld");
 
 	// Published for the panel (control API -> ui/panel.ts) and for the log.
 	register_cvar("map_duel_winner", "-");

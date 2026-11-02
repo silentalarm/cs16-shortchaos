@@ -39,10 +39,11 @@ test("the HE party keeps the field on knives and grenades until its clock runs o
   assert.match(effect, /ParamInt\("seconds", 60\)/, "the length is not read from the command");
   // Twice a second, repeating: the re-arm is what hands a thrown grenade back and what undoes the
   // rifle csdm_lite gives a bot that died during the party. Armed once per run, because a second
-  // `set_task` on the same id is silently dropped by some AMXX builds.
+  // `set_task` on the same id is silently dropped by some AMXX builds; the same block resets the
+  // counter of the party's own grenade, so a new party does not inherit the previous one's clock.
   assert.match(
     effect,
-    /if \(!wasActive\)\s*\n\s*set_task\(0\.5, "TaskHeParty", TASK_HE_PARTY, "", 0, "b"\)/,
+    /if \(!wasActive\)\s*\{\s*g_heBlastTicks = 0;[\s\S]*?set_task\(0\.5, "TaskHeParty", TASK_HE_PARTY, "", 0, "b"\)/,
     "the field is disarmed once instead of continuously",
   );
 
@@ -132,7 +133,7 @@ test("a repeated HE party adds time instead of restarting the same minute", () =
   // 150 RUB is three 50 RUB steps: the plugin must add 180 seconds, not run 60 three times.
   assert.match(handler, /g_hePartyTicks \+= seconds \* 2/, "a second party restarts the clock");
   assert.match(handler, /MAX_HE_PARTY_TICKS/, "the accumulated clock has no ceiling");
-  assert.match(handler, /if \(!wasActive\)\s*\n\s*set_task\(0\.5, "TaskHeParty"/, "the repeating task is armed twice");
+  assert.match(handler, /if \(!wasActive\)\s*\{\s*g_heBlastTicks = 0;/, "the repeating task is armed twice");
   assert.match(source, /#define MAX_HE_PARTY_TICKS \d+/, "the ceiling is not defined");
 });
 
@@ -445,6 +446,26 @@ test("fire grenades burn what a blast catches, and stop burning when the clock d
   // ...and since YaPB holds it and never throws it, the event also carries a blast of its own.
   assert.match(effect, /set_task\(SPARK_PERIOD, "TaskFireSpark", TASK_FIRE_SPARK/, "the event waits for a bot that never throws");
   assert.match(effect, /ParamInt\("radius", SPARK_RADIUS_DEFAULT\)/, "the spark's width is not read from the command");
+
+  // The grenade has to come back for as long as the clock runs: a thrown one keeps the weapon entity in
+  // the inventory with no rounds in it, so "the bot has a grenade" stays true and a bot armed once
+  // throws exactly one per event - the bug he_party was fixed for.
+  const party = /public TaskFireParty\(\)\s*\{[\s\S]*?\n\}/.exec(source)?.[0] ?? "";
+  assert.notEqual(party, "", "TaskFireParty is missing");
+  assert.match(party, /give_item\(id, "weapon_hegrenade"\)/, "nobody is ever handed a grenade");
+  assert.match(
+    party,
+    /cs_set_user_bpammo\(id, CSW_HEGRENADE, FIRE_PARTY_GRENADES\)/,
+    "the grenade is handed out once per event instead of endlessly",
+  );
+  // ...and the run has to say how many of them left a hand: "the refill works" and "nobody ever threw"
+  // are the same silence otherwise.
+  assert.match(party, /g_fireThrown\+\+/, "the event no longer counts what the bots throw");
+  assert.match(
+    source,
+    /fire_grenades ended: %d bot\(s\) burned, %d tick\(s\) of fire, %d grenade\(s\) thrown/,
+    "the throw count never reaches the log",
+  );
 
   // The spark is a real explosion - the same DMG_BLAST label a thrown HE carries - so ignition stays in the
   // one damage hook the meteor path already proved.

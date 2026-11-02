@@ -19,7 +19,7 @@ still lets the subtitle be read.
 | 3 | `meteor_shower` | 43 explosions a second in a radius around the bots, 2 damage each | 15 | `damage=2 radius=320` | on sale |
 | 4 | `one_bullet` | one round in the clip, then knives | 15 | — | on sale |
 | 5 | `red_light` | 1.5 s frozen / 2 s moving, repeating, broadcast cues instead of stock | 15 | `stock=0 soundRed soundGreen` | on sale |
-| 6 | `he_party` | every weapon taken away, knife and endless HE grenades | 60 | `seconds=60` | kept |
+| 6 | `he_party` | every weapon taken away, knife and endless HE grenades | 60 | `seconds=60` | kept (runs free, `config/auto-events.json`) |
 
 ## S1 — round modes (Zombie Plague)
 
@@ -46,7 +46,7 @@ still lets the subtitle be read.
 
 | # | code | What the viewer sees | sec | params | status |
 |---|---|---|---|---|---|
-| 18 | `fire_grenades` | an HE sets bots on fire: 60 damage a tick for 15 s, orange sprite | 30 | `damage=60 burn=15 radius=300` | ready (off sale, own blast, live-run) |
+| 18 | `fire_grenades` | an HE sets bots on fire: 60 damage a tick for 15 s, orange sprite | 30 | `damage=60 burn=15 radius=300` | ready (off sale, own blast, endless HE reserve, live-run) |
 | 19 | `freeze_nades` | a flashbang freezes everybody in the blast for 6 s under an ice-white shell, with ice shards on the blast and its own ice crack (`freeze/ice_crack.wav`) | 30 | `freeze=6 radius=300` | ready (off sale, own pulse, live-run) |
 | 20 | `bazooka_drop` | one bot holds the launcher and fires rockets: 500 blast damage inside 320 units, camera on it | 30 | `damage=500 radius=320` | on sale (stream watch pending: the launcher in hand is unconfirmed by eye) |
 | 21 | `plasma_rifle` | one bot with an energy rifle: 90 damage, blue tracers, 50 rounds | 30 | `damage=90 ammo=50` | planned |

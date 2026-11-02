@@ -1,0 +1,21 @@
+aim_map_2010 - aim training map
+
+The 2010 year version of popular aim_map.
+Whats new?
+Fixed:
+
+* Visual bugs;
+* Player die on spawn. Now players won't die
+on spawn when player count is big (for example
+full team (16 players) won't die);
+* Bug when player can access outside of the map.
+
+Changes:
+
+* New textures;
+* Removed AWP's and added 2 assault suits;
+* Added space by each door for camping.
+
+Map made by Dewolt.
+Hello from Lithuania :]
+

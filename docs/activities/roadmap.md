@@ -166,8 +166,13 @@ log. What is missing is the .mdl, and the on-sale step once the picture is confi
       is simply not the only one. Live on `fy_iceworld` (2026-10-31): `fire_grenades ended: 18 bot(s)
       burned, 230 tick(s) of fire` inside its 30 s clock, `amx_de status` back to `active=none` on the
       timer and no new line in the AMXX error log - the event's own spark ignites the field, which the
-      grenade-only run never did. Left: the on-sale step, and it wants a stream watch, not another
-      server run;
+      grenade-only run never did. `TaskFireParty` handed the grenade out once, and a thrown HE keeps the
+      weapon entity in the inventory with an empty reserve, so a bot threw exactly one per event - the
+      same bug `he_party` was fixed for; the reserve is now refilled on every 0.5 s pass
+      (`FIRE_PARTY_GRENADES`), so the field keeps throwing while the clock runs, and the end line carries
+      the count that proves it: live on `fy_iceworld` (2026-11-02) `fire_grenades ended: 18 bot(s) burned,
+      144 tick(s) of fire, 96 grenade(s) thrown` in 30 s - 96 throws where the one-pass version could only
+      manage one per bot. Left: the on-sale step, and it wants a stream watch, not another server run;
 - [x] `freeze_nades`: the field keeps flashbangs in hand and a flashbang that goes off freezes every bot in
       `radius` for `freeze` seconds under a blue shell. The trigger cannot be `DMG_BLAST` - a flashbang deals
       no damage and never reaches `OnTakeDamage` - so a 0.25 s scan reads the `grenade` entities themselves:

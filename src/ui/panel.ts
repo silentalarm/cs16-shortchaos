@@ -26,6 +26,10 @@ export interface PanelLayer {
 /**
  * The file names, shared with `infra/stream/entrypoint.sh`. A test pins both sides together: a
  * rename here and not there leaves a line that silently never appears.
+ *
+ * The bottom strip carries three lines and no queue: the last donation (nickname and amount), the
+ * countdown to the next free event, and the chaos meter. The queue itself lives in the admin page
+ * and in the state dump - a strip a viewer cannot act on only costs attention.
  */
 export const PANEL_FILES = {
   barT: "bar-t.txt",
@@ -38,10 +42,9 @@ export const PANEL_FILES = {
   target: "target.txt",
   notice: "notice.txt",
   last: "last.txt",
-  /** What the last donation bought: every name of the batch on its own line. */
-  won: "won.txt",
-  menu: "menu.txt",
-  /** The chaos meter: money collected toward the next forced effect. */
+  /** Countdown to the next free event (`auto-events.ts`). */
+  next: "next.txt",
+  /** The chaos meter: money collected toward the next forced burst. */
   chaos: "chaos.txt",
 } as const;
 
@@ -57,7 +60,8 @@ export const PANEL_LAYOUT = {
   topSize: 30,
   targetSize: 36,
   lastSize: 26,
-  menuSize: 24,
+  /** The rotation line: the countdown and the name of the next free event. */
+  nextSize: 24,
   /** The chaos meter: smaller than the score bar, it only ever fills. */
   chaosSize: 26,
   margin: 52,
@@ -125,8 +129,7 @@ export const PANEL_LIMITS = {
   target: 30,
   notice: 24,
   last: 41,
-  won: 41,
-  menu: 44,
+  next: 44,
   chaos: 30,
 } as const;
 
@@ -217,8 +220,7 @@ export function panelLayers(state: UiState, segments = PANEL_DEFAULT_SEGMENTS): 
     },
     { file: PANEL_FILES.notice, text: noticeFor(state) },
     { file: PANEL_FILES.last, text: clean(state.donation, PANEL_LIMITS.last) },
-    { file: PANEL_FILES.won, text: clean(state.won, PANEL_LIMITS.won) },
-    { file: PANEL_FILES.menu, text: clean(state.menu, PANEL_LIMITS.menu) },
+    { file: PANEL_FILES.next, text: clean(state.next, PANEL_LIMITS.next) },
     { file: PANEL_FILES.chaos, text: chaosFor(state) },
   ];
 }

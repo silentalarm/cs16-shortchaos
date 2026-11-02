@@ -18,6 +18,12 @@ archive. The script checks GameBanana's own MD5 and its AV verdict on the way in
 a re-uploaded or swapped file fails loudly instead of landing in the game. Archives arrive as `.zip`
 or `.rar`; `tar.exe` (Windows 10+) unpacks both.
 
+Two shapes of entry exist. A map that is not on GameBanana (`aim_aspect` came from DS-Servers by hand)
+has no `mod` and a `source` URL instead of it, and its `sha256` is the pin of the `.bsp` itself: the
+fetcher skips such an entry with `hand-added, not fetched`, and the reviewed file in git is the truth.
+An archive with a solid `.rar` (`aim_aztecplace`) also needs 7-Zip by hand - bsdtar refuses solid
+archives - so it is unpacked, copied, and the archive is pinned afterwards.
+
 **Nothing is downloaded during an image build.** The image stays hermetic, and a map is exactly the
 file that was reviewed and pinned in git.
 
@@ -65,11 +71,14 @@ docker cp cs16-youtube-hlds-1:/hlds/cstrike/addons/yapb/data/graph/my_map.graph 
 
 ## Adding a map by hand
 
-Drop `my_map.bsp` (plus optional `.res` and `.txt`) into this directory, then put `my_map` into both
-lists:
+Drop `my_map.bsp` (plus optional `.res` and `.txt`) into this directory, then put `my_map` into every
+list that names the pool - `map_duel` is the only thing that rotates the map (`mp_timelimit` is 0):
 
-1. `map_duel_maps` in `plugins/map_duel/map_duel.sma` (or override the cvar in `infra/server.cfg`),
-2. `params.maps` of the `map_change` activity in `config/activities.json`.
+1. `map_duel_maps` in `plugins/map_duel/map_duel.sma` - the real rotation;
+2. `MAPCYCLE` in `infra/docker-compose.yml` **and** the same fallback in `infra/entrypoint.sh` - that is
+   what `mapcycle.txt` is rewritten from on every start, i.e. the engine's own safety net (`nextmap`, a
+   bare `changelevel`);
+3. `MAP` in `infra/docker-compose.yml` if the server should boot onto it.
 
-`test/map-duel-contract.test.ts` fails when the two disagree, when a name has no `.bsp` at all, or
-when a fetched map has no `sha256` pin.
+`test/map-duel-contract.test.ts` fails when the three lists disagree, when a name has no `.bsp` at all,
+when a fetched map has no `sha256` pin, or when a map in the pool has no pinned graph.

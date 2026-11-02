@@ -115,7 +115,12 @@ test("the tops keep the names, the counts live on the bar", () => {
 test("the bot on camera and the donation lines reach the panel", () => {
   assert.equal(layer({}, PANEL_FILES.target), "Smith 87 HP 42 AR");
   assert.match(layer({}, PANEL_FILES.last), /NO DONATIONS YET/u);
-  assert.match(layer({}, PANEL_FILES.menu), /^NEXT: /u);
+  assert.match(layer({}, PANEL_FILES.next), /^NEXT: /u);
+  // A live rotation replaces the price list with the countdown, and both live in the same file.
+  assert.equal(
+    layer({ next: "ДАЛЬШЕ 2:31 · HE PARTY" }, PANEL_FILES.next),
+    "ДАЛЬШЕ 2:31 · HE PARTY",
+  );
 });
 
 test("the duel winner takes the notice line, ahead of everything else", () => {
@@ -181,7 +186,7 @@ test("the bottom donation lines can be switched off on their own", () => {
   // And it must actually guard the two layers, not just be read.
   const guarded = entrypoint.slice(entrypoint.indexOf('if [ "$UI_DONATE" = 1 ]'));
   assert.ok(guarded.includes("panel_add last.txt "), "last.txt is drawn regardless of the switch");
-  assert.ok(guarded.includes("panel_add menu.txt "), "menu.txt is drawn regardless of the switch");
+  assert.ok(guarded.includes("panel_add next.txt "), "next.txt is drawn regardless of the switch");
 });
 
 test("the encoder reads the same file names the control API writes", () => {
@@ -272,7 +277,7 @@ test("the panel and the encoder agree on the geometry", () => {
     STREAM_UI_SIZE_TOP: PANEL_LAYOUT.topSize,
     STREAM_UI_SIZE_TARGET: PANEL_LAYOUT.targetSize,
     STREAM_UI_SIZE_LAST: PANEL_LAYOUT.lastSize,
-    STREAM_UI_SIZE_MENU: PANEL_LAYOUT.menuSize,
+    STREAM_UI_SIZE_NEXT: PANEL_LAYOUT.nextSize,
     STREAM_UI_MARGIN: PANEL_LAYOUT.margin,
     STREAM_UI_TOP: PANEL_LAYOUT.top,
     STREAM_UI_BOTTOM: PANEL_LAYOUT.bottom,

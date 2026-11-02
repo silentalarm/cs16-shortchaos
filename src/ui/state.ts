@@ -1,4 +1,5 @@
 import type { ActivitiesConfig } from "../activities.ts";
+import type { NextAutoEvent } from "../auto-events.ts";
 import { CHAOS_THRESHOLD } from "../chaos-meter.ts";
 import type { StoredDonation } from "../db.ts";
 import { buildOverlay } from "../overlay.ts";
@@ -47,14 +48,13 @@ export interface UiState {
   /** null until the first successful RCON answer; the template says "no data" instead of lying. */
   score: UiScore | null;
   target: UiTarget | null;
-  /** Last donation line, already cleaned for display. */
+  /** Last donation line: the nickname and the amount, nothing else. */
   donation: string;
-  /** What that donation bought: every effect of the batch, not just the first one. */
-  won: string;
-  /** What the next cheapest activities cost, or how many are waiting. */
-  menu: string;
+  /** Countdown to the next free event (`ДАЛЬШЕ 2:31 · HE PARTY`), or the cheapest activities when the rotation is off. */
+  next: string;
   /** Winner of the end-of-map duel; empty except for the seconds between the duel and the map change. */
   winner: string;
+  /** Paid activities waiting for their cooldown; shown in the state dump and in the admin page. */
   queueSize: number;
   theme: UiTheme;
   activityCode: string | null;
@@ -72,15 +72,32 @@ export interface UiStateInput {
   recent: readonly StoredDonation[];
   catalog: ActivitiesConfig;
   pending?: readonly PendingActivity[];
+  /** The next free event from `auto-events.ts`; absent when the rotation is off. */
+  next?: NextAutoEvent | null;
   chaos?: UiChaos;
   now?: number;
   stale?: boolean;
 }
 
+/**
+ * The codes a theme owns. Only real catalogue codes belong here: the chaos list is the one a chaos
+ * burst may fire (`config/auto-events.json`), so the picture and the meter agree on what chaos is.
+ */
 const THEMES: Record<UiTheme, readonly string[]> = {
-  chaos: ["chaos_burst", "curse_leader", "moon_gravity"],
-  fight: ["bounty", "hot_potato", "boss_raid"],
-  event: ["bot_rain", "terminators", "terminator_one", "zombie_round", "map_change"],
+  chaos: ["he_party", "meteor_shower", "jumpers", "bazooka_drop", "one_bullet", "chaos_plague"],
+  fight: [
+    "nemesis",
+    "survivor",
+    "juggernaut",
+    "sniper",
+    "outbreak",
+    "raptors",
+    "brutes",
+    "regenerators",
+    "glass_cannon",
+    "lightsaber_duel",
+  ],
+  event: ["runners", "red_light", "fire_grenades", "freeze_nades", "airstrike", "weapon_rain", "guntrain"],
   default: [],
 };
 
@@ -96,17 +113,18 @@ export function themeFor(code: string | null): UiTheme {
 /**
  * Builds the state from what the processes around it already know.
  *
- * The donation and menu lines come from `buildOverlay()` on purpose: that function owns the length
- * and character rules a 720 px frame can survive, and the panel must not grow a second opinion
- * about them.
+ * The donation and rotation lines come from `buildOverlay()` on purpose: that function owns the length
+ * and character rules a 720 px frame can survive, and the panel must not grow a second opinion about
+ * them.
  */
 export function buildUiState(input: UiStateInput): UiState {
   const now = input.now ?? Date.now();
   const pending = input.pending ?? [];
+  const next = input.next ?? null;
   const overlay = buildOverlay({
     recent: input.recent,
     catalog: input.catalog,
-    pending,
+    next,
     now,
   });
 
@@ -118,8 +136,7 @@ export function buildUiState(input: UiStateInput): UiState {
     target: input.target ?? null,
     winner: input.winner ?? "",
     donation: overlay.lines[1] ?? "",
-    won: overlay.lines[2] ?? "",
-    menu: overlay.lines[3] ?? "",
+    next: overlay.lines[2] ?? "",
     queueSize: pending.length,
     theme: themeFor(activityCode),
     activityCode,
@@ -133,7 +150,8 @@ export function buildUiState(input: UiStateInput): UiState {
  * A string that changes exactly when the picture would change.
  *
  * The loop renders on every tick only when this differs: at 5 fps a re-render per tick would spend
- * CPU on bytes identical to the previous frame (`updatedAt` is deliberately not part of it).
+ * CPU on bytes identical to the previous frame (`updatedAt` is deliberately not part of it). The
+ * countdown *is* part of it - the rotation line ticks down once a second.
  */
 export function uiSignature(state: UiState): string {
   return JSON.stringify({
@@ -141,8 +159,7 @@ export function uiSignature(state: UiState): string {
     target: state.target,
     winner: state.winner,
     donation: state.donation,
-    won: state.won,
-    menu: state.menu,
+    next: state.next,
     queueSize: state.queueSize,
     theme: state.theme,
     chaos: state.chaos,

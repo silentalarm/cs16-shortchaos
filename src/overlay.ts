@@ -1,8 +1,8 @@
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ActivitiesConfig } from "./activities.ts";
+import { formatCountdown, type NextAutoEvent } from "./auto-events.ts";
 import type { StoredDonation } from "./db.ts";
-import type { PendingActivity } from "./queue.ts";
 
 /**
  * What the viewer reads under the picture.
@@ -11,6 +11,9 @@ import type { PendingActivity } from "./queue.ts";
  * a changing line count would make the block jump around. The text goes through a file instead of
  * inline filter arguments, which is also why nothing here has to be escaped for the filter graph —
  * except `%` and `\`, which drawtext expands even in file content and which therefore never reach it.
+ *
+ * The lines are: the invitation, the last donation (nickname and amount, nothing else - a long
+ * message pushed the line off centre), and the countdown to the next free event.
  */
 export const MAX_LINE_CHARS = 46;
 export const HEADER = "DONATE IN CHAT -> CHANGE THE GAME";
@@ -18,7 +21,8 @@ export const HEADER = "DONATE IN CHAT -> CHANGE THE GAME";
 export interface OverlayInput {
   recent: readonly StoredDonation[];
   catalog: ActivitiesConfig;
-  pending?: readonly PendingActivity[];
+  /** The next free event (`auto-events.ts`); without it the last line lists the cheapest activities. */
+  next?: NextAutoEvent | null;
   now?: number;
 }
 
@@ -56,76 +60,43 @@ function cheapest(catalog: ActivitiesConfig, count: number): string[] {
 export const LAST_LINE_CHARS = 41;
 
 /**
- * `LAST: Vasya 50 RUB`, with the viewer's message when it fits.
+ * `Vasya 50 RUB` - the nickname and the amount, nothing else.
  *
- * The event name moved to its own line (`wonLine`): a big donation buys several effects, and a single
- * strip had room for exactly one of them, so the rest of what the money bought was simply cut off.
+ * The viewer message and the `LAST:` label are gone on purpose: the line is centred under the
+ * picture, and a ten character prefix plus a quoted message moved the one number the viewer looks
+ * for. What the donation bought has its own place in the rotation line and in the log.
  */
 function donationLine(row: StoredDonation, catalog: ActivitiesConfig): string {
-  const state = row.status === "queued" ? "WAITING " : "";
-  const head = `LAST: ${state}${row.username} ${Math.round(row.amount)} ${catalog.currency}`;
-  const message = typeof row.message === "string" ? clean(row.message, LAST_LINE_CHARS).trim() : "";
-
-  if (message !== "") {
-    const withMessage = `${head}: "${message}"`;
-    if (withMessage.length <= LAST_LINE_CHARS) return clean(withMessage, LAST_LINE_CHARS);
-  }
-  return clean(head, LAST_LINE_CHARS);
+  return clean(`${row.username} ${Math.round(row.amount)} ${catalog.currency}`, LAST_LINE_CHARS);
 }
 
 /**
- * `ВЫПАЛО: ДУЭЛЬ, ПУШКА, ОДНА ПУЛЯ` - every effect the donation bought, in the order they started.
+ * `ДАЛЬШЕ 2:31 · HE PARTY` - the countdown to the next free event.
  *
- * Its own line so a batch of five keeps all five names; when even that is too long the tail is cut
- * with an ellipsis instead of silently dropping whole events.
+ * Empty when the rotation is off; the caller then keeps the old "cheapest activities" line, so a
+ * stream without `config/auto-events.json` still tells the viewer how to buy something.
  */
-export function wonLine(row: StoredDonation | undefined, catalog: ActivitiesConfig): string {
-  if (row === undefined) return "";
-  const codes = typeof row.activityCode === "string" && row.activityCode !== "" ? row.activityCode.split("+") : [];
-  const names = codes.map((code) => {
-    const activity = catalog.activities.find((item) => item.code === code);
-    if (activity === undefined) return "QUEUED";
-    // `params.short` is the label that fits five names on one row ("ПУШКА", "МЕТЕОР"); the spoken line
-    // and the catalogue stay in full.
-    const short = activity.params["short"];
-    if (typeof short === "string" && short.trim() !== "") return short.trim();
-    const spoken = activity.params["say"];
-    return typeof spoken === "string" && spoken.trim() !== "" ? spoken.trim() : activity.title.toUpperCase();
-  });
-  if (names.length === 0) return "";
-
-  const labelled = `ВЫПАЛО: ${names.join(", ")}`;
-  if (labelled.length <= LAST_LINE_CHARS) return clean(labelled, LAST_LINE_CHARS);
-
-  // The bare list under "LAST: ..." still reads as "what that donation bought", and it is what makes a
-  // batch of five fit: the prefix costs eight characters, a whole event name costs ten.
-  const bare = names.join(", ");
-  return bare.length <= LAST_LINE_CHARS ? clean(bare, LAST_LINE_CHARS) : clean(labelled, LAST_LINE_CHARS);
+export function nextLine(next: NextAutoEvent | null | undefined): string {
+  if (next === null || next === undefined) return "";
+  return clean(`ДАЛЬШЕ ${formatCountdown(next.secondsLeft)} · ${next.title.toUpperCase()}`, MAX_LINE_CHARS);
 }
 
 export function buildOverlay(input: OverlayInput): Overlay {
   const { recent, catalog } = input;
-  const pending = input.pending ?? [];
   const now = input.now ?? Date.now();
 
   const last = recent.find((row) => row.status === "applied" || row.status === "queued");
 
   const lines: string[] = [HEADER];
-
-  if (last === undefined) {
-    lines.push("NO DONATIONS YET - BE THE FIRST");
-    lines.push("");
-  } else {
-    lines.push(donationLine(last, catalog));
-    lines.push(wonLine(last, catalog));
-  }
+  lines.push(last === undefined ? "NO DONATIONS YET - BE THE FIRST" : donationLine(last, catalog));
 
   // Two options, not three: the line has to stay inside MAX_LINE_CHARS to be readable at 720 px.
   const menu = cheapest(catalog, 2).join(" | ");
-  lines.push(clean(pending.length > 0 ? `QUEUE: ${pending.length} | ${menu}` : `NEXT: ${menu}`));
+  lines.push(nextLine(input.next) || clean(`NEXT: ${menu}`, MAX_LINE_CHARS));
 
   return { lines, text: lines.join("\n"), updatedAt: new Date(now).toISOString() };
 }
+
 
 /**
  * Writes `overlay.txt` (for ffmpeg) and `overlay.json` (for the panel and for debugging).

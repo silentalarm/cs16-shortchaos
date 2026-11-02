@@ -13,7 +13,9 @@ in game (`donation_events ran bot_nick`).
 
 ```
 config/activities.json   what a donation buys (prices, durations, cooldowns, params)
+config/auto-events.json  the free rotation (one event every 3 min) and the chaos-only subset
 src/activities.ts        catalogue schema: loads, validates, fails fast on a bad config
+src/auto-events.ts       the rotation: ranks, counts down, fires the slot, keeps paid effects safe
 src/mapping.ts           donation amount -> activity, deterministic, no viewer input
 src/cooldowns.ts         per donor and per activity rate limits, based on stored facts
 src/command.ts           builds the RCON line, sanitizes donor nicknames (injection guard)
@@ -22,8 +24,8 @@ src/donationalerts.ts    OAuth2 (code + refresh) and the donations list endpoint
 src/db.ts                SQLite: donation history, dedup by id, polling cursor
 src/poller.ts            one polling pass: dedup, map, cooldown, apply, store
 src/game-poller.ts       RCON poller for the panel: team race + the bot on camera (1 Hz)
-src/ui/state.ts          the panel model: score, tops, target, donations, queue, theme
-src/ui/panel.ts          the panel as text lines: the score bar, tops, target, donation, menu
+src/ui/state.ts          the panel model: score, tops, target, donation, countdown, theme
+src/ui/panel.ts          the panel as text lines: the score bar, tops, target, donation, countdown
 src/ui/loop.ts           rewrites those files only when the state changes (the encoder draws them)
 src/main.ts              daemon: env, wiring, graceful shutdown, POLL_ONCE mode
 scripts/fake-donation.ts appends a fake donation for the mock source
@@ -70,16 +72,27 @@ Planned: ffmpeg streaming to YouTube.
   changes;
 - `bounty`, `hot_potato` and `boss_raid` follow `DeathMsg` and end on their clock (or when the
   target dies); a boss is re-armed on every spawn so `csdm_lite` cannot undo the raid;
-- `map_change` changes the map at once and is rate limited to once per 10 minutes; the rotation
-  (`map_duel_maps`) is six fight-yard maps - `fy_iceworld`, `fy_pool_day`, `fy_snow`, `fy_buzzkill`,
-  `fy_aztec`, `fy_dustworld` - because a vertical feed cannot wait five seconds for the
-  bots to meet. None of them ship with HLDS: they are fetched by `infra/fetch-maps.ps1` from
-  GameBanana and pinned by SHA256 in `infra/maps/maps.json` (nothing is downloaded during a build);
+- the rotation (`map_duel_maps`) is seven fight-yard maps - `aim_map`, `aim_headshot`, `aim_map_2010`,
+  `aim_aztecplace`, `aim_dust2011`, `aim_aspect` and `fy_iceworld` - because a vertical feed cannot wait
+  five seconds for the bots to meet. None of them ship with HLDS: the GameBanana ones are fetched and
+  pinned by SHA256 in `infra/maps/maps.json` (nothing is downloaded during a build), and `aim_aspect` is
+  the one map GameBanana does not have (it comes from DS-Servers, pinned by the hash of the `.bsp`
+  itself);
 - `announce` must be printable ASCII: GoldSrc chat cannot render cyrillic;
 - a nickname is moderated: links, ad roots and banned roots are replaced with `Anonim_Bot`, and the
   buyer also appears on the scoreboard as `[DONOR] <nick>` for 30 s unless the activity renames a bot
   itself;
 - codes are stable: the Pawn plugin registers effect handlers by code.
+
+## The free rotation
+
+`config/auto-events.json` runs one activity every three minutes with no donation at all, so a viewer
+who arrives during a quiet minute still sees something happen. The list is **ranked** (`he_party`
+first), every entry is a short clock, and the paid hero modes (`nemesis`, `survivor`, `juggernaut`,
+`sniper`, `outbreak`, `chaos_plague`) are never in it - a free hero round leaves nothing to buy. A
+donation that just landed keeps the screen for 60 s, and the picture counts down to the next free
+event (`ДАЛЬШЕ 2:31 · HE PARTY`) where the queue line used to be. The chaos meter fires only from the
+`chaos` subset - what actually reads as chaos, `he_party` among it.
 
 ## Commands
 

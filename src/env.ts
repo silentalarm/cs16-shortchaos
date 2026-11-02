@@ -7,6 +7,8 @@ import { parseCurrencyRates } from "./mapping.ts";
  */
 export interface Env {
   activitiesPath: string;
+  /** The free rotation (`auto-events.ts`); a missing file stops the process at startup. */
+  autoEventsPath: string;
   dbPath: string;
   /** Where the overlay text for the encoder is written; the capture container mounts it read-only. */
   overlayDir: string;
@@ -109,6 +111,7 @@ export function loadEnv(envFile = ".env"): Env {
 
   return {
     activitiesPath: text("ACTIVITIES_PATH", "config/activities.json"),
+    autoEventsPath: text("AUTO_EVENTS_PATH", "config/auto-events.json"),
     dbPath: text("DB_PATH", "data/control.db"),
     overlayDir: text("OVERLAY_DIR", "data/overlay"),
     mock: flag("DA_MOCK", false),
