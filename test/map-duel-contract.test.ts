@@ -131,7 +131,7 @@ test("nothing outside the fight-yard pool can start or catch the stream", () => 
   const cycleMaps = cycle.split(",").filter((map) => map !== "");
   assert.deepEqual(cycleMaps, [
     "aim_map", "aim_headshot", "aim_map_2010", "aim_aztecplace", "aim_dust2011", "aim_aspect",
-    "fy_iceworld",
+    "fy_iceworld", "fy_pool_day",
   ]);
   assert.match(entrypoint, /mapcycle\.txt/, "the stock mapcycle is never rewritten");
 });
@@ -162,7 +162,7 @@ test("the rotation is fight-yard maps only, and every one of them is fetched", (
   const rotation = configured.split(",").filter((map) => map !== "");
   assert.deepEqual(rotation, [
     "aim_map", "aim_headshot", "aim_map_2010", "aim_aztecplace", "aim_dust2011", "aim_aspect",
-    "fy_iceworld",
+    "fy_iceworld", "fy_pool_day",
   ]);
   for (const map of rotation) {
     assert.match(

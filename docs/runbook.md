@@ -189,7 +189,7 @@ amx_map_duel status   map_duel status: state=<idle|live|done> winner=<name|->
 
 Cvars: `map_duel_enabled` (1), `map_duel_minutes` (10), `map_duel_prepare` (45),
 `map_duel_limit` (60), `map_duel_weapons` (`ak47,m4a1,awp,xm1014,p90,mp5navy`), `map_duel_maps`
-(`aim_map,aim_headshot,aim_map_2010,aim_aztecplace,aim_dust2011,aim_aspect,fy_iceworld`, wraps around).
+(`aim_map,aim_headshot,aim_map_2010,aim_aztecplace,aim_dust2011,aim_aspect,fy_iceworld,fy_pool_day`, wraps around).
 
 The rotation is fight-yard maps only, and deliberately **small** ones. A vertical 9:16 feed has a
 second or two to stop a thumb, and on de_dust2 the bots spend five of them running to each other with

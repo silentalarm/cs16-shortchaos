@@ -72,12 +72,12 @@ Planned: ffmpeg streaming to YouTube.
   changes;
 - `bounty`, `hot_potato` and `boss_raid` follow `DeathMsg` and end on their clock (or when the
   target dies); a boss is re-armed on every spawn so `csdm_lite` cannot undo the raid;
-- the rotation (`map_duel_maps`) is seven fight-yard maps - `aim_map`, `aim_headshot`, `aim_map_2010`,
-  `aim_aztecplace`, `aim_dust2011`, `aim_aspect` and `fy_iceworld` - because a vertical feed cannot wait
-  five seconds for the bots to meet. None of them ship with HLDS: the GameBanana ones are fetched and
-  pinned by SHA256 in `infra/maps/maps.json` (nothing is downloaded during a build), and `aim_aspect` is
-  the one map GameBanana does not have (it comes from DS-Servers, pinned by the hash of the `.bsp`
-  itself);
+- the rotation (`map_duel_maps`) is eight fight-yard maps - `aim_map`, `aim_headshot`, `aim_map_2010`,
+  `aim_aztecplace`, `aim_dust2011`, `aim_aspect`, `fy_iceworld` and `fy_pool_day` - because a vertical feed
+  cannot wait five seconds for the bots to meet. None of them ship with HLDS: the GameBanana ones are
+  fetched and pinned by SHA256 in `infra/maps/maps.json` (nothing is downloaded during a build), and
+  `aim_aspect` is the one map GameBanana does not have (it comes from DS-Servers, pinned by the hash of
+  the `.bsp` itself);
 - `announce` must be printable ASCII: GoldSrc chat cannot render cyrillic;
 - a nickname is moderated: links, ad roots and banned roots are replaced with `Anonim_Bot`, and the
   buyer also appears on the scoreboard as `[DONOR] <nick>` for 30 s unless the activity renames a bot
