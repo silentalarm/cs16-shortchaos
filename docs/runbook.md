@@ -552,18 +552,37 @@ seconds, one at a time (level 1), each for its own duration.
 
 `plugins/csdm_lite/csdm_lite.sma` is the mode: on `DeathMsg` it waits `csdm_lite_delay` (0.5 s),
 respawns the bot with `ExecuteHamB(Ham_CS_RoundRespawn)`, strips its weapons and gives one random
-primary from `csdm_lite_weapons` (`ak47,m4a1,awp,xm1014,p90,mp5navy`), plus one second of
+primary from `csdm_lite_weapons`
+(`ak47*10,m4a1*10,g3sg1*6,galil*4,famas*4,sg550*2,awp*1`), plus one second of
 `set_user_godmode`. Only bots are respawned: the spectator camera is a client too, and moving it on
 every bot death would take the picture off its target.
+
+**The pool is the popular set.** These are the guns that actually got kills in the first weighted
+run (m4a1 37, ak47 26, g3sg1 16, scout and galil 7, famas 6, sg550 3, awp 2; every other gun 1 or
+0), trimmed by hand since: a gun nobody picks is a bot standing still in the camera's way. Pistols are
+out because the bot is stripped to one primary and a knife anyway; the shotguns (`m3`, `xm1014`), the
+machine gun (`m249`) and the scout never made the cut.
+
+**The draw is weighted, and the weight is written next to the name.** One entry is `name` (weight 1)
+or `name*tickets`, so `ak47*10` is ten times as likely as `awp*1`. Ticket total 37:
+`ak47`/`m4a1` 27.0 % each, `g3sg1` 16.2 %, `galil`/`famas` 10.8 %, `sg550` 5.4 %, `awp` 2.7 %.
+The AWP is the rarest pick on purpose: one bot holding it ends the fight before the camera reaches it,
+so it reads as an event, not as the meta. Tickets, not floats - the shares are exactly the numbers in
+the cvar.
 
 Verified on the live server: `csdm_lite_debug 1` over RCON then two minutes of log gave
 `respawns=12`, `kills=31`; with the plugin off the same window had 2 kills in four minutes. The
 respawn count is lower than the kill count on purpose - if the round ends first, the engine respawns
 the bot and the task returns early without logging.
 
-Cvars: `csdm_lite_enabled` (1), `csdm_lite_delay` (0.5), `csdm_lite_weapons`, `csdm_lite_health`
-(100), `csdm_lite_protect` (1), `csdm_lite_debug` (0). The weapon list is re-read only at plugin
-load, so changing it means `amx_reload` or a container restart.
+Cvars: `csdm_lite_enabled` (1), `csdm_lite_delay` (0.5), `csdm_lite_weapons` (name or
+`name*tickets`), `csdm_lite_health` (100), `csdm_lite_protect` (1), `csdm_lite_debug` (0). The list
+and its weights are one value and are re-read only at plugin load, so changing them means
+`amx_reload` or a container restart. Tickets are pinned to 1..100 on load: the cvar is open to RCON,
+and a zero would make a gun undrawable while a huge number would drown the pool. The startup line
+`loaded N respawn weapons (M draw tickets)` is the proof that it was read, and
+`csdm_lite_weapons: N name(s) past MAX_WEAPONS (20) were ignored` is the one failure that otherwise
+looks like "the gun is in the list but never drops".
 
 ### Spawn points: the map's own
 

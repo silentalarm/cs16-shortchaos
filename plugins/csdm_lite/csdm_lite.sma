@@ -24,12 +24,19 @@
 #include <cstrike>
 
 #define PLUGIN_NAME "CSDM Lite"
-#define PLUGIN_VERSION "1.2.0"
+#define PLUGIN_VERSION "1.4.0"
 
-#define MAX_WEAPONS 8
+// Upper bound on names taken from csdm_lite_weapons, not the size of the default list: the cap has
+// to sit above it, because anything past it is dropped silently and the missing guns simply never
+// show up in the picture.
+#define MAX_WEAPONS 20
 #define WEAPON_LEN 24
 
 new g_weapons[MAX_WEAPONS][WEAPON_LEN];
+// Parallel to g_weapons: how many tickets of the draw the weapon owns. Filled once in
+// LoadWeaponList() together with g_weightTotal, so a respawn never sums the list again.
+new g_weight[MAX_WEAPONS];
+new g_weightTotal;
 new g_weaponCount;
 
 new g_cvarEnabled;
@@ -49,9 +56,14 @@ public plugin_init()
 
 	g_cvarEnabled = register_cvar("csdm_lite_enabled", "1");
 	g_cvarDelay = register_cvar("csdm_lite_delay", "0.5");
-	// Short list on purpose: a bot with an AWP in a three second round is a different game from one
-	// with an XM1014, and that difference is the whole point of the mode.
-	g_cvarWeapons = register_cvar("csdm_lite_weapons", "ak47,m4a1,awp,xm1014,p90,mp5navy");
+	// The guns that actually got kills on the live server (docs/runbook.md keeps the counts), each
+	// with the number of tickets it owns in the draw: `ak47*10` is ten times as likely as `awp*1`.
+	// Pistols are not in the list at all - ArmBot() strips the bot to one primary and a knife - and
+	// the shotguns (m3, xm1014), the machine gun (m249) and the scout never made the cut.
+	// The AWP is the rarest pick on purpose: one bot holding it ends the fight before the camera
+	// reaches it, so it shows up as an event, not as the meta.
+	g_cvarWeapons = register_cvar("csdm_lite_weapons",
+		"ak47*10,m4a1*10,g3sg1*6,galil*4,famas*4,sg550*2,awp*1");
 	g_cvarProtect = register_cvar("csdm_lite_protect", "1");
 	g_cvarHealth = register_cvar("csdm_lite_health", "100");
 	// Endless reserve ammo, a magazine that still empties and is still reloaded: the engine's own
@@ -195,14 +207,14 @@ public Unprotect(id)
    primary, so the weapon changes without anyone asking. */
 stock ArmBot(id)
 {
-	if (g_weaponCount < 1)
+	if (g_weaponCount < 1 || g_weightTotal < 1)
 		return;
 
 	strip_user_weapons(id);
 	give_item(id, "weapon_knife");
 
 	new picked[WEAPON_LEN];
-	new index = random(g_weaponCount);
+	new index = PickWeapon();
 	copy(picked, charsmax(picked), g_weapons[index]);
 
 	new weapon[32];
@@ -213,7 +225,9 @@ stock ArmBot(id)
 }
 
 /* Hand-rolled split: strtok() writing into the same buffer it reads from made amxxpc abort with a
-   core dump, and a compiler crash is not something to work around at runtime. */
+   core dump, and a compiler crash is not something to work around at runtime. One entry is either
+   `name` (weight 1) or `name*tickets` (weight = tickets), which is how the list stays tunable over
+   RCON while the weights live next to the names instead of in a second cvar. */
 stock LoadWeaponList()
 {
 	new list[256];
@@ -221,11 +235,15 @@ stock LoadWeaponList()
 	new count;
 	new length;
 	new i;
+	new tickets;
+	new dropped;
 
 	get_pcvar_string(g_cvarWeapons, list, charsmax(list));
 	length = strlen(list);
 	g_weaponCount = 0;
+	g_weightTotal = 0;
 	count = 0;
+	dropped = 0;
 
 	for (i = 0; i <= length; i++)
 	{
@@ -245,20 +263,80 @@ stock LoadWeaponList()
 		if (item[0] == '^0')
 			continue;
 
+		// The `*tickets` suffix has to come off before validation: a name with a star in it is
+		// exactly what IsSafeWeapon refuses, and it is also not what give_item() expects.
+		tickets = TicketsFromEntry(item);
+
 		if (!IsSafeWeapon(item))
 		{
-			log_amx("refusing weapon name '%s' from csdm_lite_weapons", item);
+			log_amx("refusing entry '%s' from csdm_lite_weapons", item);
 			continue;
 		}
 
 		if (g_weaponCount < MAX_WEAPONS)
 		{
 			copy(g_weapons[g_weaponCount], WEAPON_LEN - 1, item);
+			g_weight[g_weaponCount] = tickets;
+			g_weightTotal = g_weightTotal + g_weight[g_weaponCount];
 			g_weaponCount = g_weaponCount + 1;
+		}
+		else
+		{
+			dropped = dropped + 1;
 		}
 	}
 
-	log_amx("loaded %d respawn weapons", g_weaponCount);
+	log_amx("loaded %d respawn weapons (%d draw tickets)", g_weaponCount, g_weightTotal);
+	// Said out loud, because this is the failure that looks like "the gun is in the list but never
+	// drops": the cap ate the tail.
+	if (dropped > 0)
+		log_amx("csdm_lite_weapons: %d name(s) past MAX_WEAPONS (%d) were ignored", dropped, MAX_WEAPONS);
+}
+
+/* Reads the optional `*tickets` suffix of one entry and cuts it off the buffer: the cvar writes
+   `ak47*10`, but give_item() needs `weapon_ak47`. A missing or junk suffix weighs 1, and the value
+   is pinned to 1..100 because the cvar is open to RCON and a wrapped number would either make a gun
+   undrawable or drown the whole pool. */
+stock TicketsFromEntry(item[])
+{
+	new length = strlen(item);
+
+	for (new i = 0; i < length; i++)
+	{
+		if (item[i] != '*')
+			continue;
+
+		new tickets = str_to_num(item[i + 1]);
+		item[i] = '^0';
+
+		if (tickets < 1)
+			tickets = 1;
+		if (tickets > 100)
+			tickets = 100;
+
+		return tickets;
+	}
+
+	return 1;
+}
+
+/* Weighted draw: the roll picks a ticket, and the weapon that owns it is handed out. Integer
+   arithmetic on purpose - a float share would drift from the numbers written in the cvar, and the
+   tickets are exactly what "ak47*10 comes up ten times as often as awp*1" means. */
+stock PickWeapon()
+{
+	new roll = random(g_weightTotal);
+
+	for (new i = 0; i < g_weaponCount; i++)
+	{
+		if (roll < g_weight[i])
+			return i;
+		roll = roll - g_weight[i];
+	}
+
+	// Unreachable while g_weightTotal is the sum of g_weight; the last entry is a cheaper answer than
+	// g_weapons[0] if a later edit ever breaks that invariant.
+	return g_weaponCount - 1;
 }
 
 // The cvar is editable at runtime by anyone with rcon, so it is not trusted: a value with a space or

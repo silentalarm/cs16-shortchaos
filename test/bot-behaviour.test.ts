@@ -150,3 +150,68 @@ test("ammo is endless in reserve, the magazine still empties", () => {
     assert.ok(gun.includes(weapon), `${weapon} would get a reserve magazine`);
   }
 });
+test("the respawn pool is the guns that carry the stream", () => {
+  // Chosen from the live kill log of the first weighted build (m4a1 37 kills, ak47 26, g3sg1 16,
+  // scout and galil 7, famas 6, sg550 3, awp 2; every other gun 1 or 0) and trimmed by hand since: a
+  // gun nobody picks is a bot standing still in the camera's way. Pistols are not in it because
+  // ArmBot() strips the bot to one primary and a knife.
+  const registered = /register_cvar\("csdm_lite_weapons",\s*"([^"]+)"\)/.exec(csdm)?.[1];
+  assert.ok(registered, "csdm_lite_weapons has no default");
+  const entries = registered.split(",").map((entry) => {
+    const [name, tickets] = entry.split("*");
+    return { name, tickets: tickets === undefined ? 1 : Number(tickets) };
+  });
+  assert.deepEqual(
+    entries.map((entry) => entry.name),
+    ["ak47", "m4a1", "g3sg1", "galil", "famas", "sg550", "awp"],
+    "the pool is not the popular set",
+  );
+  for (const gone of ["m3", "xm1014", "m249", "scout", "glock18", "usp", "deagle"]) {
+    assert.equal(entries.some((entry) => entry.name === gone), false, `${gone} is back in the pool`);
+  }
+
+  // The AWP is the point of the weights: it has to be the rarest pick, not just a rare one.
+  const awp = entries.find((entry) => entry.name === "awp");
+  const others = entries.filter((entry) => entry.name !== "awp");
+  assert.ok(awp, "no awp entry");
+  for (const other of others) {
+    assert.ok(awp.tickets < other.tickets, `awp (${awp.tickets}) is not rarer than ${other.name} (${other.tickets})`);
+  }
+  // And the two rifles stay on top: they are what the stream is watched for.
+  const best = Math.max(...entries.map((entry) => entry.tickets));
+  for (const rifle of ["ak47", "m4a1"]) {
+    assert.equal(entries.find((entry) => entry.name === rifle)?.tickets, best, `${rifle} is not top of the draw`);
+  }
+
+  // MAX_WEAPONS is a cap on names taken from the cvar, not the size of the list: a cap below the
+  // pool silently drops the tail, and those guns would just never drop.
+  const cap = Number(/#define MAX_WEAPONS (\d+)/.exec(csdm)?.[1]);
+  assert.ok(cap >= entries.length, `MAX_WEAPONS ${cap} would truncate a ${entries.length} name pool`);
+});
+
+test("the draw is weighted by the tickets written next to each name", () => {
+  // `name*tickets` in one cvar: the weights travel with the names, so a rebalance is one RCON write
+  // and no second list to keep in sync. Integers, not floats - the shares are exactly the numbers.
+  const parse = body("TicketsFromEntry");
+  assert.match(parse, /item\[i\] != '\*'/, "the star suffix is never looked for");
+  assert.match(parse, /str_to_num\(item\[i \+ 1\]\)/, "the tickets are never read");
+  assert.match(parse, /item\[i\] = '\^0'/, "the star and its number are left on the name give_item() gets");
+  assert.match(parse, /if \(tickets < 1\)/, "a zero or negative ticket count is not pinned");
+  assert.match(parse, /if \(tickets > 100\)/, "the ticket count is open to any RCON value");
+
+  // The pick itself: one roll over the ticket total, then the weapon that owns the winning ticket.
+  const pick = body("PickWeapon");
+  assert.match(pick, /random\(g_weightTotal\)/, "the roll is not over the ticket total");
+  assert.match(pick, /roll = roll - g_weight\[i\]/, "the roll does not walk the weights");
+  assert.match(csdm, /tickets = TicketsFromEntry\(item\)/, "the parsed tickets never reach the draw");
+  assert.match(csdm, /g_weight\[g_weaponCount\] = tickets/, "the weight table is not filled from the cvar");
+
+  // And the respawn really uses it - a weighted helper nobody calls is the same flat draw as before.
+  const arm = body("ArmBot");
+  assert.match(arm, /PickWeapon\(\)/, "ArmBot still picks flat");
+  assert.doesNotMatch(arm, /random\(g_weaponCount\)/, "the flat draw is still in ArmBot");
+  // A zero or negative ticket total would make random() return 0 for ever (or worse), and the bot
+  // would always get the first gun in the list.
+  assert.match(arm, /g_weightTotal < 1/, "an empty ticket total is not guarded");
+});
+
