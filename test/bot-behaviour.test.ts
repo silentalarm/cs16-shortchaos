@@ -31,16 +31,26 @@ test("a bot never fights with a knife, but may carry one while it rushes", () =>
   // rushing bot carry the knife, 0 turns that off.
   assert.ok(entrypoint.includes("BOT_KNIFE_ATTACKS:-1}"), "the knife-out fallback does not match server.cfg");
   assert.equal(entrypoint.includes("BOT_KNIFE_ATTACKS:-0}"), false, "a leftover 0 would override server.cfg on every map change");
-  // Camping and shift-walking are what "стоял и смотрел" looks like from the camera. YaPB re-executes its
-  // own conf/yapb.cfg on every map change, so server.cfg cannot pin either of them: the values that win are
-  // the block infra/entrypoint.sh writes into that file. 4-12 s of holding an angle is human; the first
-  // setting was 10-30 s, which is a third of a fight on fy_iceworld.
-  assert.match(entrypoint, /echo "yb_camping_time_min \\"4\.0\\""/, "the camping window is long again");
-  assert.match(entrypoint, /echo "yb_camping_time_max \\"12\.0\\""/, "the camping window is long again");
+  // Camping is what "сидят за укрытием и не идут атаковать" looks like from the camera, and it is off:
+  // `yb_camping_allowed` is the only cvar that decides whether a bot walks somewhere or stands behind
+  // cover. The two window cvars used to be pinned at 4.0 / 12.0 and never took effect - YaPB accepts
+  // `yb_camping_time_min` in 5..90 and `yb_camping_time_max` in 15..120 (cfg/addons/yapb/conf/yapb.cfg in
+  // the pinned 4.4.957 archive) and drops anything outside the range with "Bogus value for cvar", the same
+  // trap `yb_graph_analyze_distance 40` fell into. The archive defaults (15 / 45 s) were the real window -
+  // a third of a round on fy_iceworld. So: no window is written at all, and anything written here later has
+  // to stay inside those ranges or it does nothing.
+  assert.match(entrypoint, /echo "yb_camping_allowed \\"0\\""/, "bots stand behind cover again");
+  assert.doesNotMatch(entrypoint, /yb_camping_time_(min|max) \\"/, "an out-of-range camping window is back");
   assert.match(entrypoint, /echo "yb_walking_allowed \\"0\\""/, "bots still walk slowly when they hear somebody");
-  // Team play: T against CT. yb_csdm_mode 0 makes a bot target the other team only; 2 (FFA) was the
-  // old setting, where every bot was a target and a team kill fed the scoreboard.
-  assert.match(serverCfg, /^yb_csdm_mode 0$/m, "bots went back to free-for-all targeting");
+  // Team play: T against CT, and the *mode* is what makes the bots move. `yb_csdm_mode 1` is CSDM
+  // (this server respawns every bot itself) without free-for-all, so 1 does not mean "shoot teammates"
+  // - that was 2. With the flag off, YaPB plays a round-based game that does not exist here: `Bot::spawned()`
+  // never resets a respawned bot's task list (stale goal -> walks into a wall), and combat takes the
+  // "seek cover / stand still" branch (docs/runbook.md, "Why the bots stood still"). The entrypoint has
+  // to write it too, because YaPB re-executes its own conf/yapb.cfg - `yb_csdm_mode "0"` - on every map
+  // change and server.cfg is not re-run.
+  assert.match(serverCfg, /^yb_csdm_mode 1$/m, "bots went back to the round-based mode with cover seeking");
+  assert.match(entrypoint, /echo "yb_csdm_mode \\"\$\{BOT_CSDM_MODE:-1\}\\""/, "a map change reverts the mode to auto-detect");
   assert.match(serverCfg, /^mp_friendlyfire 0$/m, "friendly fire would hand the other side free frags");
 });
 

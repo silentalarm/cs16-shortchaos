@@ -27,21 +27,23 @@ test("a teleport is never used, even as a fallback", () => {
   assert.match(plugin, /user_kill\(id, 1\)/, "the fallback is a visible death on camera");
 });
 
-test("camping is respected until the camping window is over", () => {
-  // The front trace is what keeps a camper out of the net: it looks at a doorway, not at a wall. The corner
-  // case (a wall *behind* the bot) is allowed past `bot_antistuck_patience` - and that value has to stay
-  // above `yb_camping_time_max`, because a camper never moves for longer than that window.
+test("camping is off, so the patience no longer waits out a camping window", () => {
+  // The net used to keep quiet for 14 s because camping could hold an angle for up to 12 s. Camping is now
+  // `yb_camping_allowed 0` (infra/entrypoint.sh), and the 12 s it was measured against never existed: YaPB
+  // rejects `yb_camping_time_max` below 15 s, so the real window was the archive default 15-45 s, i.e. the
+  // net spent most of a round shoving a camper it was told to respect.
+  assert.match(entrypoint, /echo "yb_camping_allowed \\"0\\""/, "the patience is tuned for camping that is back on");
+
   const patience = /register_cvar\("bot_antistuck_patience",\s*"([\d.]+)"\)/.exec(plugin);
   // `assert.ok` narrows the type, `assert.notEqual` does not: without it `patience[1]` does not compile.
   assert.ok(patience !== null, "the corner case has no patience setting");
 
-  const campingMax = /yb_camping_time_max \\"([\d.]+)\\"/.exec(entrypoint);
-  assert.ok(campingMax !== null, "the camping window is not set in the entrypoint any more");
-
-  assert.ok(
-    Number(patience[1]) > Number(campingMax[1]),
-    `patience (${patience[1]} s) must stay above the camping window (${campingMax[1]} s) or campers get shoved`,
-  );
+  // Not zero: a bot does stand still to aim or to watch a lane. Not 8 s either - measured on aim_map with
+  // 20 bots, 8 s kicked twenty bots per 100 s and not one of them was stuck, which is a bot hopping on
+  // camera for no reason. The escalation is what catches the ones that really never move.
+  const value = Number(patience[1]);
+  assert.ok(value >= 10, `patience (${value} s) is short enough to kick a bot that is only aiming`);
+  assert.ok(value <= 20, `patience (${value} s) leaves a stuck bot standing for a third of a round`);
 
   // And the wall test itself is still the first rule, not an afterthought.
   assert.match(scan, /if \(!WallAhead\(id, normal\)\)/, "the wall test is gone");
@@ -64,4 +66,25 @@ test("a corner shove is aimed at the room, and dropped when there is none", () =
 
   // The two cases have to be told apart in the log, or "it took 10 s" is the only symptom anybody sees.
   assert.match(scan, /no wall in view/, "a corner shove looks identical to a wall shove in the log");
+});
+
+test("a shove that changes nothing escalates to a silent respawn", () => {
+  // "после пинка всё равно сидят": a kick cannot change a bot's YaPB goal, so it walks straight back into
+  // the corner. The counter turns that into a fix - after `bot_antistuck_escalate` shoves without progress
+  // the bot is killed silently and csdm_lite brings it back on a spawn point, which is where a fresh goal
+  // comes from. On by default, because that standing bot *is* the bug.
+  const escalate = /register_cvar\("bot_antistuck_escalate",\s*"(\d+)"\)/.exec(plugin);
+  assert.ok(escalate !== null, "the escalation has no setting");
+  assert.ok(Number(escalate[1]) > 0, "the escalation is off by default, so the net is only a kick again");
+
+  assert.match(scan, /g_shoves\[id\]\+\+/, "the net does not count its own shoves");
+  assert.match(scan, /g_shoves\[id\] >= escalateLimit/, "a bot shoved for ever is never respawned");
+  // Progress resets the counter, or a bot kicked out of one corner and into another dies for it.
+  assert.match(scan, /g_shoves\[id\] = 0;/, "shoves are never forgotten on movement");
+
+  const kill = body("KillForRespawn");
+  assert.notEqual(kill, "", "KillForRespawn is missing");
+  assert.match(kill, /user_kill\(id, 1\)/, "the escalation is a visible death on camera");
+  assert.match(kill, /g_shoves\[id\] = 0;/, "the counter survives the respawn it caused");
+  assert.match(kill, /log_amx/, "a respawn nobody can find in the log afterwards");
 });

@@ -15,20 +15,26 @@
  *      units since the previous scan;
  *   2. nothing, unless it has been like that for `bot_antistuck_secs` (1.5 s) *and* a trace
  *      `bot_antistuck_wall` (48) units ahead along its view hits a **wall** - a vertical surface. That
- *      test is what keeps a bot which holds an angle (`yb_camping_allowed 1`) out of here: it looks at a
- *      doorway with open space in front of it, not at a wall 48 units away;
+ *      test is what keeps a bot that is only aiming across a room out of here: it looks at a doorway
+ *      with open space in front of it, not at a wall 48 units away. Camping is no longer the reason to
+ *      be careful: `yb_camping_allowed` is 0 (infra/entrypoint.sh), so no bot stands still legally;
  *   2b. the wall test has one blind spot, measured on the stream: a bot backed into a corner or standing
  *      on a ledge has its wall **behind** it, so the front trace sees an open room and the bot stood
- *      there for 8.4 s and 10.4 s before it happened to turn. Camping is the reason the test is strict,
- *      and camping is bounded: `yb_camping_time_max` is 12 s, so after `bot_antistuck_patience` (14 s) of
- *      no movement nobody is holding an angle any more. Past that point four traces are cast instead of
- *      one and the bot is shoved towards the most open direction - which is why the patience has to stay
- *      **above** `yb_camping_time_max`, or campers start being shoved out of their angle;
+ *      there for 8.4 s and 10.4 s before it happened to turn. After `bot_antistuck_patience` (14 s) of no
+ *      movement four traces are cast instead of one and the bot is shoved towards the most open
+ *      direction. The patience is not smaller because a bot does stand still to aim or to watch a lane -
+ *      measured at 8 s, twenty bots produced 20 shoves per 100 s and not one of them was actually stuck;
  *   3. shove: the velocity is set away from the wall (its normal) plus a jump, at most once per
  *      `bot_antistuck_cooldown` (3 s) per bot. A bot's own usercmd overwrites velocity on the next tick,
  *      so this has to be a real kick - a nudge of a few units is gone before the engine moves anybody;
  *      that is also why the shove is re-applied every 0.05 s for 0.3 s (the vertical part only on the
- *      first tick). A single write was measured to be a bot hopping in place against the wall.
+ *      first tick). A single write was measured to be a bot hopping in place against the wall;
+ *   3b. escalate: a shove cannot change a bot's goal. YaPB's task keeps pointing where it pointed, so a
+ *      shoved bot walks straight back into the same corner - measured on the stream ("после пинка всё
+ *      равно сидят", the same bot shoved three times in a row). After `bot_antistuck_escalate` (3)
+ *      shoves without a metre of progress the bot is killed silently and csdm_lite respawns it on a
+ *      spawn point, which is how it gets a fresh goal. This is the only path that actually cures "sits
+ *      there and does not attack", and it is why the counter is on by default.
  *
  * The first `NUDGE_LOG_LIMIT` (20) shoves of a plugin load are written to the AMXX log, so the net can be
  * watched without RCON: `antistuck: shoved <name> at <x> <y> <z> after <n> s`. It is a witness, not a rate -
@@ -37,11 +43,13 @@
  *
  * A teleport is deliberately not used, not even as a fallback: `set_user_origin` was measured in this
  * project already (docs/runbook.md, "the respawn meat grinder") - the bot's graph keeps pointing where it
- * was and it freezes for the rest of the round, 3 kills in 90 s against 149 in 60 s. With
- * `bot_antistuck_respawn 1` the fallback after `bot_antistuck_stuck_secs` (10 s) of no progress is
+ * was and it freezes for the rest of the round, 3 kills in 90 s against 149 in 60 s. The fallback is
  * `user_kill(id, 1)` (silent: no death message, no frag), and csdm_lite - which respawns every dead bot
- * after `csdm_lite_delay` (0.5 s) - brings it back on a spawn point, which *is* on the graph.
- * Off by default: a false positive is a bot dropping dead on camera for no visible reason.
+ * after `csdm_lite_delay` (0.5 s) - brings it back on a spawn point, which *is* on the graph. Two ways
+ * in: `bot_antistuck_escalate` (3) shoves without progress, which is on by default because a bot that
+ * keeps coming back to the same corner is exactly the complaint this plugin exists for; and
+ * `bot_antistuck_respawn 1` for a bot that never got that far, after `bot_antistuck_stuck_secs` (10 s),
+ * which stayed opt-in because it can fire on a bot nobody was looking at.
  *
  * Contract (RCON):
  *   amx_antistuck -> bot_antistuck: nudged=<n> respawned=<n> armed=<0|1>
@@ -49,15 +57,18 @@
  * Cvars: bot_antistuck_enabled (1), bot_antistuck_units (24), bot_antistuck_secs (1.5),
  * bot_antistuck_wall (48), bot_antistuck_cooldown (3.0), bot_antistuck_nudge (140) - the shove speed,
  * bot_antistuck_jump (200) - its vertical part, bot_antistuck_respawn (0), bot_antistuck_stuck_secs (10.0),
- * bot_antistuck_patience (14.0) - how long a bot may stand before the wall test stops being trusted.
+ * bot_antistuck_patience (14.0) - how long a bot may stand before the wall test stops being trusted,
+ * bot_antistuck_escalate (3) - shoves without progress before a silent respawn, 0 turns that off.
  */
 #include <amxmodx>
 #include <fakemeta>
 
 #define PLUGIN_NAME "Bot Antistuck"
-// 1.1.0: the corner case (`bot_antistuck_patience`). The load line in the AMXX log is how a running server
-// says which build it is, so a behaviour change has to move it.
-#define PLUGIN_VERSION "1.1.0"
+// 1.1.0: the corner case (`bot_antistuck_patience`).
+// 1.2.0: the escalation (`bot_antistuck_escalate`) - a shove cannot change a bot's goal, a respawn can.
+// The load line in the AMXX log is how a running server says which build it is, so a behaviour change
+// has to move it.
+#define PLUGIN_VERSION "1.2.0"
 
 // get_maxplayers() is 32 here, and slot 32 is a real slot: the arrays are sized for it.
 #define MAX_SLOTS 33
@@ -86,12 +97,16 @@
 #define WALL_NORMAL_Z 0.5
 
 new g_cvarEnabled, g_cvarUnits, g_cvarStill, g_cvarWall, g_cvarCooldown;
-new g_cvarNudge, g_cvarJump, g_cvarRespawn, g_cvarStuck, g_cvarPatience;
+new g_cvarNudge, g_cvarJump, g_cvarRespawn, g_cvarStuck, g_cvarPatience, g_cvarEscalate;
 
 new bool:g_tracked[MAX_SLOTS];
 new Float:g_lastOrigin[MAX_SLOTS][3];
 new Float:g_stillSecs[MAX_SLOTS];
 new Float:g_lastShove[MAX_SLOTS];
+// Shoves since the bot last moved: the escalation counter. Reset by any movement (the scan does it) and by
+// a respawn, which is the whole point of it - a bot that comes back and grinds the same corner again
+// starts from zero, a bot that was never moved does not.
+new g_shoves[MAX_SLOTS];
 
 new g_nudged, g_respawned;
 
@@ -109,9 +124,16 @@ public plugin_init()
 	g_cvarJump = register_cvar("bot_antistuck_jump", "200");
 	g_cvarRespawn = register_cvar("bot_antistuck_respawn", "0");
 	g_cvarStuck = register_cvar("bot_antistuck_stuck_secs", "10.0");
-	// Above `yb_camping_time_max` (12 s in infra/entrypoint.sh) on purpose: the wall test is skipped past
-	// this point, and a camper that never moves would otherwise be shoved out of a legitimate angle.
+	// Camping is off (`yb_camping_allowed 0`, infra/entrypoint.sh), so nobody stands still legally - but
+	// "legally" is not "never": measured on aim_map with 20 bots on 2026-11-03, `patience` at 8 s produced
+	// 20 shoves per 100 s and not a single escalation, i.e. bots that stand 8-14 s to aim or to watch a
+	// lane were being kicked mid-fight. 14 s is the value that only catches the ones that never move again,
+	// and the shove counter (`bot_antistuck_escalate`) is what makes waiting that long safe.
 	g_cvarPatience = register_cvar("bot_antistuck_patience", "14.0");
+	// Shoves without progress before the silent respawn. A shove is a kick, not an order: YaPB's task keeps
+	// pointing where it pointed, so a bot that ignores three kicks in a row is not going to walk out of
+	// that corner on its own. 0 disables the escalation and leaves only `bot_antistuck_respawn`.
+	g_cvarEscalate = register_cvar("bot_antistuck_escalate", "3");
 
 	set_task(SCAN_INTERVAL, "TaskScan", TASK_SCAN, "", 0, "b");
 	// The interval is spelled out rather than formatted: amxxpc passes a float *constant* to a vararg
@@ -138,6 +160,7 @@ public TaskScan()
 	new Float:cooldown = get_pcvar_float(g_cvarCooldown);
 	new Float:stuckLimit = get_pcvar_float(g_cvarStuck);
 	new allowRespawn = get_pcvar_num(g_cvarRespawn);
+	new escalateLimit = get_pcvar_num(g_cvarEscalate);
 	new Float:now = get_gametime();
 
 	// Only bots: a human in the frame is driving, and shoving them would be a bug you can feel.
@@ -172,6 +195,9 @@ public TaskScan()
 		if (step > units)
 		{
 			g_stillSecs[id] = 0.0;
+			// Real progress and not a hop: the escalations start over. This is what keeps a bot that is
+			// kicked out of one corner and into another from being respawned for it.
+			g_shoves[id] = 0;
 			continue;
 		}
 
@@ -185,10 +211,12 @@ public TaskScan()
 
 		if (!WallAhead(id, normal))
 		{
-			// The blind spot: a wall behind the bot (a corner, a ledge) leaves the front trace open, and the
-			// front trace is what keeps a camper out. A camper never stands past `yb_camping_time_max`
-			// (12 s) - its stillness resets the moment it moves - so past `bot_antistuck_patience` nobody
-			// is holding an angle and the direction is chosen by the room around the bot instead.
+			// The blind spot: a wall behind the bot (a corner, a ledge) leaves the front trace open. Camping,
+			// which used to be the reason this test waited, is off (`yb_camping_allowed 0` in
+			// infra/entrypoint.sh), but a bot still stands still to aim or to watch a lane - so the corner
+			// case waits `bot_antistuck_patience` (14 s) and then lets the room around the bot pick the
+			// direction instead of the wall. 8 s was measured and produced a kick every few seconds on bots
+			// that were fighting.
 			if (g_stillSecs[id] < get_pcvar_float(g_cvarPatience))
 				continue;
 
@@ -198,11 +226,24 @@ public TaskScan()
 			blind = true;
 		}
 
+		// Escalation. A shove is a kick, not an order: YaPB's task keeps pointing where it pointed, so a
+		// kicked bot walks back into the same corner and the kick repeats for as long as it stands there -
+		// "после пинка всё равно сидят". A respawn is the only thing that gives it a new goal, and
+		// csdm_lite puts it on a spawn point 0.5 s later. Bounded by the shove counter, not by the clock,
+		// so a bot that made progress between two kicks is never touched. Checked before the kick goes out,
+		// so the bot dies on the scan after its third shove instead of being kicked a fourth time.
+		if (escalateLimit > 0 && g_shoves[id] >= escalateLimit)
+		{
+			KillForRespawn(id, g_stillSecs[id]);
+			continue;
+		}
+
 		if (now - g_lastShove[id] < cooldown)
 			continue;
 
 		g_lastShove[id] = now;
 		g_nudged++;
+		g_shoves[id]++;
 		Shove(id, normal);
 
 		if (g_nudged <= NUDGE_LOG_LIMIT)
@@ -224,19 +265,30 @@ public TaskScan()
 				origin[2], g_stillSecs[id], suffix);
 		}
 
+		// The older, opt-in path: a bot that never got a shove in at all (no wall in view while inside the
+		// patience, or the cooldown never came up) after `bot_antistuck_stuck_secs` of no progress.
 		if (allowRespawn && g_stillSecs[id] >= stuckLimit)
-		{
-			// Silent kill (flag 1: no death message, no frag): csdm_lite respawns the dead on a spawn point
-			// 0.5 s later, and a spawn point is on the graph. Losing the kit costs one magazine; standing
-			// in a wall costs the whole round.
-			user_kill(id, 1);
-			g_respawned++;
-
-			new name[32];
-			get_user_name(id, name, charsmax(name));
-			log_amx("unstick: %s stood against a wall for %.1f s, killed for a respawn", name, g_stillSecs[id]);
-		}
+			KillForRespawn(id, g_stillSecs[id]);
 	}
+}
+
+/**
+ * Silent kill (flag 1: no death message, no frag) so csdm_lite can respawn the bot on a spawn point, which
+ * *is* on the graph. Losing the kit costs one magazine; standing in a wall costs the whole round - and a
+ * bot with a stale goal costs every round it is looked at.
+ */
+stock KillForRespawn(id, Float:stillSecs)
+{
+	new name[32];
+	get_user_name(id, name, charsmax(name));
+
+	user_kill(id, 1);
+	g_respawned++;
+	g_shoves[id] = 0;
+
+	// Every kill is logged, not only the first NUDGE_LOG_LIMIT ones: a shove is noise, a bot dropping dead
+	// is the line somebody reads afterwards to find out why the picture blinked.
+	log_amx("unstick: %s stood still for %.1f s, killed for a respawn", name, stillSecs);
 }
 /**
  * True when a wall sits within `bot_antistuck_wall` units in front of the bot's view; that wall's normal
@@ -386,6 +438,7 @@ stock ResetBot(id)
 	g_tracked[id] = false;
 	g_stillSecs[id] = 0.0;
 	g_lastShove[id] = 0.0;
+	g_shoves[id] = 0;
 }
 
 stock ForgetAll()

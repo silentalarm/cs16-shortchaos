@@ -15,7 +15,7 @@
 The stream is a race between T and CT: which side puts more bots down before the map changes. The
 score is counted by the plugin from `DeathMsg`, not read from the engine scoreboard, because the
 engine subtracts a frag for a team kill and this server runs **team play: T against CT**
-(`yb_csdm_mode 0`, `mp_friendlyfire 0`), so a team kill cannot happen at all; the plugin counts by
+(`yb_csdm_mode 1` - CSDM without free-for-all, `mp_friendlyfire 0`), so a team kill cannot happen at all; the plugin counts by
 hand anyway because the engine score is not the race.
 
 The numbers are published as cvars (`team_war_t`, `team_war_ct`, `team_war_top_t`,
@@ -243,11 +243,11 @@ re-executed by YaPB on every map change and silently reverts anything set in `se
 | a bot stabbing an enemy instead of shooting it | `yb_stab_close_enemies` | 0 - a knife fight reads as a broken bot, **except** while a knife-only event runs: the plugin flips it to 1 for as long as half the field has no gun, see "The HE party" |
 | a bot running the map with a rifle in hand, no enemy near | `yb_random_knife_attacks` | 1 (`BOT_KNIFE_ATTACKS`) - a rushing bot carries the knife the way a human rotates |
 | a bot pushing into the back of a teammate | `team_semiclip_radius` (see below) | 36 units - just above the player hull |
-| a bot standing still in a corner for the whole map | `yb_camping_allowed`, `yb_camping_time_min/max`, `yb_walking_allowed` | 1, 4.0 / 12.0, 0 - holding an angle is human, a third of a fight is not |
+| a bot sitting behind cover and not attacking | `yb_camping_allowed`, `yb_walking_allowed` | 0, 0 - camping was on, and its window was never the 4-12 s it was set to (see "Why the bots stood still") |
 | a bot creeping at shift speed | `yb_walking_allowed` | 0 |
 | a bot shooting at a remembered enemy through a wall | `yb_shoots_thru_walls` | 0 |
 | a bot that reacts like a machine | `yb_difficulty` | 2 - Normal, 0.4-0.6 s reaction (`BOT_DIFFICULTY`) |
-| a bot staring at a teammate without shooting | `yb_csdm_mode` | 2 (free for all targeting) |
+| a bot that shoots and then sits down behind cover | `yb_csdm_mode` | 1 - CSDM without FFA; the cover-seeking branch in `combat.cpp` runs only while the CSDM flag is off |
 | a bot out of bullets doing nothing | `csdm_lite_ammo`, `csdm_lite_ammo_reserve` | 1, 200 |
 | a bot grinding into a wall | `bot_antistuck` (see below) | nudge after 1.5 s of no movement with a wall in front |
 
@@ -283,6 +283,61 @@ Check after a start:
 docker exec cs16-youtube-hlds-1 ls -ld /hlds/cstrike/addons/yapb/data/train   # drwxr-xr-x
 docker exec cs16-youtube-hlds-1 ls /hlds/cstrike/addons/yapb/data/train        # <map>.pmx after a map load
 docker logs cs16-youtube-hlds-1 2>&1 | grep -c Pathmatrix                      # 0
+```
+
+### Why the bots stood still (measured 2026-11-03)
+
+The complaint was "боты сидят за укрытием и не идут атаковать, и после пинка всё равно сидят", and then,
+after camping was turned off, the same thing again: "пострелял и сел за укрытием". Three causes, all read
+from YaPB's own source, not guessed - and the first one was the real one.
+
+**The mode was wrong, and it is the whole story.** This server is a respawn deathmatch: `csdm_lite` brings
+every dead bot back in 0.5 s. YaPB was told the opposite, `yb_csdm_mode 0` (auto-detect; there is no CSDM
+mod installed, so it resolved to "CSDM off"). With the CSDM flag off:
+
+- `combat.cpp` (`AttackMovement`) runs the "take cover" branch: `approach = health x aggression`, and when
+  that is under 30 the bot does `m_moveSpeed = -pev->maxspeed` plus `startTask (Task::SeekCover)`; under 50
+  it does `m_moveSpeed = 0.0f`. That is a bot that shoots, gets hurt and walks backwards into the corner -
+  literally the report. All of it is inside `if (!game.is (GameFlags::CSDM))`;
+- `botlib.cpp` - `Bot::spawned()` only calls `newRound ()` and `clearTasks ()` **in CSDM mode**, and
+  `manager.cpp` calls `spawned ()` for every bot death. Without it a bot respawned by `csdm_lite` keeps the
+  task list from its previous life, which is the stale goal that walks into a wall (yapb#479), and
+  `Bot::spawned()` is also where the "speed 1.0 after respawn" workaround lives;
+- the seek-cover desire (`filterTasks`) is forced to 0 in CSDM mode, and camping is skipped there too.
+
+`yb_csdm_mode 1` is CSDM **without** free-for-all: FFA is mode 2, so bots still pick targets by team, which
+is what `team_war` counts. The value has to be written by `infra/entrypoint.sh` into `yapb.cfg` as well as
+in `server.cfg`, because YaPB re-executes that file on every map change and it ships `yb_csdm_mode "0"`.
+
+**The camping window never was 4-12 s.** `infra/entrypoint.sh` used to write `yb_camping_time_min 4.0` and
+`yb_camping_time_max 12.0`. YaPB refuses a value outside the range it registered for a cvar ("Bogus value for
+cvar" - the same trap `yb_graph_analyze_distance 40` fell into), and in the pinned 4.4.957 archive the ranges
+are `yb_camping_time_min` 5..90 and `yb_camping_time_max` 15..120 (`cfg/addons/yapb/conf/yapb.cfg`). Both
+values were dropped, so the archive defaults **15 / 45 s** stayed in force: a bot could hold an angle for
+three quarters of a minute, and `bot_antistuck_patience` (then 14 s) was tuned against a window that never
+existed. Camping is now `yb_camping_allowed 0` - the one cvar that decides walk-versus-stand - and no window
+is written at all, because a window outside those ranges does nothing. With `yb_csdm_mode 1` the camp task is
+skipped anyway; the cvar stays as belt and braces.
+
+**A shove cannot change a goal.** `bot_antistuck` moves a bot (velocity, re-applied for 0.3 s) but not its
+YaPB task, which keeps pointing at the cover spot, so the bot walks back into the same corner. That is why the
+net escalates to a silent respawn now (see `bot_antistuck` below): a respawn is what gives the bot a new goal.
+It matches upstream - [yapb#479](https://github.com/yapb/yapb/discussions/479) reports bots spawned next to a
+wall in a CSDM setup (a plugin respawn, exactly what `csdm_lite` does) that "стоят и не двигаются" and only
+wake up after 2-3 hits; [yapb#421](https://github.com/yapb/yapb/issues/421) is the same family for bots that
+stay near their spawn point; [yapb#620](https://github.com/yapb/yapb/issues/620) is the wall jitter, fixed
+only after 4.4 and reported to be *worse* in the 4.5 builds - which is one more reason 4.4.957 stays pinned
+(it is also the last tagged release, everything newer is a continuous build).
+
+Reading it off a running server:
+
+```bash
+# what the bot actually has, not what the repository says
+docker run --rm -v cs16-youtube_server-data:/hlds:ro --entrypoint sh cs16-stream:local -c "grep -E '^yb_(camping|walking)' /hlds/cstrike/addons/yapb/conf/yapb.cfg"
+# every value YaPB refused to take lands here, one line per write, per map change
+docker logs cs16-youtube-hlds-1 2>&1 | grep -c 'Bogus value'
+# how often the net had to act, and how often a bot had to be respawned for it
+docker logs cs16-youtube-hlds-1 2>&1 | grep -c 'unstick:'
 ```
 
 ### `team_semiclip`: teammates do not block each other
@@ -321,12 +376,20 @@ wall rather than leaving it. The first 20 shoves of a plugin load are logged - `
 
 That front trace has one blind spot, from the stream: a bot backed into a corner or standing on a ledge has
 its wall **behind** it, so the trace sees an open room and the bot stood there 8.4 s and 10.4 s before it
-happened to turn (both in the 2026-11-01 log). The trace is deliberately strict because a camper also stands
-still, and camping is bounded by `yb_camping_time_max` (12 s), so past `bot_antistuck_patience` (14 s)
-nobody is holding an angle any more: four traces are cast instead of one and the bot is shoved towards the
-most open direction, logged with a `(no wall in view)` suffix. **Keep the patience above
-`yb_camping_time_max`**, or campers are shoved out of their angle; `test/bot-antistuck-contract.test.ts`
-fails if the two ever cross.
+happened to turn (both in the 2026-11-01 log). After `bot_antistuck_patience` (14 s) of no movement four
+traces are cast instead of one and the bot is shoved towards the most open direction, logged with a
+`(no wall in view)` suffix. The patience is no longer tied to camping - camping is off - but it is not small
+either: measured on 2026-11-03 (aim_map, 20 bots, `patience` at 8 s) the net kicked twenty bots per 100 s and
+**not one** of them was stuck, because a bot standing 8-14 s is a bot aiming or watching a lane. The counter
+below is what makes waiting that long safe.
+
+The net escalates. A shove changes where the bot is, never where it wants to go: YaPB's task keeps pointing
+at the same spot, so a kicked bot walks straight back into the same corner - that is exactly the "после
+пинка всё равно сидят" report. After `bot_antistuck_escalate` (3) shoves without a metre of progress the bot
+is killed silently (`user_kill(id, 1)`, no death message, no frag) and `csdm_lite` respawns it on a spawn
+point 0.5 s later, which is where a fresh goal comes from. The counter is reset by real movement, so a bot
+kicked from one corner into another is not killed for it, and every escalation is logged as `unstick: <name>
+stood still for <n> s, killed for a respawn` - a shove is capped at 20 lines per load, a death is not.
 
 ```bash
 amx_antistuck          # bot_antistuck: nudged=N respawned=M armed=1
@@ -334,18 +397,19 @@ amx_antistuck          # bot_antistuck: nudged=N respawned=M armed=1
 
 A teleport is **not** used: `set_user_origin` is already rejected in this project (`docs/runbook.md`,
 "the respawn meat grinder") - the engine leaves the bot's navigation graph pointing where it was and the bot
-freezes for the rest of the round. With `bot_antistuck_respawn 1` the fallback after
-`bot_antistuck_stuck_secs` (10 s) of no progress is `user_kill` with the silent flag, so the existing
-`csdm_lite` grinder brings the bot back on a spawn point that is on the graph. Default is 0: a false
-positive costs a visible death on camera, and the mode is only worth it if the counters prove it is needed.
+freezes for the rest of the round. The fallback is `user_kill` with the silent flag, so the existing
+`csdm_lite` grinder brings the bot back on a spawn point that is on the graph. Two ways in:
+`bot_antistuck_escalate` (3 shoves, on by default - see above) and `bot_antistuck_respawn` (0), which kills a
+bot that never got a shove in at all after `bot_antistuck_stuck_secs` (10 s); that one stays opt-in because
+it can fire on a bot nobody was looking at.
 
 **Reading the net.** It logs its first `NUDGE_LOG_LIMIT` (20) shoves per plugin load, so the log witnesses the
 phenomenon but is not a rate: 20 lines means "at least 20 since the last restart". What was measured on
-2026-11-01 with the dense graphs and `yb_camping_time_*` 4-12 s, 20 bots on `fy_snow`/`fy_iceworld`: six
-logged shoves inside ten minutes, most of them after 1.4 s of no progress (the net's own detection time) and
-two after 8.4 s and 10.4 s, when the bot had turned away from the wall the trace looks for. That is a viewer
-saying "one bot is being weird", not "the bots are broken" - so the net stays on `bot_antistuck_respawn 0`.
-A shove every few seconds would instead point at the **graph** for that map, not at the shove.
+2026-11-01 with the dense graphs, camping still on and 20 bots on `fy_snow`/`fy_iceworld`: six logged shoves
+inside ten minutes, most of them after 1.4 s of no progress (the net's own detection time) and two after
+8.4 s and 10.4 s, when the bot had turned away from the wall the trace looks for. A shove every few seconds
+points at the **graph** for that map, not at the shove - and the escalation counter now makes that visible as
+`unstick:` lines instead of a bot standing there for the rest of the round.
 
 ```bash
 # what the net did since the last restart (capped at 20 lines per load, see above)
@@ -511,7 +575,7 @@ must not be done:
 
 | Piece | Where | Why |
 |---|---|---|
-| `yb_csdm_mode 0` | `infra/server.cfg` | 0 = team play: a bot picks a target by team. 2 was the FFA mode, where a bot also shot teammates |
+| `yb_csdm_mode 1` | `infra/server.cfg` + `infra/entrypoint.sh` | 1 = CSDM (this server respawns every bot itself), FFA off, so a bot still picks a target by team. With the flag off YaPB seeks cover in combat and never resets a respawned bot's tasks - see "Why the bots stood still" |
 | `mp_friendlyfire 0` | `infra/server.cfg` | with team play a stray shot would only feed the other side's scoreboard; `mp_tkpunish 0` stays because it is the engine default for a rule that can no longer trigger |
 | **not** `yb_join_team "ct"` | `infra/server.cfg` | pinning everybody to one team empties the other side; the engine then keeps most bots dead and idle. Measured: 0-1 kills per 40 s with one team against 90 per 40 s with two |
 

@@ -89,7 +89,7 @@ fi
 YAPB_CFG=/hlds/cstrike/addons/yapb/conf/yapb.cfg
 if [ -f "$YAPB_CFG" ]; then
   sed -i -E '/cs16-youtube overrides/d' "$YAPB_CFG"
-  sed -i -E '/^yb_(radio_mode|chat|chat_percent|display_welcome_text|autovacate|quota|difficulty|shoots_thru_walls|camping_allowed|camping_time_min|camping_time_max|walking_allowed|has_team_semiclip|random_knife_attacks|graph_analyze_distance|graph_analyze_optimize_nodes_on_finish)[[:space:]]/d' "$YAPB_CFG"
+  sed -i -E '/^yb_(radio_mode|chat|chat_percent|display_welcome_text|autovacate|quota|difficulty|shoots_thru_walls|csdm_mode|camping_allowed|camping_time_min|camping_time_max|walking_allowed|has_team_semiclip|random_knife_attacks|graph_analyze_distance|graph_analyze_optimize_nodes_on_finish)[[:space:]]/d' "$YAPB_CFG"
   {
     echo "// cs16-youtube overrides: rewritten on every start, keep this block last"
     echo "yb_radio_mode \"${BOT_RADIO_MODE:-0}\""
@@ -104,13 +104,26 @@ if [ -f "$YAPB_CFG" ]; then
     # illusion on a stream is gone.
     echo "yb_difficulty \"${BOT_DIFFICULTY:-2}\""
     echo "yb_shoots_thru_walls \"0\""
-    # Holding an angle is human; never stopping is not. 10-30 s (the first setting) is a third of a
-    # fight on fy_iceworld and reads as "the bots are asleep" on a 24/7 feed; 4-12 s keeps the picture
-    # moving and still lets a bot watch a doorway. bot_antistuck is told to ignore a bot that is only
-    # holding one (see plugins/bot_antistuck).
-    echo "yb_camping_allowed \"1\""
-    echo "yb_camping_time_min \"4.0\""
-    echo "yb_camping_time_max \"12.0\""
+    # The mode, and it is the reason this block exists at all: `yb_csdm_mode 1` = CSDM (this server
+    # respawns every bot through csdm_lite) without free-for-all, so bots keep picking targets by team.
+    # The archive re-executes `yb_csdm_mode "0"` (auto-detect, which on a server without the CSDM mod
+    # means "off") on every map change, and with the flag off YaPB plays a round-based game that does
+    # not exist here: `Bot::spawned()` never resets a respawned bot's task list, and the combat code
+    # takes the "seek cover / stand still" branch (docs/runbook.md, "Why the bots stood still").
+    echo "yb_csdm_mode \"${BOT_CSDM_MODE:-1}\""
+    # Camping is off entirely. `yb_camping_allowed` is the only knob that decides whether a bot walks
+    # somewhere or stands behind cover, and a bot holding an angle for 15-45 s is the "они сидят за
+    # укрытием и не идут атаковать" picture. CSDM mode already skips the camp task, so this is belt and
+    # braces - kept because it costs nothing and it is the cvar somebody will look for first.
+    #
+    # The window cvars are deliberately NOT written any more. That is a bug fix, not a cleanup: YaPB
+    # rejects a value outside its own range with "Bogus value for cvar" (the same trap
+    # `yb_graph_analyze_distance 40` fell into, and it is why that one sits at 48), and the ranges for
+    # `yb_camping_time_min` / `yb_camping_time_max` are 5..90 / 15..120 (cfg/addons/yapb/conf/yapb.cfg in
+    # the pinned 4.4.957 archive). The old 4.0 / 12.0 were silently dropped, so the archive defaults
+    # 15 / 45 stayed in force for as long as camping was on - the -12 s the bots were tuned to never
+    # existed. Anything written here has to stay inside those ranges or it does nothing.
+    echo "yb_camping_allowed \"0\""
     # yb_walking_allowed: the bot re-executes this file on every map change, so the 0 in server.cfg is
     # reverted to the archive's 1 - a bot then crouch-walks whenever it thinks an enemy is near, which
     # from the outside is a bot that stopped.

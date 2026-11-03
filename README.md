@@ -60,7 +60,8 @@ Planned: ffmpeg streaming to YouTube.
 - lasting activities apply at once and end on their own clock (`seconds` in the catalogue, 60 s per
   step), because a `csdm_lite` round almost never ends;
 - the server runs team play: T against CT, friendly fire off, YaPB targets the other team only
-  (`yb_csdm_mode 0`, `mp_friendlyfire 0`); bots keep their teams and fight each other;
+  (`yb_csdm_mode 1` - CSDM without free-for-all, because every bot respawns - plus `mp_friendlyfire 0`);
+  bots keep their teams and fight each other;
 - a dead bot leaves a weapon box behind and CS 1.6 has no "never drop" switch, so `csdm_lite` sweeps
   the litter every five seconds (`csdm_lite_clean_weapons`, `csdm_lite_clean_sec`) - map-placed weapons
   are left alone;
