@@ -248,6 +248,31 @@ test("chaos_core resets a slot the engine hands to the next bot", () => {
   assert.match(chaos, /public plugin_end\(\)\s*\{\s*StopAll\(\);/, "plugin_end no longer reverts the cvars");
 });
 
+test("chaos_core's own clock is off, and its revert never cancels somebody else's value", () => {
+  const chaos = readFileSync(new URL("../plugins/chaos_core/chaos_core.sma", import.meta.url), "utf8");
+  const serverCfg = readFileSync(new URL("../infra/server.cfg", import.meta.url), "utf8");
+
+  // The free clock belongs to src/auto-events.ts. A second randomiser every 45 s on top of the 180 s
+  // rotation is the "two mechanisms" state (docs/runbook.md, "who owns the free events"); `force`
+  // stays, because that is what a chaos burst falls back to.
+  assert.match(chaos, /register_cvar\("chaos_interval", "0"\)/, "the plugin arms its own timer on load again");
+  assert.match(serverCfg, /^chaos_interval 0\r?$/mu, "a volume from an older image would bring the 45 s timer back");
+
+  // A revert that writes its saved base unconditionally lands on top of a value a paid effect set in
+  // the meantime (donation_events claims sv_gravity): "my effect disappeared".
+  for (const [start, stop, cvar] of [
+    ["StartSpeed", "StopSpeed", "sv_maxspeed"],
+    ["StartGravity", "StopGravity", "sv_gravity"],
+  ]) {
+    const started = new RegExp(`public ${start}\\(\\)\\s*\\{[\\s\\S]*?\\n\\}`).exec(chaos)?.[0] ?? "";
+    const stopped = new RegExp(`public ${stop}\\(\\)\\s*\\{[\\s\\S]*?\\n\\}`).exec(chaos)?.[0] ?? "";
+    assert.notEqual(started, "", `${start} is gone`);
+    assert.match(started, /g_written\w+ = value;/, `${start} does not remember the value it wrote`);
+    assert.match(stopped, new RegExp(`if \\(get_cvar_num\\("${cvar}"\\) == g_written`), `${stop} restores a stale value`);
+  }
+});
+
+
 test("the five classes are one applier and a table, not five handlers", () => {
   const classes = ["raptors", "brutes", "runners", "jumpers", "regenerators"];
 

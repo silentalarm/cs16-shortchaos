@@ -91,9 +91,15 @@ Planned: ffmpeg streaming to YouTube.
 who arrives during a quiet minute still sees something happen. The list is **ranked** (`he_party`
 first), every entry is a short clock, and the paid hero modes (`nemesis`, `survivor`, `juggernaut`,
 `sniper`, `outbreak`, `chaos_plague`) are never in it - a free hero round leaves nothing to buy. A
-donation that just landed keeps the screen for 60 s, and the picture counts down to the next free
-event (`ДАЛЬШЕ 2:31 · HE PARTY`) where the queue line used to be. The chaos meter fires only from the
+donation that just landed keeps the screen for 60 s, the map's finale (`map_duel`) keeps it for as
+long as the duel runs, and the picture counts down to the next free event
+(`ДАЛЬШЕ 2:31 · HE PARTY`) where the queue line used to be. The chaos meter fires only from the
 `chaos` subset - what actually reads as chaos, `he_party` among it.
+
+This rotation is the **only** free clock: `chaos_core`'s own timer is off (`chaos_interval 0`), and
+the plugin is kept for `amx_chaos force`, which `chaos_plague` and the meter's fallback still use.
+Two randomisers running side by side is what the stream looked like before the audit - see
+`docs/runbook.md`, "who owns the free events".
 
 ## Commands
 

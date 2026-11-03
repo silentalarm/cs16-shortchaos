@@ -16,11 +16,11 @@ import { drainQueue, pollOnce, restoreQueue } from "./poller.ts";
 import { announcementFor, countdownCues, donationAnnouncement, phaseCues, quoteRequest, silenceRequest, writeVoiceRequest } from "./voice.ts";
 import { PendingQueue } from "./queue.ts";
 import { RconClient } from "./rcon.ts";
-import { parsePluginCodes, parsePluginStatus } from "./stream-status.ts";
+import { parseDuelState, parsePluginCodes, parsePluginStatus } from "./stream-status.ts";
 import { TokenStore } from "./token-store.ts";
 import { UiLoop } from "./ui/loop.ts";
 import { buildUiState, type UiState } from "./ui/state.ts";
-import { STATUS_COMMAND } from "./admin/state.ts";
+import { DUEL_STATUS_COMMAND, STATUS_COMMAND } from "./admin/state.ts";
 
 const env = loadEnv();
 const baseCatalog = loadActivities(env.activitiesPath);
@@ -320,7 +320,13 @@ async function runAutoEvent(): Promise<void> {
   if (autoRunning) return;
   autoRunning = true;
   try {
-    const result = await autoRotation.tick({ lastPaidAt, run: apply });
+    // The free clock has exactly one owner (`config/auto-events.json`), and even it has to yield to
+    // the two things that outrank it: a donation that just landed, and the map's own finale.
+    const result = await autoRotation.tick({
+      lastPaidAt,
+      pausedBy: duelLive ? "map_duel" : null,
+      run: apply,
+    });
     if (result.kind === "idle") return;
 
     const cursor = autoRotation.cursor;
@@ -331,6 +337,8 @@ async function runAutoEvent(): Promise<void> {
       log("events.ran", { code: result.code, command: result.command, reply: result.reply.slice(0, 120) });
     } else if (result.kind === "deferred") {
       log("events.deferred", { code: result.code, paidAgoSec: result.paidAgoSec });
+    } else if (result.kind === "paused") {
+      log("events.paused", { code: result.code, reason: result.reason });
     } else {
       log("events.failed", { code: result.code, command: result.command, error: result.error });
     }
@@ -392,6 +400,14 @@ async function collectChaos(): Promise<void> {
  */
 let lastActiveCode: string | null = null;
 
+/**
+ * true while `map_duel` fights its finale: the two finalists own the field and nothing else may
+ * touch it. Read from `amx_map_duel status` in `followGameClock`, consumed by `runAutoEvent`.
+ */
+let duelLive = false;
+/** `amx_map_duel status` is one more RCON line per poll, so it is asked every fifth tick (10 s). */
+let gameClockTicks = 0;
+
 async function followGameClock(): Promise<void> {
   let active: string | null;
   try {
@@ -411,6 +427,20 @@ async function followGameClock(): Promise<void> {
     }
   }
   lastActiveCode = active;
+
+  // The duel owns the last minute of the map (`map_duel_prepare` 45 s + `map_duel_limit` 45 s), and
+  // a free `he_party` landing on the two finalists ends the fight the whole map was building up to.
+  // `amx_de status` already costs one line per poll, so the duel is asked every fifth tick: ten
+  // seconds of resolution next to a minute-long state, and a dead socket keeps the last verdict
+  // instead of flipping the flag every two seconds.
+  gameClockTicks += 1;
+  if (gameClockTicks % 5 === 0) {
+    try {
+      duelLive = parseDuelState(await readConsole(DUEL_STATUS_COMMAND)) === "live";
+    } catch {
+      // No answer: keep what the previous poll said.
+    }
+  }
 }
 
 function currentUiState(): UiState {

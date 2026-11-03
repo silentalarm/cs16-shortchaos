@@ -90,8 +90,13 @@ wiring:
   ids (`-Date.now()`) and `received_at` can repeat inside one second;
 - on a database that has never seen the meter it starts at the newest applied row, so the whole
   donation history does not fire a burst on the first tick;
-- every full thousand sends `amx_chaos force` (one per burst) and speaks `Копилка полна. ХАОС!`; the
-  overshoot stays on the bar (`1050 -> one burst + 50`), which is why `addToChaos` returns a remainder;
+- every full thousand fires **one code from the `chaos` list** - `he_party`, `meteor_shower`, `jumpers`,
+  `bazooka_drop`, `one_bullet` - sent as the same `amx_de` line a donation would send, and speaks
+  `Копилка полна. ХАОС!`; `amx_chaos force` is the fallback for an **empty** list only, because it is a
+  second randomiser of the plugin's own dice over a screen somebody already paid for (and
+  `chaos_core`'s own 45 s timer is off: `chaos_interval 0`, `docs/runbook.md` "who owns the free
+  events"). The overshoot stays on the bar (`1050 -> one burst + 50`), which is why `addToChaos`
+  returns a remainder;
 - the bar is its own drawtext line (`chaos.txt`, amber `0xE0A856`, `STREAM_UI_SIZE_CHAOS`), above the
   donation line: `ХАОС █░░░░░░░░░ 150/1000 RUB`. `chaosFill()` rounds **down**, so the bar never shows a
   run the money has not paid for.

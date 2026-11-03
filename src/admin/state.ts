@@ -11,6 +11,8 @@ import type { PluginStatus, StreamHealth } from "../stream-status.ts";
  * browser only draws it.
  */
 export const STATUS_COMMAND = "amx_de status";
+/** `map_duel status: state=<idle|live|done> winner=<name|->` - who owns the last minute of the map. */
+export const DUEL_STATUS_COMMAND = "amx_map_duel status";
 
 export interface ActivityView extends Activity {
   /** true when a runtime override changed this row, so the UI can offer "reset". */

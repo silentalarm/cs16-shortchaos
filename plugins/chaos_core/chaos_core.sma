@@ -13,6 +13,14 @@
  * - plugin_end stops everything, because a map change unloads the plugin while its cvars stay set;
  * - one file, not two: a separate chaos_effects module would need cross-plugin natives, and a
  *   single registry with one run loop is easier to prove correct.
+ *
+ * THE TIMER IS OFF BY DEFAULT (`chaos_interval 0`, pinned in `infra/server.cfg`). The free event
+ * clock belongs to the control API (`config/auto-events.json`, `src/auto-events.ts`): it is the only
+ * side that knows what a donation just did, it is announced on the picture, and it keeps its cursor
+ * in SQLite. Two randomisers running side by side - this timer every 45 s and that rotation every
+ * 180 s - is what made the stream look like two mechanisms fighting over the screen (docs/runbook.md,
+ * "who owns the free events"). What is left here is `amx_chaos force <code>`: the chaos meter's
+ * fallback for an empty `chaos` list, and the operator's own dice.
  */
 #include <amxmodx>
 #include <fakemeta>
@@ -50,6 +58,10 @@ new g_cvarLevel;
 
 new g_savedMaxspeed;
 new g_savedGravity;
+// What this plugin itself wrote: a restore is only allowed while the cvar still holds that value, so
+// a paid effect that changed it in the meantime is not silently cancelled (see StopSpeed/StopGravity).
+new g_writtenMaxspeed;
+new g_writtenGravity;
 new bool:g_maxspeedSaved;
 new bool:g_gravitySaved;
 new bool:g_vampire;
@@ -65,7 +77,11 @@ public plugin_init()
 	register_srvcmd("amx_chaos", "CmdChaos");
 
 	g_cvarEnabled = register_cvar("chaos_enabled", "1");
-	g_cvarInterval = register_cvar("chaos_interval", "45");
+	// 0: the timer is off by default - the free clock is the control API's. `amx_chaos interval <sec>`
+	// still arms it for a manual session, `amx_chaos force` ignores the interval either way.
+	// A 45 here is what the old stream ran with, and it fired a second, unannounced event between
+	// every two slots of the rotation.
+	g_cvarInterval = register_cvar("chaos_interval", "0");
 	g_cvarLevel = register_cvar("chaos_level", "1");
 
 	register_event("DeathMsg", "OnDeathMsg", "a");
@@ -403,15 +419,22 @@ public StartSpeed()
 	if (value > SAFE_MAXSPEED_MAX)
 		value = SAFE_MAXSPEED_MAX;
 	set_cvar_num("sv_maxspeed", value);
+	g_writtenMaxspeed = value;
 }
 
 public StopSpeed()
 {
-	if (g_maxspeedSaved)
-	{
+	if (!g_maxspeedSaved)
+		return;
+
+	// Put the base back only if the cvar still holds what this effect wrote. `donation_events` owns
+	// `sv_gravity` through a claim stack and a paid effect may legitimately have written the speed
+	// since; restoring a stale value here would cancel something somebody paid for, which is the
+	// visible "my effect disappeared" half of the two-mechanisms bug.
+	if (get_cvar_num("sv_maxspeed") == g_writtenMaxspeed)
 		set_cvar_num("sv_maxspeed", g_savedMaxspeed);
-		g_maxspeedSaved = false;
-	}
+
+	g_maxspeedSaved = false;
 }
 
 public StartGravity()
@@ -428,15 +451,21 @@ public StartGravity()
 	if (value > SAFE_GRAVITY_MAX)
 		value = SAFE_GRAVITY_MAX;
 	set_cvar_num("sv_gravity", value);
+	g_writtenGravity = value;
 }
 
 public StopGravity()
 {
-	if (g_gravitySaved)
-	{
+	if (!g_gravitySaved)
+		return;
+
+	// Same rule as StopSpeed, and this is the pair that actually bit: `low_gravity_knives` captures
+	// its base through donation_events' claim stack, so a restore from here lands on top of a value
+	// somebody paid for and leaves the server on a gravity nobody chose.
+	if (get_cvar_num("sv_gravity") == g_writtenGravity)
 		set_cvar_num("sv_gravity", g_savedGravity);
-		g_gravitySaved = false;
-	}
+
+	g_gravitySaved = false;
 }
 
 public StartKnives()

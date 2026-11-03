@@ -168,6 +168,52 @@ test("a failed command is reported and does not retry the same slot", async () =
   assert.equal(rotation.cursor.slot, 1);
 });
 
+test("a map duel owns the screen: the slot is spent, not fired late", async () => {
+  const rotation = new AutoRotation({ config, activities: () => catalog, cursor: { slot: 1, nextAt: NOW } });
+  const paused = await rotation.tick({
+    now: NOW,
+    pausedBy: "map_duel",
+    run: async () => assert.fail("a free effect landed on the two finalists"),
+  });
+
+  if (paused.kind !== "paused") assert.fail(`expected a pause, got ${paused.kind}`);
+  assert.equal(paused.reason, "map_duel");
+  assert.equal(paused.code, "meteor_shower");
+  // The slot is burned and the cadence restarts: the duel is a one-shot, and dumping the missed
+  // effect the second it ends would look like the rotation is chasing the game.
+  assert.equal(rotation.cursor.slot, 2);
+  assert.equal(rotation.cursor.nextAt, NOW + 180_000);
+});
+
+test("the finale outranks a fresh donation", async () => {
+  const rotation = new AutoRotation({ config, activities: () => catalog, cursor: { slot: 0, nextAt: NOW } });
+  const paused = await rotation.tick({
+    now: NOW,
+    lastPaidAt: NOW - 5_000,
+    pausedBy: "map_duel",
+    run: async () => assert.fail("nothing may fire during the duel"),
+  });
+
+  assert.equal(paused.kind, "paused");
+});
+
+test("a free code may be off sale on purpose, and the rotation still runs it", () => {
+  // `he_party` is 50 RUB like everything else, but it is the rotation's first slot, so it is kept out
+  // of the paid pool instead of being sold and given away at the same time. The free clock looks the
+  // code up in the catalogue, not in the on-sale subset: this assertion exists so the pair does not
+  // get "fixed" by someone reading `enabled: false` as "never run this".
+  const heParty = activityOf("he_party");
+  assert.ok(heParty !== undefined);
+  assert.equal(heParty.enabled, false, "the paid path must not sell the free hook");
+  assert.equal(config.free[0], "he_party");
+});
+
+test("a quiet minute with no duel and no donation still fires", async () => {
+  const rotation = new AutoRotation({ config, activities: () => catalog, cursor: { slot: 0, nextAt: NOW } });
+  const ran = await rotation.tick({ now: NOW, pausedBy: null, lastPaidAt: null, run: async () => "ok" });
+  assert.equal(ran.kind, "ran");
+});
+
 test("a disabled rotation shows nothing and fires nothing", async () => {
   const off = parseAutoEvents(
     { version: 1, enabled: false, intervalSec: 180, quietAfterPaidSec: 60, free: [], chaos: [] },

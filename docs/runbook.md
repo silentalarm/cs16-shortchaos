@@ -482,8 +482,17 @@ the map, copy the result back (`yapb graphs: N file(s) synced` then confirms the
 
 ## chaos_core: the chaos mod
 
-`plugins/chaos_core/chaos_core.sma` runs a weighted random effect every `chaos_interval` seconds.
-Every effect is a **start/stop pair**, so nothing can leak into the next round or the next map.
+`plugins/chaos_core/chaos_core.sma` is a weighted registry of six start/stop pairs: every effect has
+an explicit revert or is undone by `plugin_end`, so nothing can leak into the next round or the next
+map.
+
+**Its own timer is off** - `chaos_interval 0`, pinned in `infra/server.cfg` and defaulted in the
+plugin. The free event clock belongs to the control API (see "who owns the free events" below): it is
+the only side that knows what a donation just did, and a second randomiser every 45 s on top of that
+rotation is exactly the "feels like two mechanisms" state this server was in. What is left of the
+plugin on stream is `amx_chaos force <code>` - the chaos meter's fallback and the operator's own dice
+- plus `amx_chaos interval <sec>`, which arms the timer again for a session when you want the old
+behaviour back.
 
 | Effect | Weight | Duration | Start | Stop |
 |---|---|---|---|---|
@@ -506,13 +515,24 @@ immediately.
 cross-plugin natives, and a single registry with one run loop is easier to prove. Split it only if
 the effect list outgrows this file.
 
-The donation bridge is `chaos_burst` (140 RUB, instant): `donation_events` runs `amx_chaos force`,
-which stops whatever is running and starts one effect immediately - a buyer paid for something
-visible now, not in 45 seconds.
+The revert is conditional since the two-mechanisms audit: `StopSpeed` / `StopGravity` put the saved
+base back **only while the cvar still holds the value the effect itself wrote**. `low_gravity_knives`
+takes `sv_gravity` through `donation_events`' claim stack, so an unconditional restore from here
+landed on top of a value somebody had paid for - and when that effect had captured the chaos value as
+its base, the server was left on a gravity nobody chose.
 
-Verified live: `amx_chaos force speed` logged `'speed' started for 20s`, then `'speed' stopped`
-exactly 20 s later and the timer continued on its own (`'knives' started`, `20 bots rearmed with
-weapon_knife`, `'gravity' started`).
+The donation bridge is the chaos meter, not a ticket: every donated rouble counts toward
+`CHAOS_THRESHOLD` (1000 RUB, `src/chaos-meter.ts`), and a full bar fires one code from
+`auto-events.json`'s `chaos` list (`he_party`, `meteor_shower`, `jumpers`, `bazooka_drop`,
+`one_bullet`) as the same `amx_de` line a donation would send. `amx_chaos force` is reached only when
+that list is empty: it stops whatever this plugin is running and starts one effect at once, which is
+the right answer to "the buyer paid for something visible now" and the wrong one while the list has
+codes - it is a second randomiser over the same screen.
+
+Verified live, back when the timer was on (interval 45 s): `amx_chaos force speed` logged `'speed'
+started for 20s`, then `'speed' stopped` exactly 20 s later and the timer continued on its own
+(`'knives' started`, `20 bots rearmed with weapon_knife`, `'gravity' started`). That is also the
+symptom the audit was about - an effect nobody announced, between two slots of the rotation.
 
 The scheduler is a **one-shot task that re-arms itself**, not `set_task(..., "b")`: with the repeat
 flag the observed cadence did not follow `chaos_interval` (45 s gave starts 15 s apart), and a
@@ -742,6 +762,29 @@ $env:UI_PREVIEW_T='4'; npm run ui-preview               # the bar leans to CT
 Limits on purpose: text only (no icons, no rounded panels), one write per state change, and a fixed
 20-block bar - a wider vocabulary needs a renderer, and the renderer froze on a live stream.
 
+## Who owns the free events
+
+One clock, and it is the control API. This is the rule the audit produced, because the server was
+running two of them:
+
+| source | what it did | status |
+|---|---|---|
+| `src/auto-events.ts` (`AutoRotation`, 1 s timer) | one catalogue activity every 180 s, announced on the picture, cursor in SQLite | **the owner** |
+| `plugins/chaos_core` (`ChaosTick`, `chaos_interval`) | a weighted random engine effect every 45 s, announced nowhere | **off**: `chaos_interval 0` in `infra/server.cfg`, `force` still available |
+| `src/main.ts` (`collectChaos`, every poll tick) | one code from the `chaos` list per 1000 RUB donated | kept: it is paid for, and it is a catalogue code |
+| `plugins/map_duel` | clears the field 45 s before the map ends and mutes `chaos_enabled` / `csdm_lite_enabled` | kept, **and the rotation now yields to it** |
+
+Two free mechanisms at once is not two chances to be interesting, it is one thing nobody asked for
+landing on top of a paid effect: `knives`/`awp` strip and re-arm every bot (`RearmAll`) mid
+`bazooka_drop`, and `gravity`/`speed` write the same world cvars `low_gravity_knives` claims. Nothing
+in the stream - the overlay, the panel, `events.ran` - knew they had happened.
+
+What is left is one owner with two things that outrank it: a donation that just landed
+(`quietAfterPaidSec`, `events.deferred`) and the map's own finale (`events.paused`). The duel is read
+from `amx_map_duel status` every fifth tick of the game poller (10 s, one extra RCON line per 10 s);
+a slot that comes due during a duel is **spent**, not fired late, so the rotation does not chase the
+game the moment the finalists are done.
+
 ## The free rotation (one event every three minutes)
 
 `config/auto-events.json` + `src/auto-events.ts` + `AutoRotation` in `src/main.ts`:
@@ -754,6 +797,9 @@ Limits on purpose: text only (no icons, no rounded panels), one write per state 
 - a paid effect keeps the screen: when a donation reached the game less than `quietAfterPaidSec`
   (60 s) ago the slot is skipped (`events.deferred`) and the cadence stays - the free event does not
   overwrite what somebody just bought;
+- the map's finale keeps the screen: `amx_map_duel status` is polled every 10 s, and a slot that comes
+  due while `state=live` is logged as `events.paused` and **spent** - the cadence restarts, so the
+  missed effect is not dumped on the two finalists when the duel ends;
 - the picture announces it: `ДАЛЬШЕ 2:31 · HE PARTY` in `next.txt`, rewritten once a second;
 - ranked free list - short, self-explanatory, safe to repeat: `he_party` (60 s), `meteor_shower`
   (15 s), `one_bullet` (15 s), `red_light` (15 s), `jumpers` (30 s), `glass_cannon` (15 s),

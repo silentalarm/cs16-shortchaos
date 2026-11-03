@@ -148,6 +148,14 @@ export function formatCountdown(secondsLeft: number): string {
 export interface AutoTickOptions {
   /** Epoch ms of the last paid command that reached the game, or null when nothing was bought yet. */
   lastPaidAt?: number | null;
+  /**
+   * What holds the screen right now, or null/undefined when nothing does.
+   *
+   * `map_duel` is the only value today: the last minute of a map is a fight between two finalists,
+   * and a free `he_party` landing on it ends the thing the whole map was building up to. The caller
+   * reads that state from `amx_map_duel status`; this class only decides what to do about it.
+   */
+  pausedBy?: string | null;
   now?: number;
   run: (command: string) => Promise<string>;
 }
@@ -156,6 +164,8 @@ export type AutoTickResult =
   | { kind: "idle" }
   /** The slot came due right after a paid effect: the free event steps aside, the cadence stays. */
   | { kind: "deferred"; code: string; title: string; paidAgoSec: number }
+  /** The game is in a state that must not be interrupted (a map duel); the slot is spent. */
+  | { kind: "paused"; code: string; title: string; reason: string }
   | { kind: "ran"; code: string; title: string; command: string; reply: string }
   | { kind: "failed"; code: string; title: string; command: string; error: string };
 
@@ -211,6 +221,14 @@ export class AutoRotation {
     this.#cursor = { slot: this.#cursor.slot + 1, nextAt };
 
     const title = this.#titleOf(code);
+
+    // A duel is checked before the paid window: a donation that just ran is an effect somebody can
+    // still see, but the finale is a one-shot - there is no second chance to watch it.
+    const pausedBy = options.pausedBy ?? null;
+    if (pausedBy !== null) {
+      return { kind: "paused", code, title, reason: pausedBy };
+    }
+
     const quietMs = this.#config.quietAfterPaidSec * 1000;
     const lastPaidAt = options.lastPaidAt ?? null;
     if (lastPaidAt !== null && quietMs > 0 && now - lastPaidAt < quietMs) {

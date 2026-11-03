@@ -292,6 +292,20 @@ export function parsePluginStatus(reply: string): PluginStatus {
 }
 
 /**
+ * `map_duel status: state=<idle|live|done> winner=<name|->`: the last minute of the map.
+ *
+ * `live` is the only value the free rotation acts on - it means the two finalists are fighting and
+ * nothing else may touch the field. An unreadable or missing answer stays null, which reads as "no
+ * duel", so a control API without RCON keeps the rotation running instead of freezing it.
+ */
+export type DuelState = "idle" | "live" | "done";
+
+export function parseDuelState(reply: string): DuelState | null {
+  const state = /state=(idle|live|done)/i.exec(reply)?.[1]?.toLowerCase();
+  return state === "idle" || state === "live" || state === "done" ? state : null;
+}
+
+/**
  * Activity codes out of `donation_events codes: a,b,c`.
  *
  * Splitting the whole reply on whitespace and commas (the first version) put the plugin name and the

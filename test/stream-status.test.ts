@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parsePluginCodes, parsePluginStatus, parseProgress, readStreamHealth, HEARTBEAT_STALE_AFTER_SEC, STALE_AFTER_SEC } from "../src/stream-status.ts";
+import { parseDuelState, parsePluginCodes, parsePluginStatus, parseProgress, readStreamHealth, HEARTBEAT_STALE_AFTER_SEC, STALE_AFTER_SEC } from "../src/stream-status.ts";
 
 const PROGRESS = [
   "frame=120",
@@ -226,6 +226,17 @@ test("several effects in one frame are all reported, not just the last one", () 
   assert.deepEqual(status.actives, ["meteor_shower", "lightsaber_duel", "he_party"]);
   assert.equal(status.active, "meteor_shower");
   assert.equal(status.nick, "vasya");
+});
+
+test("the map duel is read as idle, live or done, and anything else is no duel", () => {
+  // The free rotation pauses only on `live`; an unreachable server answers nothing at all, and that
+  // must keep the rotation running rather than freeze it for the rest of the map.
+  assert.equal(parseDuelState("map_duel status: state=live winner=-"), "live");
+  assert.equal(parseDuelState("map_duel status: state=idle winner=-"), "idle");
+  assert.equal(parseDuelState("map_duel status: state=done winner=vasya"), "done");
+  assert.equal(parseDuelState("map_duel status: state=LIVE winner=-"), "live");
+  assert.equal(parseDuelState(""), null);
+  assert.equal(parseDuelState("unknown command amx_map_duel"), null);
 });
 
 test("an idle server reports none, and an old plugin reply keeps everything null", () => {
