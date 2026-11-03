@@ -175,9 +175,13 @@ instead of going live, `STREAM_WARMUP_SEC` waits for the spectator client to joi
 
 The camera is driven by the game server, not by the client: `plugins/stream_cam` picks the living
 bot that moved the most in the last second and keeps it on screen in third person (`stcam_dwell`,
-`stcam_interval`) — no hopping between bots. First person is a pilot feature behind `STREAM_POV`: after
-the bot on camera gets a kill the capture client is cut into its eyes for 2.5 s (`stcam_pov`,
-`stcam_pov_sec`), off by default and switchable per host. The server also re-sends `jointeam 6`,
+`stcam_interval`) — no hopping between bots. First person is the lens: `STREAM_EYE=1` cuts the capture
+client into the followed bot's eyes while it shoots (`STREAM_EYE_SEC`, 2 s after the last round), back to
+third person for the same time, and never longer than `STREAM_EYE_MAX` (5 s) in one go; `STREAM_EYE=2`
+holds it while the bot lives, `0` leaves the picture in third person. The gun in that view is the bot's
+own `v_` model written into the camera client's `viewmodel` field, with its shoot and reload animation
+relayed from the bot — a spectator holds no weapon of its own. The older kill-triggered cut (`stcam_pov`,
+`stcam_pov_sec`) opens the same window and stays off by default. The server also re-sends `jointeam 6`,
 which is the only way to close the client-side "choose a team" panel — while it is up the stream
 shows a frozen menu. `STREAM_SPEC_MODE=1` is `OBS_CHASE_LOCKED`; `spec_mode 6` is `OBS_MAP_CHASE`,
 the map overview, which shows no gameplay at all. `STREAM_SPEC_SWITCH_SEC` re-enables the old

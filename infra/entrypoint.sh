@@ -196,6 +196,23 @@ echo "mapcycle: $(tr '\n' ' ' < /hlds/cstrike/mapcycle.txt)"
 sed -i -E "s|^stcam_pov .*$|stcam_pov ${STREAM_POV:-0}|" "$SERVER_CFG" 2>/dev/null || true
 grep -q '^stcam_pov ' "$SERVER_CFG" || echo "stcam_pov ${STREAM_POV:-0}" >> "$SERVER_CFG"
 
+# First person lens (plugins/stream_cam): STREAM_EYE 0 = the chase camera only, 1 = the action camera
+# (the capture client is cut into the followed bot's eyes when it shoots, for STREAM_EYE_SEC after the
+# last round, back to third person for the same time, and never longer than STREAM_EYE_MAX), 2 = held
+# for as long as the followed bot lives (the switch the picture is judged by).
+# Patched into server.cfg rather than passed on the command line: the plugin re-reads its cvars on
+# every map change, and one env var is the whole switch, so the feature can be turned off per host.
+sed -i -E "s|^stcam_eye .*$|stcam_eye ${STREAM_EYE:-1}|" "$SERVER_CFG" 2>/dev/null || true
+grep -q '^stcam_eye ' "$SERVER_CFG" || echo "stcam_eye ${STREAM_EYE:-1}" >> "$SERVER_CFG"
+
+# The rhythm of that lens: seconds in first person after the last shot (and the same time in third
+# person before the next cut), and the ceiling on one continuous window.
+sed -i -E "s|^stcam_eye_sec .*$|stcam_eye_sec ${STREAM_EYE_SEC:-2.0}|" "$SERVER_CFG" 2>/dev/null || true
+grep -q '^stcam_eye_sec ' "$SERVER_CFG" || echo "stcam_eye_sec ${STREAM_EYE_SEC:-2.0}" >> "$SERVER_CFG"
+sed -i -E "s|^stcam_eye_max .*$|stcam_eye_max ${STREAM_EYE_MAX:-5.0}|" "$SERVER_CFG" 2>/dev/null || true
+grep -q '^stcam_eye_max ' "$SERVER_CFG" || echo "stcam_eye_max ${STREAM_EYE_MAX:-5.0}" >> "$SERVER_CFG"
+
+
 echo "starting hlds: map=${MAP} maxplayers=${MAXPLAYERS} port=${PORT} sv_lan=${SV_LAN:-1}"
 exec /hlds/hlds_run \
   -game cstrike \

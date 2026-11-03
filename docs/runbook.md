@@ -1209,11 +1209,25 @@ menu (~60) from a bright map (de_dust2 at 640x480 is ~120). `freezedetect` compa
 of absolute brightness, so it works in both.
 
 Camera director check: `amx_stcam status` prints
-`stream_cam status: enabled=1 interval=25.0 mode=1 spectator=<name> target=<name> candidates=<n> dwell=6.0 hp=<n> active=<mode> ar=<n> pov=<0|1> pov_active=<0|1>`,
-and the server log gets one `camera target <bot> (<reason>, score ...)` line per switch. `mode=1` is
-chase locked (third person), `active` is the mode the server wrote to the client last second,
-`candidates` must be 20 on a 10 vs 10 server, `pov` is the first person switch and `pov_active` says
-whether the in-eye window is open right now.
+`stream_cam status: enabled=1 interval=25.0 mode=1 spectator=<name> target=<name> candidates=<n> dwell=6.0 hp=<n> active=<mode> ar=<n> pov=<0|1> pov_active=<0|1> eye=<0|1|2> vmodel=<0|1> eye_active=<0|1> eye_sec=2.0 eye_cuts=<n> eye_ammo=<n> eye_btn=<n> locked=<name|none> lock_left=<sec>`,
+and the server log gets one `camera target <bot> (<reason>, score ...)` line per switch plus one
+`first person: <bot> (<seconds>, <reason>)` line per lens cut. `mode=1` is chase locked (third person),
+`active` is the mode the server wrote to the client last second, `candidates` must be 20 on a 10 vs 10
+server, `pov` is the kill-triggered switch and `pov_active` says whether the in-eye window is open
+right now. `eye` is the lens mode (0 third person only, 1 on a shot, 2 held while the bot lives),
+`vmodel=1` means the bot's weapon model is written into the camera client, and `eye_ammo` / `eye_btn`
+are the shot detector's two counters - **the numbers that answer which signal a YaPB fake client
+actually reports**, which is why they are separate:
+
+```bash
+# from RCON, twice, a minute apart
+rcon amx_stcam status
+# eye_cuts grows, eye_ammo grows        -> the clip count is a usable trigger (the expected case)
+# eye_cuts grows, eye_btn grows         -> only the IN_ATTACK button fires (knife-only bots, or YaPB
+#                                          reports buttons but not a clip we can read)
+# eye_cuts stays 0, eye_ammo/eye_btn do  -> broken: the detector sees nothing while the bots fight
+```
+
 
 Why the default is third person: a director that re-picked the busiest bot every 8 s looked like the
 camera teleporting around the map, and the old *server-side* in-eye window was worse - a spectator has
@@ -1222,21 +1236,42 @@ to and from first person read on screen as the camera glitching. `stcam_dwell` 6
 5 s drop a static target before the camera sits on a frozen, hidden bot; `Health` + `ArmorValue` + one
 HUD line give viewers real numbers instead of an empty health bar.
 
-First person is a **pilot feature**, off by default:
+The first person lens (branch `fix/first-person-viewmodel`, `plugins/stream_cam`):
 
 ```powershell
-# switch it on for a test run, off again the same way
-$env:STREAM_POV = 1; ./infra/compose.ps1 up -d --no-deps --force-recreate hlds
+# the shipped picture: first person while the bot shoots, third person between the bursts
+# STREAM_EYE 0 = third person only, 1 = on a shot, 2 = held for as long as the bot lives
+$env:STREAM_EYE = 1; $env:STREAM_EYE_SEC = 2.0; $env:STREAM_EYE_MAX = 5.0
+./infra/compose.ps1 up -d --no-deps --force-recreate hlds
 ```
 
-`STREAM_POV=1` reaches `server.cfg` as `stcam_pov 1` (`infra/entrypoint.sh`), and the plugin then
-flips the client's observer mode to `OBS_IN_EYE` (4) for `stcam_pov_sec` (2.5 s) after the bot on
-camera gets a kill, and back to the configured chase mode afterwards or whenever the target changes.
+`STREAM_EYE*` reach `server.cfg` as `stcam_eye`, `stcam_eye_sec`, `stcam_eye_max` (`infra/entrypoint.sh`).
+The plugin flips the client's observer mode to `OBS_IN_EYE` (4) and writes the followed bot's `v_` model
+into the camera client's own `viewmodel` field (`ApplyViewmodel`), because a spectator holds nothing and
+the engine draws that field. The window has four rules, all of them in one place (`EnterPov`/`LeavePov`):
+
+- it opens on a **shot** (`WatchFire`, ten times a second): the bot's clip count went down, or the
+  `IN_ATTACK` button just went from 0 to 1 - the button covers knife and grenades and is the only way to
+  tell whether YaPB reports buttons at all;
+- it stays open for `stcam_eye_sec` **after the last round**, so a burst is one cut and not one per round;
+- one continuous window never exceeds `stcam_eye_max`, so a bot spraying a whole magazine hands the
+  picture back on its own (`0` disables the ceiling);
+- after it closes, the camera stays in third person for the same `stcam_eye_sec`: the pause is what makes
+  the alternation read as a camera cut instead of a strobe, and one number tunes both halves.
+
+While the window is open the plugin also relays the bot's `pev_weaponanim` to the client as
+`SVC_WEAPONANIM` (`RelayWeaponAnim`): without it the gun in the picture is drawn, and drawn frozen - a
+spectator has no weapon, so the game DLL never sends it a shoot or reload animation.
+
+The kill trigger (`stcam_pov`, `stcam_pov_sec`) opens the same window; both ends of it are one observer
+field, so two separate flags would overwrite each other. `stcam_eye 2` is the judging switch - one bot,
+one continuous first person cut, nothing to tune.
+
 The field the engine reads is `pev_iuser1` on the spectator entity, which `ApplyCamera()` rewrites ten
 times a second - a client-side `spec_mode 4` request loses that race and looks like nothing happened
-(that was the first attempt, verified live: `active=` stayed 1). Watch `active=4` in
-`amx_stcam status` to know the server really is in first person; the client's own picture still has the
-limitation below (no view model in first person).
+(that was the first attempt, verified live: `active=` stayed 1). Watch `eye_active`/`active=4` in
+`amx_stcam status` to know the server really is in first person; `vmodel` says whether a weapon is on.
+
 
 One engine detail the director depends on, found the hard way: the PVS is built from the spectator's
 own `origin`, so a camera entity parked at the map origin stops receiving updates for a bot that
@@ -1462,14 +1497,27 @@ Expected: `"status":"applied","activityCode":"meat_round"`, and in the server co
 
 
 
-## Camera limits of the open-source client (verified 2026-10-26)
+## First person in the open-source client (verified 2026-10-26, updated for the lens)
 
-In first person the client draws no view model (no hands, no weapon) and no HUD text: `WeaponList`
-and `CurWeapon` are accepted without producing a gun. First person is therefore no way to show the
-weapon, and the gun a viewer sees comes from the third person camera, where the bot model holds it.
-That is why the chase camera is the default. The pilot in-eye window (`stcam_pov`, see the camera
-section) is a cut to an empty-handed but genuinely first-person view - it has to be judged on the
-stream, which is why it is a switch and not a default.
+The client draws no view model of its own in an in-eye observer mode, and `WeaponList` + `CurWeapon` are
+accepted without producing a gun - the old server-side fake is dead for good. What works is the field the
+game DLL uses for a real player: `pev_viewmodel` on the camera client. `ApplyViewmodel()` writes the
+bot's `models/v_<weapon>.mdl` (precached, one `AllocString` per weapon) and clears it again for the chase
+camera, because `R_DrawViewModel()` in the engine is unconditional and a leftover index would draw a gun
+floating in the middle of third person. Proven live: `vmodel=1` in `amx_stcam status` and the gun on the
+720p picture.
+
+The animation is the second half: the client holds no weapon, so the game DLL never sends it
+`SVC_WEAPONANIM`, and the `v_` model would be drawn in its idle sequence while the bot shoots. The plugin
+relays the bot's `pev_weaponanim` (and `pev_body`) to the client whenever it changes - the camera holds
+the same model, so the sequence index means the same thing on both sides.
+
+Still not forwarded, and known: the first person crosshair (the panel and the HUD line are the only
+overlay), screen shake on damage, and the muzzle flash - it comes from the model's own animation events,
+so it appears only if the relayed sequence carries one. The S3 launcher is `weapon_awp` with the hand
+model swapped, so in first person it shows the AWP view model until a `v_bazooka.mdl` exists.
 
 `cs_get_user_bpammo` on a knife (weapon id 29) raises "Invalid weapon id" and aborts the rest of the
-HUD update. The HUD line carries no ammo any more, so that call is gone with it.
+HUD update. The HUD line carries no ammo any more, so that call is gone with it; the shot detector reads
+the clip through `get_user_weapon()` instead, which is safe for every weapon id.
+

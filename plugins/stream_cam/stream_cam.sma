@@ -15,10 +15,17 @@
  *     teleporting around the map. A target now only changes when it dies, when it has been
  *     standing still, or when the hold time is up;
  *   - shows the action in third person (chase locked: the bot model with its weapon in hand is always
- *     visible). A first-person window is available as an opt-in cvar (stcam_pov): after the followed
- *     bot gets a kill the client is put into its own in-eye spectator mode for stcam_pov_sec seconds.
- *     It is client side on purpose - the older server-side version faked a view model with
- *     WeaponList + CurWeapon and every cut read on screen as the camera glitching; off by default;
+ *     visible) and cuts into the followed bot's eyes for the moments that matter: `stcam_eye 1` opens
+ *     that first person window when the bot SHOOTS (`stcam_eye_sec` after the last round, capped by
+ *     `stcam_eye_max`, then the same `stcam_eye_sec` back in third person so the picture alternates
+ *     instead of strobing), `stcam_eye 2` holds it for as long as the target lives (the switch the
+ *     picture is judged by), and the older `stcam_pov` opens it on a kill;
+ *     The gun in that window comes from this plugin: a spectator's own `viewmodel` field is empty, so
+ *     ApplyViewmodel() writes the followed bot's v_ model into it - the same field the game DLL writes
+ *     for a real player. Its shoot/reload animation is relayed from the bot's `pev_weaponanim`
+ *     (SVC_WEAPONANIM), because the client holds no weapon and the game DLL never sends it one. The
+ *     older attempt faked the model with WeaponList + CurWeapon, which the client accepts and does not
+ *     draw;
  *   - feeds the client the observed bot's health and armour, because a spectator has no player state
  *     of its own: without this the HUD shows an empty health bar. The same values are repeated as
  *     one HUD line together with the nickname, so the stream carries readable numbers at 720p;
@@ -30,7 +37,8 @@
  * RCON contract (docs/runbook.md):
  *   amx_stcam status -> "stream_cam status: enabled=1 interval=25.0 mode=1 spectator=<name>
  *                        target=<name> candidates=<n> dwell=12.0 hp=<n> active=<mode> ar=<n>
- *                        pov=<0|1> pov_active=<0|1> locked=<name|none> lock_left=<sec>"
+ *                        pov=<0|1> pov_active=<0|1> eye=<0|1|2> vmodel=<0|1> eye_active=<0|1>
+ *                        eye_cuts=<n> eye_ammo=<n> eye_btn=<n> locked=<name|none> lock_left=<sec>"
  *   amx_stcam lock <nick|#userid> [seconds] -> holds the camera on that bot, 20 s by default
  *   amx_stcam unlock                        -> gives the camera back to the director
  *   amx_stcam cmd <client command> [arg]    -> types a client command into the camera client
@@ -42,7 +50,10 @@
  * cvars: stcam_enable 1, stcam_mode 1 (1 = chase locked, 2 = chase free), stcam_dwell 6.0,
  *        stcam_idle 5.0, stcam_interval 25.0 (max hold on one target), stcam_avoid_repeat 1,
  *        stcam_spectator "StreamCam", stcam_hud 1, stcam_heartbeat 60.0,
- *        stcam_pov 0 (1 = cut to first person after a kill), stcam_pov_sec 2.5.
+ *        stcam_pov 0 (1 = cut to first person after a kill), stcam_pov_sec 2.5,
+ *        stcam_eye 1 (0 = third person only, 1 = first person when the bot shoots, 2 = held while the
+ *        target lives), stcam_eye_sec 2.0 (hold after the last shot, and the pause before the next
+ *        cut), stcam_eye_max 5.0 (ceiling on one continuous window, 0 = no ceiling).
  */
 #include <amxmodx>
 #include <fakemeta>
@@ -50,13 +61,20 @@
 #include <fun>
 
 #define PLUGIN_NAME "Stream Camera"
-#define PLUGIN_VERSION "0.5.0"
+#define PLUGIN_VERSION "0.6.0"
 
 #define TASK_TICK 42001
 #define TASK_FOLLOW 42002
 #define MAX_PLAYERS 32
 #define NAME_LEN 32
 #define TEAM_SPECTATOR 3
+
+// stcam_eye: the first person lens. 0 leaves the picture in third person, 1 opens the window when the
+// followed bot shoots (the action camera), 2 holds it for as long as the target lives (the switch the
+// picture is judged by - one bot, one continuous cut, nothing to tune).
+#define EYE_OFF 0
+#define EYE_ACTION 1
+#define EYE_ALWAYS 2
 
 // HL observer modes (m_iObserverMode). Named here so the include set stays minimal.
 #define CAM_CHASE_LOCKED 1
@@ -104,15 +122,119 @@ new cvar_hud;
 new cvar_heartbeat;
 new cvar_pov;
 new cvar_povSec;
+new cvar_eye;
+new cvar_eyeSec;
+new cvar_eyeMax;
 
-// In-eye window: the client is put into its own "first person" spectator mode for a couple of seconds
-// after the followed bot gets a kill. Client side, not server side: a spectator has no view model of
-// its own, and the old server-side version had to fake one (WeaponList + CurWeapon) which flickered.
+/* The first person weapon of a spectator. GoldSrc draws a player's view model from that player's own
+   `viewmodel` field (cl.local.viewmodel inside the engine), and a client that joined as SPECTATOR has
+   none - it holds nothing, so the in-eye camera shows empty hands. The director writes the view model
+   of the weapon the followed BOT holds into that field instead (the very field the game DLL writes for
+   a real player in DefaultDeploy) and clears it again for the chase camera, because the renderer draws
+   the view entity whenever it is set, in any observer mode.
+   
+   Stock weapons only: both string indexes are taken once, in plugin_precache(), because an
+   AllocString per tick would keep growing the engine's string table. */
+#define MAX_VMODELS 31
+#define VMODEL_LEN 32
+/* Indexed by the CSW_ weapon id from cstrike.inc (1 = P228 ... 30 = P90); 0 and 2 are unused. The
+   stem is enough for both names: models/p_<stem>.mdl is the model in the hand and
+   models/v_<stem>.mdl the first person one. Weapon ids are used instead of parsing the player's
+   `weaponmodel` field because that field is a string *index* on the wire - fakemeta hands it back as
+   a number, not as a name (measured: `raw=[-44181529]`). */
+new const g_weaponModel[MAX_VMODELS][] =
+{
+	"",             // 0
+	"p228",         // 1
+	"",             // 2
+	"scout",        // 3
+	"hegrenade",    // 4
+	"xm1014",       // 5
+	"c4",           // 6
+	"mac10",        // 7
+	"aug",          // 8
+	"smokegrenade", // 9
+	"elite",        // 10
+	"fiveseven",    // 11
+	"ump45",        // 12
+	"sg550",        // 13
+	"galil",        // 14
+	"famas",        // 15
+	"usp",          // 16
+	"glock18",      // 17
+	"awp",          // 18
+	"mp5",          // 19
+	"m249",         // 20
+	"m3",           // 21
+	"m4a1",         // 22
+	"tmp",          // 23
+	"g3sg1",        // 24
+	"flashbang",    // 25
+	"deagle",       // 26
+	"sg552",        // 27
+	"ak47",         // 28
+	"knife",        // 29
+	"p90"           // 30
+};
+/* Precache index of each v_ model is not needed: the field takes the ALLOC_STRING index. */
+new g_vmodelString[MAX_VMODELS];
+/* What is on the camera client right now, and which client slot it was written to - a reconnect
+   arrives with a different id and must not be skipped by this cache. */
+new g_viewmodelApplied;
+new g_viewmodelAppliedFor;
+
+// In-eye window: the client is put into its own "first person" spectator mode. One window, two
+// triggers - a shot fired by the followed bot (stcam_eye 1) and a kill (stcam_pov) - because two
+// separate windows would fight over the same observer field. Client side, not server side: a
+// spectator has no view model of its own, and ApplyViewmodel() is what puts the bot's gun in it.
+//
+// The window has a floor and a ceiling: stcam_eye_sec after the last shot, and the same time in third
+// person before the next cut (the alternation is what makes it read as a camera cut and not a strobe),
+// while stcam_eye_max caps one continuous window so a bot with a full magazine cannot own the lens.
 new bool:g_povActive;
 new Float:g_povUntil;
+new Float:g_povSince;
+new Float:g_eyeQuietUntil;
+new g_eyeCuts;
+new g_eyeAmmoCuts;
+new g_eyeButtonCuts;
+
+// Shot detector. A shot is the one thing that takes a round out of the clip, so the clip count of the
+// weapon the bot holds is the primary signal; the IN_ATTACK button is the fallback for the weapons
+// that spend nothing (knife, grenades, the last round) and the way to find out whether a YaPB fake
+// client reports its buttons at all - `amx_stcam status` counts both, separately.
+new g_fireWeapon;
+new g_fireClip;
+new bool:g_fireValid;
+new g_fireButton;
+
+// Last SVC_WEAPONANIM relayed to the camera client (-1 = nothing yet, so the first anim always goes).
+new g_eyeAnim = -1;
 
 new g_msgHealth;
 new g_msgArmor;
+
+/**
+ * The v_ models the camera may name in its own `viewmodel` field. GoldSrc resolves that field to a
+ * precache index when it sends the client data, and a name that was never precached resolves to 0:
+ * no gun at all. Missing .mdl files are fatal for the map load, so this is the stock set that ships
+ * with cstrike/models (checked against the image: `ls /hlds/cstrike/models | grep '^v_'`).
+ */
+public plugin_precache()
+{
+	new name[VMODEL_LEN];
+
+	for (new weapon = 1; weapon < MAX_VMODELS; weapon++)
+	{
+		if (!g_weaponModel[weapon][0])
+			continue;
+
+		// The v_ model is precached because the field is resolved to a precache index on the wire.
+		format(name, charsmax(name), "models/v_%s.mdl", g_weaponModel[weapon]);
+		precache_model(name);
+		g_vmodelString[weapon] = engfunc(EngFunc_AllocString, name);
+	}
+}
 
 public plugin_init()
 {
@@ -130,11 +252,21 @@ public plugin_init()
 	// 1 brings the old in-game block back as a fallback for a server without the panel.
 	cvar_hud         = register_cvar("stcam_hud", "0");
 	cvar_heartbeat   = register_cvar("stcam_heartbeat", "60.0");
-	// First person, off by default: 1 cuts the client into the followed bot's eyes for
-	// stcam_pov_sec seconds after that bot gets a kill. It is a client mode (spec_mode), so nothing
-	// has to be faked server side - and turning it off is one cvar.
+	// The other trigger of the same window, off by default: 1 cuts the client into the followed bot's
+	// eyes for stcam_pov_sec seconds after that bot gets a kill. Kept next to stcam_eye instead of
+	// being folded into it, because a kill cut and a shooting cut answer different questions and both
+	// end up in the same observer field.
 	cvar_pov         = register_cvar("stcam_pov", "0");
 	cvar_povSec      = register_cvar("stcam_pov_sec", "2.5");
+	// 1 = the action camera: the lens opens when the followed bot SHOOTS and closes stcam_eye_sec after
+	// the last round (capped by stcam_eye_max), then it stays in third person for the same stcam_eye_sec
+	// before it may cut again. 2 = held for as long as the target lives (the switch the picture is
+	// judged by). Both are the same observer field as the kill window above.
+	cvar_eye         = register_cvar("stcam_eye", "1");
+	cvar_eyeSec      = register_cvar("stcam_eye_sec", "2.0");
+	// Ceiling on one continuous first person window: a bot spraying a full magazine must not hold the
+	// picture in its eyes for twenty seconds. 0 disables the ceiling.
+	cvar_eyeMax      = register_cvar("stcam_eye_max", "5.0");
 
 	// What the panel outside the game reads every second: the bot on camera and its state as
 	// single tokens (spaces become underscores, like team_war does for nicknames).
@@ -181,6 +313,7 @@ public client_putinserver(id)
 	g_targetResets = 0;
 	g_lastAppliedMode = -1;
 	g_lastAppliedTarget = 0;
+	ResetEyeState();
 
 	new name[NAME_LEN];
 	get_user_name(id, name, charsmax(name));
@@ -213,6 +346,8 @@ public client_disconnected(id)
 		g_idleSince = 0.0;
 		g_modeSent = -1;
 		g_povActive = false;
+		g_eyeQuietUntil = 0.0;
+		ResetEyeTracking();
 	}
 	if (id == g_target)
 		g_target = 0;
@@ -262,9 +397,10 @@ public TaskTick()
 	UpdateActivity();
 
 	// Close the in-eye window on time, and never leave the client in first person when the camera is
-	// about to follow somebody else.
+	// about to follow somebody else. TaskFollow() closes it much faster (ten times a second); this is
+	// the backstop for a camera whose follow task died.
 	if (g_povActive && now >= g_povUntil)
-		LeavePov();
+		LeavePov("the window ran out");
 
 	// A lock that ran out keeps the current picture for one more dwell instead of cutting on the tick it
 	// expires: somebody paid for that bot, and the viewer is still watching it.
@@ -314,7 +450,15 @@ public TaskTick()
  */
 public TaskFollow()
 {
-	if (!get_pcvar_num(cvar_enabled) || g_camId <= 0 || !IsPlayable(g_target))
+	if (!get_pcvar_num(cvar_enabled) || g_camId <= 0)
+		return;
+
+	// The lens is a tenth-of-a-second thing: it opens on a shot and closes on its own clock here, not
+	// on the one second director tick. Called before the target check, so a window whose bot just died
+	// still closes instead of leaving the camera in a corpse's eyes until the next Tick.
+	UpdateEye();
+
+	if (!IsPlayable(g_target))
 		return;
 
 	// Count resets for the heartbeat: a non-zero value proves the engine dropped the observer state
@@ -364,9 +508,13 @@ stock ApplyCamera()
 {
 	// pev_iuser1 is m_iObserverMode, pev_iuser2 is m_hObserverTarget (HL SDK entity fields).
 	// The in-eye window is a change of that same field: the client asks, the server decides.
-	new mode = (g_povActive && get_pcvar_num(cvar_pov)) ? CAM_IN_EYE : get_pcvar_num(cvar_mode);
+	new mode = EyeWanted() ? CAM_IN_EYE : get_pcvar_num(cvar_mode);
 	set_pev(g_camId, pev_iuser1, mode);
 	set_pev(g_camId, pev_iuser2, g_target);
+
+	// The client draws its OWN view model, not the target's: first person needs that field filled
+	// with the bot's weapon, third person needs it empty again.
+	ApplyViewmodel(mode);
 
 	// Anchor the new target at once; TaskFollow() keeps it in the PVS between director ticks.
 	SyncCameraOrigin();
@@ -374,6 +522,61 @@ stock ApplyCamera()
 	g_modeSent = mode;
 	g_lastAppliedMode = mode;
 	g_lastAppliedTarget = g_target;
+}
+
+/**
+ * Fills or clears the camera client's own `viewmodel` field: that is what the engine turns into the
+ * first person weapon, and a spectator's is always empty. Called from ApplyCamera(), so the chase
+ * camera clears it in the same tick the mode changes - the renderer draws the view entity whenever it
+ * is set, whatever observer mode is on, and a leftover gun would float in the middle of third person.
+ */
+stock ApplyViewmodel(mode)
+{
+	new string = (mode == CAM_IN_EYE) ? VModelIndexFor(g_target) : 0;
+
+	if (string == g_viewmodelApplied && g_camId == g_viewmodelAppliedFor)
+		return;
+
+	set_pev(g_camId, pev_viewmodel, string);
+	g_viewmodelApplied = string;
+	g_viewmodelAppliedFor = g_camId;
+
+	// A new model starts at its own sequence 0, so the animation relay has to send again instead of
+	// trusting the last index it forwarded for the previous weapon.
+	g_eyeAnim = -1;
+
+	// Only the "a gun is on" direction is logged: a bot switching weapons flaps the field to nothing
+	// for a tick or two, and that is not worth a console line each time.
+	if (string)
+	{
+		new weapon = cs_get_user_weapon(g_target);
+		server_print("stream_cam viewmodel: %s (mode %d)",
+			(weapon > 0 && weapon < MAX_VMODELS) ? g_weaponModel[weapon] : "?", mode);
+	}
+}
+
+/**
+ * The view model index for the weapon the target holds, or 0 when there is nothing to draw: no
+ * weapon, or one the table does not know (a custom weapon entity of our own would land here).
+ *
+ * The table is by weapon id, not by the bot's `weaponmodel` field: that field is a string index on
+ * the wire and fakemeta hands it back as a number, and the engine allocated it from a pool the
+ * plugin cannot map back to a name.
+ *
+ * Known cosmetic gap: the S3 launcher is `weapon_awp` with the hand model swapped (see
+ * plugins/donation_events), so in first person it shows the AWP view model. A `v_bazooka.mdl` is what
+ * would fix that, and it does not exist yet (docs/activities/assets.md).
+ */
+stock VModelIndexFor(id)
+{
+	if (id <= 0 || id > MAX_PLAYERS || !is_user_connected(id))
+		return 0;
+
+	new weapon = cs_get_user_weapon(id);
+	if (weapon <= 0 || weapon >= MAX_VMODELS || !g_weaponModel[weapon][0])
+		return 0;
+
+	return g_vmodelString[weapon];
 }
 
 /**
@@ -417,30 +620,208 @@ stock ReplaceSpaces(text[], length)
 }
 
 /**
- * Cuts the client into the target's eyes: the flag flips and the observer mode is re-applied at once,
- * so the cut lands in the same frame instead of the next director tick. ApplyCamera() owns the field
- * the engine actually reads (pev_iuser1); a client-side `spec_mode` request loses that race, which is
- * why it is not used here.
+ * The first person lens, once per follow tick.
+ *
+ * Two jobs, both on the ten-a-second clock because a camera cut that waits for the one second
+ * director tick is a cut the viewer sees as late:
+ *   - close an open window the moment its clock runs out;
+ *   - watch the followed bot for a shot (stcam_eye 1) and relay its weapon animation while the window
+ *     is open, so the gun in the picture shoots and reloads instead of standing still.
+ *
+ * stcam_eye 0 does nothing here at all, and 2 (the judging switch) needs no trigger: ApplyCamera()
+ * reads EyeWanted() and stays in the eyes while the target lives.
  */
-stock EnterPov()
+stock UpdateEye()
 {
-	if (g_camId <= 0 || g_povActive || !get_pcvar_num(cvar_pov))
+	new Float:now = get_gametime();
+
+	if (g_povActive && now >= g_povUntil)
+		LeavePov("the window ran out");
+
+	if (get_pcvar_num(cvar_eye) != EYE_ACTION || !IsPlayable(g_target))
+	{
+		// The detector only runs in the action mode, so whatever it remembered from the last time is a
+		// reading of a moment nobody was watching: the first shot after the mode is switched back on
+		// would look like a burst that started during the pause.
+		ResetEyeTracking();
+		return;
+	}
+
+	WatchFire();
+
+	if (g_povActive)
+		RelayWeaponAnim();
+}
+
+/**
+ * Decides whether the bot on camera just pulled the trigger.
+ *
+ * The primary signal is the clip: firing is the only thing that takes a round out of it, a reload
+ * takes from the reserve and a weapon switch changes the id - both are filtered by storing the id the
+ * last reading belongs to. The IN_ATTACK button is the second signal: it covers the weapons that spend
+ * nothing (knife, grenades, the last round of a magazine) and it is the only way to learn whether a
+ * YaPB fake client reports buttons at all. It is read as an edge, not a level: a held trigger must not
+ * re-open the lens on every tick.
+ *
+ * Both counters end up in `amx_stcam status` (eye_ammo, eye_btn) on purpose: which signal fires on a
+ * live server is not documented anywhere, and one number per trigger answers it without a debugger.
+ */
+stock WatchFire()
+{
+	new clip, reserve;
+	new weapon = get_user_weapon(g_target, clip, reserve);
+
+	new bool:byAmmo = (g_fireValid && weapon == g_fireWeapon && clip < g_fireClip);
+
+	new buttons = pev(g_target, pev_button);
+	new bool:byButton = ((buttons & IN_ATTACK) != 0 && !g_fireButton);
+
+	g_fireButton = (buttons & IN_ATTACK) ? 1 : 0;
+	g_fireWeapon = weapon;
+	g_fireClip = clip;
+	g_fireValid = (weapon > 0);
+
+	if (!byAmmo && !byButton)
 		return;
 
-	g_povActive = true;
-	g_povUntil = get_gametime() + get_pcvar_float(cvar_povSec);
+	if (byAmmo)
+		g_eyeAmmoCuts++;
+	if (byButton)
+		g_eyeButtonCuts++;
+
+	EnterPov(byAmmo ? "shot" : "trigger", get_pcvar_float(cvar_eyeSec));
+}
+
+/**
+ * Repeats the bot's weapon animation to the camera client.
+ *
+ * A spectator holds no weapon, so the game DLL never sends it SVC_WEAPONANIM: the v_ model this plugin
+ * put in its `viewmodel` field is drawn, and it is drawn frozen. The bot's own `pev_weaponanim` is the
+ * sequence index the game DLL sent to the bot, and the camera holds the same model - so relaying it on
+ * change replays the shot, the reload and the deploy in the picture. `pev_body` comes along because
+ * some view models use it for the variant (a scoped AWP, a CT/USP skin).
+ */
+stock RelayWeaponAnim()
+{
+	new anim = pev(g_target, pev_weaponanim);
+	if (anim == g_eyeAnim)
+		return;
+
+	g_eyeAnim = anim;
+
+	message_begin(MSG_ONE_UNRELIABLE, SVC_WEAPONANIM, _, g_camId);
+	write_byte(anim);
+	write_byte(pev(g_target, pev_body));
+	message_end();
+}
+
+/**
+ * Opens the first person window, or pushes its end out when one is already open.
+ *
+ * One window for both triggers on purpose: a cut on every round of a burst, or a kill cut inside a
+ * shooting cut, would fight over the same observer field and read as flicker. The length is therefore
+ * "the last trigger plus its hold", with two limits that make the alternation watchable:
+ *   - a closed window stays closed for stcam_eye_sec (see LeavePov) - the viewer gets a real look at
+ *     third person between two cuts instead of a strobe;
+ *   - stcam_eye_max caps one continuous window, so a bot spraying a whole magazine hands the picture
+ *     back on its own.
+ *
+ * ApplyCamera() owns the field the engine actually reads (pev_iuser1) and is called here, so the cut
+ * lands in this frame instead of the next director tick; a client-side `spec_mode` request loses that
+ * race, which is why it is not used.
+ */
+stock EnterPov(const reason[], Float:seconds)
+{
+	if (g_camId <= 0)
+		return;
+
+	new Float:now = get_gametime();
+	new bool:opened = !g_povActive;
+
+	if (opened)
+	{
+		if (now < g_eyeQuietUntil)
+			return;
+
+		g_povActive = true;
+		g_povSince = now;
+		g_povUntil = now;
+		g_eyeCuts++;
+	}
+
+	if (now + seconds > g_povUntil)
+		g_povUntil = now + seconds;
+
+	new Float:ceiling = get_pcvar_float(cvar_eyeMax);
+	if (ceiling > 0.0 && g_povUntil > g_povSince + ceiling)
+		g_povUntil = g_povSince + ceiling;
+
+	if (!opened)
+		return;
+
+	new name[NAME_LEN] = "none";
+	if (g_target > 0 && is_user_connected(g_target))
+		get_user_name(g_target, name, charsmax(name));
+
+	log_amx("first person: %s (%.1fs, %s)", name, g_povUntil - now, reason);
+
 	ApplyCamera();
 }
 
-/** Back to the chase camera the stream runs on. Safe to call when the window is not open. */
-stock LeavePov()
+/**
+ * Back to the chase camera the stream runs on. Safe to call when the window is not open.
+ *
+ * The pause it sets is the other half of the alternation: stcam_eye_sec is both how long the lens stays
+ * open after the last shot and how long it stays closed before the next cut. One number, so tuning the
+ * rhythm is one cvar.
+ */
+stock LeavePov(const reason[])
 {
 	if (!g_povActive)
 		return;
 
 	g_povActive = false;
+	g_eyeAnim = -1;
+
+	new Float:quiet = get_pcvar_float(cvar_eyeSec);
+	g_eyeQuietUntil = get_gametime() + (quiet > 0.0 ? quiet : 0.0);
+
 	if (g_camId > 0)
 		ApplyCamera();
+
+	log_amx("first person closed: %s", reason);
+}
+
+/** Whether the observer mode should be in-eye right now: an open window, or the judging switch. */
+stock bool:EyeWanted()
+{
+	return g_povActive || get_pcvar_num(cvar_eye) == EYE_ALWAYS;
+}
+
+/**
+ * Forgets what the shot detector knew. Called whenever the target changes: its clip count belongs to
+ * somebody else, and keeping it would read the next reading as a shot and cut on a bot nobody chose.
+ */
+stock ResetEyeTracking()
+{
+	g_fireWeapon = 0;
+	g_fireClip = 0;
+	g_fireValid = false;
+	g_fireButton = 0;
+	g_eyeAnim = -1;
+}
+
+/** The whole lens state, for a fresh camera client: window closed, counters back to zero. */
+stock ResetEyeState()
+{
+	g_povActive = false;
+	g_povUntil = 0.0;
+	g_povSince = 0.0;
+	g_eyeQuietUntil = 0.0;
+	g_eyeCuts = 0;
+	g_eyeAmmoCuts = 0;
+	g_eyeButtonCuts = 0;
+	ResetEyeTracking();
 }
 
 stock FeedHud()
@@ -676,8 +1057,10 @@ stock PickTarget(const reason[], preferred)
 	new Float:bestScore = -1.0;
 
 	// A cut to another bot must not happen inside a first-person window: the client would be left
-	// looking through the eyes of somebody the panel no longer names.
-	LeavePov();
+	// looking through the eyes of somebody the panel no longer names. The shot detector is reset in the
+	// same place - the new bot's clip count is not a reading of the old one.
+	LeavePov("the target changed");
+	ResetEyeTracking();
 
 	for (new id = 1; id <= MAX_PLAYERS; id++)
 	{
@@ -742,9 +1125,10 @@ public EventDeathMsg()
 	g_kills[killer] += headshot ? 2 : 1;
 
 	// The viewer has just watched this bot kill somebody: cut into its eyes for a moment. Opt-in
-	// (stcam_pov, 0 by default) - the chase camera stays the default picture.
-	if (killer == g_target)
-		EnterPov();
+	// (stcam_pov, 0 by default) - the chase camera stays the default picture. The window itself is
+	// shared with the shooting trigger of stcam_eye, so a kill inside an open window only extends it.
+	if (killer == g_target && get_pcvar_num(cvar_pov))
+		EnterPov("kill", get_pcvar_float(cvar_povSec));
 }
 
 public OnRoundStart()
@@ -874,7 +1258,12 @@ public CmdStreamCam(id, level, cid)
 		g_lockUntil = get_gametime() + seconds;
 
 		// Applied in this call, not on the next director tick: the API sends the lock and the event in
-		// the same second, and a second of the wrong bot is what this command exists to prevent.
+		// the same second, and a second of the wrong bot is what this command exists to prevent. A first
+		// person window on the previous bot is closed here for the same reason - the paid cut must not
+		// start in somebody else's eyes.
+		LeavePov("the camera was locked on another bot");
+		ResetEyeTracking();
+
 		g_prevTarget = g_target;
 		g_target = target;
 		g_dwellUntil = g_lockUntil;
@@ -948,12 +1337,17 @@ public CmdStreamCam(id, level, cid)
 		ReplaceSpaces(locked, charsmax(locked));
 	}
 
-	// One line, key=value, no spaces inside values: docs/runbook.md greps exactly this.
-	server_print("stream_cam status: enabled=%d interval=%.1f mode=%d spectator=%s target=%s candidates=%d dwell=%.1f hp=%d active=%d ar=%d pov=%d pov_active=%d locked=%s lock_left=%.1f",
+	// One line, key=value, no spaces inside values: docs/runbook.md greps exactly this. eye_ammo and
+	// eye_btn are the two shot signals counted separately - the only way to tell from outside the game
+	// which one a YaPB fake client actually reports.
+	server_print("stream_cam status: enabled=%d interval=%.1f mode=%d spectator=%s target=%s candidates=%d dwell=%.1f hp=%d active=%d ar=%d pov=%d pov_active=%d eye=%d vmodel=%d eye_active=%d eye_sec=%.1f eye_cuts=%d eye_ammo=%d eye_btn=%d locked=%s lock_left=%.1f",
 		get_pcvar_num(cvar_enabled), get_pcvar_float(cvar_interval), get_pcvar_num(cvar_mode),
 		spectator, target, candidates,
 		get_pcvar_float(cvar_dwell), hp, g_modeSent, armor,
-		get_pcvar_num(cvar_pov), g_povActive ? 1 : 0, locked, lockLeft);
+		get_pcvar_num(cvar_pov), g_povActive ? 1 : 0,
+		get_pcvar_num(cvar_eye), g_viewmodelApplied ? 1 : 0,
+		EyeWanted() ? 1 : 0, get_pcvar_float(cvar_eyeSec), g_eyeCuts, g_eyeAmmoCuts, g_eyeButtonCuts,
+		locked, lockLeft);
 
 	return PLUGIN_HANDLED;
 }

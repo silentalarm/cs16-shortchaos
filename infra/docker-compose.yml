@@ -21,6 +21,13 @@ services:
       # First person camera (plugins/stream_cam): 0 = chase camera only, 1 = cut into the bot's eyes
       # for a moment after a kill. Off by default - this is the pilot switch for the feature.
       STREAM_POV: ${STREAM_POV:-0}
+      # First person lens: 0 = the chase camera only, 1 = the action camera (first person while the
+      # followed bot shoots, third person between the bursts), 2 = held while the bot lives.
+      STREAM_EYE: ${STREAM_EYE:-1}
+      # Its rhythm: seconds in first person after the last shot (and back in third person for the same
+      # time), and the ceiling on one continuous window.
+      STREAM_EYE_SEC: ${STREAM_EYE_SEC:-2.0}
+      STREAM_EYE_MAX: ${STREAM_EYE_MAX:-5.0}
       MAXPLAYERS: ${MAXPLAYERS:-22}
       RCON_PASSWORD: ${RCON_PASSWORD:?set RCON_PASSWORD in .env}
     # Loopback only, exactly like the panel: RCON rides TCP 27015, so a publish on every interface
@@ -211,6 +218,9 @@ services:
       # Empty by default: the encoder then pushes to YouTube with YOUTUBE_STREAM_KEY.
       # For local viewing: rtmp://mediamtx:1935/live/test (see docs/runbook.md).
       STREAM_OUTPUT: ${STREAM_OUTPUT:-}
+      # Seconds to record when STREAM_OUTPUT is set (0 = until stopped). The spike runs use it to
+      # record a fixed clip and let the container exit on its own.
+      STREAM_RECORD_SEC: ${STREAM_RECORD_SEC:-0}
       # YouTube ingest. RTMPS on 443, not plain RTMP on 1935: some ISPs drop the 1935 flow right
       # after the handshake packet and ffmpeg then reports "Cannot read RTMP handshake response".
       # This key overrides STREAM_RTMP from the env file on purpose, so a stale plain-RTMP value

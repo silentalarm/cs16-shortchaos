@@ -11,6 +11,9 @@ import { readFileSync } from "node:fs";
 const plugin = readFileSync(new URL("../plugins/stream_cam/stream_cam.sma", import.meta.url), "utf8");
 const entrypoint = readFileSync(new URL("../infra/stream/entrypoint.sh", import.meta.url), "utf8");
 const envExample = readFileSync(new URL("../.env.example", import.meta.url), "utf8");
+// The game server's own entrypoint: it is what turns STREAM_EYE* into the cvars the plugin registers.
+const serverEntrypoint = readFileSync(new URL("../infra/entrypoint.sh", import.meta.url), "utf8");
+
 
 function cvarDefault(name: string): string | undefined {
   const match = new RegExp(`register_cvar\\("${name}",\\s*"([^"]+)"\\)`).exec(plugin);
@@ -37,7 +40,7 @@ test("the director defaults to third person, with first person as an opt-in swit
   assert.equal(cvarDefault("stcam_pov"), "0", "first person must be off unless somebody asks for it");
   assert.ok(Number(cvarDefault("stcam_pov_sec")) > 0, "the in-eye window needs a length");
   assert.match(plugin, /#define CAM_IN_EYE 4/, "there is no OBS_IN_EYE mode to switch to");
-  assert.match(plugin, /g_povActive[^\n]*\?\s*CAM_IN_EYE\s*:/, "ApplyCamera ignores the window");
+  assert.match(plugin, /EyeWanted\(\)\s*\?\s*CAM_IN_EYE\s*:/, "ApplyCamera ignores the window");
 
   const faked = [
     /EventDamage/,
@@ -56,9 +59,13 @@ test("the status line still answers every key the runbook greps", () => {
     assert.match(status, new RegExp(`${key}=`), `amx_stcam status lost the ${key} key`);
   }
   // pov= is the switch, pov_active= says whether the window is open right now: the only way to tell
-  // from outside the game that the feature fired.
+  // from outside the game that the feature fired. The lens keys were added for the action camera and
+  // eye_ammo/eye_btn are the two shot signals counted separately.
   assert.match(status, /pov=%d/, "the status line does not report the first person switch");
   assert.match(status, /pov_active=%d/, "the status line does not report an open in-eye window");
+  for (const key of ["eye", "vmodel", "eye_active", "eye_sec", "eye_cuts", "eye_ammo", "eye_btn"]) {
+    assert.match(status, new RegExp(`${key}=`), `amx_stcam status lost the ${key} key`);
+  }
 });
 
 test("the camera can be held on a paid hero, and the lock ends by itself", () => {
@@ -170,3 +177,72 @@ test("the HUD line sits below the spectator band the encoder cuts off", () => {
   assert.ok(anchor, "the HUD line anchor is gone");
   assert.ok(Number(anchor) > 0.2, `the HUD line at ${anchor} is clipped by the band cut`);
 });
+test("the action camera cuts on a shot and hands the picture back", () => {
+  // stcam_eye: 0 third person only, 1 first person while the followed bot shoots, 2 held while it
+  // lives. 1 is the shipped picture - the feature exists to be seen, and it always gives the camera
+  // back on its own.
+  assert.equal(cvarDefault("stcam_eye"), "1", "the shot-triggered lens is the shipped picture");
+
+  const hold = Number(cvarDefault("stcam_eye_sec"));
+  const ceiling = Number(cvarDefault("stcam_eye_max"));
+  assert.ok(hold > 0, "the window needs a length: it is the hold after the last shot AND the pause in third person");
+  assert.ok(ceiling >= hold, "a ceiling below the hold would clip the window on the very first shot");
+
+  // One answer to "first person or not": the kill window and the shooting window share the observer
+  // field, so two separate flags would overwrite each other.
+  assert.match(plugin, /stock bool:EyeWanted\(\)/, "there is no single answer to \"first person or not\"");
+  assert.match(plugin, /EyeWanted\(\)\s*\?\s*CAM_IN_EYE\s*:/, "ApplyCamera ignores the lens");
+
+  // The shot is read from the clip - firing is the only thing that spends a round - with the IN_ATTACK
+  // button as the fallback for the weapons that spend nothing. Both are counted for the status line:
+  // whether a YaPB fake client reports buttons at all is not documented anywhere.
+  assert.match(plugin, /get_user_weapon\(g_target,\s*clip,\s*reserve\)/, "the shot detector lost the clip");
+  assert.match(plugin, /IN_ATTACK/, "the button fallback is gone");
+  assert.match(plugin, /g_eyeAmmoCuts\+\+/, "the clip trigger is not counted");
+  assert.match(plugin, /g_eyeButtonCuts\+\+/, "the button trigger is not counted");
+
+  // Ten times a second, not once: the cut and the return both have to land inside the action.
+  const follow = /public TaskFollow\(\)\s*\{[\s\S]*?\n\}/.exec(plugin)?.[0] ?? "";
+  assert.match(follow, /UpdateEye\(\)/, "TaskFollow never updates the lens: the cut waits for the 1 Hz tick");
+  const eye = /stock UpdateEye\(\)\s*\{[\s\S]*?\n\}/.exec(plugin)?.[0] ?? "";
+  assert.match(eye, /LeavePov\(/, "an expired window is never closed");
+  assert.match(eye, /WatchFire\(\)/, "UpdateEye never looks for a shot");
+  assert.match(eye, /RelayWeaponAnim\(\)/, "the gun in the picture never shoots: no animation relay");
+
+  // The window is shared, so it is entered through one door with a reason and a length.
+  assert.match(plugin, /stock EnterPov\(const reason\[\], Float:seconds\)/, "EnterPov lost its reason and hold");
+  assert.match(plugin, /EnterPov\("shot"|EnterPov\(byAmmo/, "no trigger actually opens the window");
+  const leave = /stock LeavePov\(const reason\[\]\)\s*\{[\s\S]*?\n\}/.exec(plugin)?.[0] ?? "";
+  assert.match(leave, /g_eyeQuietUntil/, "nothing keeps the camera in third person between two cuts");
+
+  // A new target means a new clip count: keeping the old one reads a weapon switch as a shot.
+  const pick = /stock PickTarget\(const reason\[\], preferred\)\s*\{[\s\S]*?\n\}/.exec(plugin)?.[0] ?? "";
+  assert.match(pick, /ResetEyeTracking\(\)/, "the shot detector survives a target change");
+
+  // The animation relay is the difference between a gun and a photograph of a gun.
+  const relay = /stock RelayWeaponAnim\(\)\s*\{[\s\S]*?\n\}/.exec(plugin)?.[0] ?? "";
+  assert.match(relay, /SVC_WEAPONANIM/, "the weapon animation is not relayed any more");
+  assert.match(relay, /write_byte\(anim\)/, "SVC_WEAPONANIM needs the sequence as its first byte");
+});
+
+test("the lens is tuned from .env, and the defaults agree", () => {
+  // One env var per cvar, patched into server.cfg by the entrypoint (the plugin re-reads them on every
+  // map change). The pairs are the contract: a default that drifts between .env.example and the plugin
+  // is a picture nobody can reproduce.
+  const pairs: [string, string][] = [
+    ["STREAM_EYE", "stcam_eye"],
+    ["STREAM_EYE_SEC", "stcam_eye_sec"],
+    ["STREAM_EYE_MAX", "stcam_eye_max"],
+  ];
+
+  for (const [env, cvar] of pairs) {
+    assert.match(
+      serverEntrypoint,
+      new RegExp(`grep -q '\\^${cvar} '`),
+      `${cvar} is never written into server.cfg, so ${env} does nothing`,
+    );
+    const fromEnv = new RegExp(`^${env}=([^\\r\\n]+)$`, "m").exec(envExample)?.[1];
+    assert.equal(fromEnv, cvarDefault(cvar), `${env} and the ${cvar} default disagree`);
+  }
+});
+
