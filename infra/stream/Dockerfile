@@ -105,7 +105,10 @@ RUN mkdir -p /usr/share/cs16/sounds \
 # The setuid bits that Debian ships (su, mount, passwd, ...) are useless here: the container runs
 # as uid 10002 with no login and capability dropping, so they are stripped and the gate in
 # infra/verify-stream.ps1 can require "no setuid binaries" instead of a whitelist.
-RUN chmod +x /usr/local/bin/stream-entrypoint.sh /usr/local/bin/watchdog.sh \
+# voice.sh is executed directly by the entrypoint, so it needs the bit too: without it the
+# container dies in a loop ("Permission denied") the moment the encoder starts, because wait -n
+# in the entrypoint treats that dead job as a reason to shut everything down.
+RUN chmod +x /usr/local/bin/stream-entrypoint.sh /usr/local/bin/watchdog.sh /usr/local/bin/voice.sh \
  && find / -xdev -perm /6000 -type f -exec chmod -s {} + \
  && mkdir -p /game \
  && useradd --system --uid 10002 --home /game --shell /usr/sbin/nologin stream \
