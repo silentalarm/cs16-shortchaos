@@ -30,7 +30,7 @@ still lets the subtitle be read.
 | 9 | `outbreak` | a third of the bots start infected (1500 HP, knife); a knife kill converts the victim | 60 | `share=33 health=1500 infectKnife=150 speed=1.15` | on sale |
 | 10 | `juggernaut` | one bot at 5000 HP with a knife; whoever kills it becomes it | 60 | `baseHealth=5000 perBot=0 knife=200 speed=1.2 transfer=1` | on sale |
 | 11 | `sniper` | one bot with an AWP, five rounds and the camera on it; a kill pays a round back, the fifth shot takes the launcher away | 45 | `baseHealth=250 perBot=0 rounds=5 speed=1 weapon=weapon_awp` | on sale (see note) |
-| 12 | `chaos_plague` | the boss, the infection and `amx_chaos force` in one event | 60 | `baseHealth=1500 perBot=300 knife=250 share=25 health=1500 infectKnife=150` | on sale |
+| 12 | `chaos_plague` | the boss, the infection and a forced `juggernaut` from `chaos_core` in one event | 60 | `baseHealth=1500 perBot=300 knife=250 share=25 health=1500 infectKnife=150` | on sale |
 
 ## S2 — classes (Zombie Plague classes)
 

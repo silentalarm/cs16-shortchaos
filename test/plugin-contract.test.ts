@@ -273,6 +273,18 @@ test("chaos_core's own clock is off, and its revert never cancels somebody else'
 });
 
 
+test("chaos_plague never disarms itself: a fixed juggernaut instead of the plugin's dice", () => {
+  // `amx_chaos force` without a code picks one of six effects, and `knives`/`awp` call RearmAll -
+  // strip_user_weapons on every alive bot, the boss of the wave included.
+  assert.doesNotMatch(source, /server_cmd\("amx_chaos force"\)/, "the random force is back in the plague");
+  assert.match(source, /server_cmd\("amx_chaos force juggernaut"\)/);
+
+  const chaos = readFileSync(new URL("../plugins/chaos_core/chaos_core.sma", import.meta.url), "utf8");
+  assert.match(chaos, /RegisterChaos\("juggernaut", "StartJuggernaut"/, "the fixed code left the registry");
+  const juggernaut = /public StartJuggernaut\(\)\s*\{[\s\S]*?\n\}/.exec(chaos)?.[0] ?? "";
+  assert.match(juggernaut, /get_user_health\(id\) < 300/, "juggernaut still cuts a bot that is already above 300 hp");
+});
+
 test("the five classes are one applier and a table, not five handlers", () => {
   const classes = ["raptors", "brutes", "runners", "jumpers", "regenerators"];
 

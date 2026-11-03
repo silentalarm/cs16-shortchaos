@@ -242,7 +242,7 @@ reference is read for its *mechanics* and, where the licence allows, for its ass
 | GunGame (AMXX) | GPL | the weapon ladder | its own scoring loop; ours is `team_war` |
 | Hide'n'Seek (AMXX) | GPL | freeze-on-sight rule | the melee-only movement rules |
 | ChaosModV (GTA V) | GPL-3.0 | effect taxonomy, timed vs one-shot, the screen/meta ideas, chat voting as a hook | any code: it is GTA V, ScriptHook and C++ |
-| `plugins/chaos_core` (this repo) | ours | `amx_chaos force` for `chaos_plague` | — |
+| `plugins/chaos_core` (this repo) | ours | `amx_chaos force juggernaut` for `chaos_plague` | — |
 
 The GPL column matters: copying a GPL handler into `donation_events` makes this plugin GPL. Reading it,
 reimplementing the mechanic and using freely redistributable assets does not. When in doubt, write the

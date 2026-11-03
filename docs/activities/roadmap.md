@@ -58,7 +58,7 @@ leaves the other intact.
       converts and the respawn hook re-arms the victim), `juggernaut` (the role goes to its killer),
       `sniper` (one bot, an AWP and five rounds; a kill pays a round back, and the shot that empties the
       budget takes the launcher away - the budget is counted in shots because `csdm_lite` refills every
-      reserve once a second) and `chaos_plague` (boss + infection + `amx_chaos force`); `sniper` replaced
+      reserve once a second) and `chaos_plague` (boss + infection + a forced `juggernaut`); `sniper` replaced
       `assassin` on 2026-10-31, see the note in `catalogue.md`;
 - [x] the infection is a per-slot flag, not a health value: csdm_lite gives the bot a rifle half a
       second after it dies, so only a flag survives the death the conversion depends on;

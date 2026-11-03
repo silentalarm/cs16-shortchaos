@@ -500,7 +500,7 @@ behaviour back.
 | `gravity` | 30 | 20 s | `sv_gravity 200` | restore the saved value |
 | `knives` | 25 | 15 s | every bot: knife only | nothing, the next spawn resets it |
 | `awp` | 20 | 15 s | every bot: AWP | nothing |
-| `juggernaut` | 20 | 20 s | every bot: 300 HP | nothing |
+| `juggernaut` | 20 | 20 s | every bot **below** 300 HP is raised to 300 (never lowered: `chaos_plague`'s boss runs at 1500) | nothing |
 | `vampire` | 15 | 30 s | flag on, killer heals 25 HP per kill | flag off |
 
 Commands (RCON or `server_cmd`): `amx_chaos status`, `amx_chaos force [code]`, `amx_chaos stop`,
@@ -528,6 +528,13 @@ The donation bridge is the chaos meter, not a ticket: every donated rouble count
 that list is empty: it stops whatever this plugin is running and starts one effect at once, which is
 the right answer to "the buyer paid for something visible now" and the wrong one while the list has
 codes - it is a second randomiser over the same screen.
+
+The one remaining caller on stream is `chaos_plague`, and it names its effect instead of rolling:
+`server_cmd("amx_chaos force juggernaut")`. Without the argument the plugin picks one of six, and two
+of them (`knives`, `awp`) call `RearmAll` - `strip_user_weapons` on every alive bot, the boss of that
+wave included, so about a third of the plagues disarmed their own boss a second into the event.
+`juggernaut` only raises health, which is the one thing that composes with a boss wave instead of
+cancelling it.
 
 Verified live, back when the timer was on (interval 45 s): `amx_chaos force speed` logged `'speed'
 started for 20s`, then `'speed' stopped` exactly 20 s later and the timer continued on its own

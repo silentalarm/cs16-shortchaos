@@ -491,7 +491,14 @@ public StartJuggernaut()
 {
 	for (new id = 1; id <= get_maxplayers(); id++)
 	{
-		if (IsBotAlive(id))
+		if (!IsBotAlive(id))
+			continue;
+
+		// Raise, never lower. `set_user_health(id, 300)` also *cut* a bot that was already above 300,
+		// and the boss of `chaos_plague` runs at 1500 HP: a juggernaut forced on top of that wave used
+		// to make the boss weaker than the wave it belongs to, which is why the plague ran 60 s of
+		// "everything at once" with a boss that died like a normal bot.
+		if (get_user_health(id) < 300)
 			set_user_health(id, 300);
 	}
 }

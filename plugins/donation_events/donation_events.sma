@@ -3128,7 +3128,12 @@ public EffectChaosPlague()
 
 	// A field with nobody left to infect still has its boss, so the failure here is not fatal.
 	StartOutbreak("chaos_plague");
-	server_cmd("amx_chaos force");
+	// A fixed code, not the plugin's dice. `amx_chaos force` without an argument picks one of six
+	// effects, and two of them - `knives` (weight 25) and `awp` (20 of 140) - call RearmAll:
+	// strip_user_weapons on every alive bot. The boss of this very wave carries a knife, so roughly a
+	// third of the plagues ended by disarming their own boss a second after it started.
+	// `juggernaut` composes instead: it only raises health, so the wave gets more of what it is.
+	server_cmd("amx_chaos force juggernaut");
 
 	StartEffectTimer("chaos_plague", EffectSeconds(60.0));
 	DonorSay("CHAOS PLAGUE: EVERYTHING AT ONCE");
