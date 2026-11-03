@@ -808,9 +808,19 @@ game the moment the finalists are done.
   due while `state=live` is logged as `events.paused` and **spent** - the cadence restarts, so the
   missed effect is not dumped on the two finalists when the duel ends;
 - the picture announces it: `ДАЛЬШЕ 2:31 · HE PARTY` in `next.txt`, rewritten once a second;
-- ranked free list - short, self-explanatory, safe to repeat: `he_party` (60 s), `meteor_shower`
-  (15 s), `one_bullet` (15 s), `red_light` (15 s), `jumpers` (30 s), `glass_cannon` (15 s),
-  `lightsaber_duel` (30 s), `bazooka_drop` (30 s);
+- ranked free list, 23 codes - one cycle is 23 × 180 s ≈ 69 min. First the eight the rotation opened
+  with (`he_party` 60 s, `meteor_shower` 15, `one_bullet` 15, `red_light` 15, `jumpers` 30,
+  `glass_cannon` 15, `lightsaber_duel` 30, `bazooka_drop` 30), then the fifteen that were built and
+  parked off sale: `airstrike`, `weapon_rain`, `quake`, `fire_ring`, `invert_velocity`,
+  `chain_lightning`, `hero_roulette`, `vampiric_aura`, `freeze_nades`, `statues`, `head_hunter`,
+  `king_of_the_hill`, `duel_bell`, `guntrain`, `low_gravity_knives`. They keep `enabled: false` in the
+  catalogue on purpose: the rotation looks a code up in the catalogue, not in the on-sale subset, so
+  nothing in this list is both sold and given away;
+- never in the rotation, with the reason: `hex_wave` (no chicken model), `fire_grenades` (measured:
+  YaPB bots never throw the HE the plugin puts in their hands, so nobody burns), `blink_bots` (it
+  teleports every bot, and a teleport here is measured as "3 kills in 90 s against 149 in 60 s",
+  `docs/runbook.md` "bot_antistuck"), and the four sound codes (`announcer_countdown`, `quotes_pack`,
+  `siren`, `music_swap`) - the rotation is picture, not audio;
 - paid only, never in the rotation: the hero modes with the camera locked (`nemesis`, `survivor`,
   `juggernaut`, `sniper`, `outbreak`, `chaos_plague`) and the class waves (`raptors`, `brutes`,
   `runners`, `regenerators`). These are what a viewer buys - giving them away removes the reason to

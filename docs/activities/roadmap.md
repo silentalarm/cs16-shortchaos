@@ -146,9 +146,12 @@ a bunny.
       file is checked with `file_exists` before `precache_model`, and a contract test keeps that order;
 
 **Done when:** the chicken shows up on the stream and the bot gets its model and weapons back afterwards.
-All five codes are in the plugin, in the catalogue as `ready` and off sale, and checked on the test
-server: `amx_de codes` lists them, each clock ends on its own, and the undo path runs with no AMXX error
-log. What is missing is the .mdl, and the on-sale step once the picture is confirmed.
+All five codes are in the plugin, in the catalogue as `ready`, and checked on the test server: `amx_de
+codes` lists them, each clock ends on its own, and the undo path runs with no AMXX error log. Three of
+them now run in the free rotation (`chain_lightning`, `hero_roulette`, `vampiric_aura`); `hex_wave`
+waits for the chicken `.mdl` and `blink_bots` stays out because a teleport leaves the bot with a stale
+goal (`docs/runbook.md`, "bot_antistuck"). What is missing is the on-sale step once the picture is
+confirmed.
 
 ## Stage 5 — S3 items (5 codes)
 

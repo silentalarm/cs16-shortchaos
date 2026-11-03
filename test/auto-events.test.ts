@@ -214,6 +214,24 @@ test("a quiet minute with no duel and no donation still fires", async () => {
   assert.equal(ran.kind, "ran");
 });
 
+test("the rotation leaves out what is known not to work on the stream", () => {
+  // `hex_wave` has no chicken model (`docs/activities/catalogue.md`), `fire_grenades` was measured as
+  // "nobody burns" - YaPB bots never throw the HE the plugin puts in their hands - and `blink_bots`
+  // teleports every bot, which in this project is measured as "3 kills in 90 s against 149 in 60 s"
+  // (docs/runbook.md, bot_antistuck). The four sound codes stay out because the rotation is picture.
+  for (const code of [
+    "hex_wave",
+    "fire_grenades",
+    "blink_bots",
+    "announcer_countdown",
+    "quotes_pack",
+    "siren",
+    "music_swap",
+  ]) {
+    assert.equal(config.free.includes(code), false, `${code} must not be in the free rotation`);
+  }
+});
+
 test("a disabled rotation shows nothing and fires nothing", async () => {
   const off = parseAutoEvents(
     { version: 1, enabled: false, intervalSec: 180, quietAfterPaidSec: 60, free: [], chaos: [] },

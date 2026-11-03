@@ -1,7 +1,8 @@
 # The 50 codes
 
 Status legend: **on sale** lives in `config/activities.json` with `enabled: true`; **kept** is in the
-catalogue but off sale; **planned** is described here and not written yet. A code becomes
+catalogue but off sale; **in the free rotation** is off sale and runs on the control API clock
+(`config/auto-events.json`); **planned** is described here and not written yet. A code becomes
 `ready` only when the handler is merged, the contract tests pass and `amx_de codes` reports it.
 
 Every new code ships as `price: 50`, `duration: "seconds"`, `params.seconds` equal to its clock and
@@ -19,7 +20,7 @@ still lets the subtitle be read.
 | 3 | `meteor_shower` | 43 explosions a second in a radius around the bots, 2 damage each | 15 | `damage=2 radius=320` | on sale |
 | 4 | `one_bullet` | one round in the clip, then knives | 15 | — | on sale |
 | 5 | `red_light` | 1.5 s frozen / 2 s moving, repeating, broadcast cues instead of stock | 15 | `stock=0 soundRed soundGreen` | on sale |
-| 6 | `he_party` | every weapon taken away, knife and endless HE grenades | 60 | `seconds=60` | kept (runs free, `config/auto-events.json`) |
+| 6 | `he_party` | every weapon taken away, knife and endless HE grenades | 60 | `seconds=60` | in the free rotation (kept off sale) |
 
 ## S1 — round modes (Zombie Plague)
 
@@ -46,8 +47,8 @@ still lets the subtitle be read.
 
 | # | code | What the viewer sees | sec | params | status |
 |---|---|---|---|---|---|
-| 18 | `fire_grenades` | an HE sets bots on fire: 60 damage a tick for 15 s, orange sprite | 30 | `damage=60 burn=15 radius=300` | ready (off sale, own blast, endless HE reserve, live-run) |
-| 19 | `freeze_nades` | a flashbang freezes everybody in the blast for 6 s under an ice-white shell, with ice shards on the blast and its own ice crack (`freeze/ice_crack.wav`) | 30 | `freeze=6 radius=300` | ready (off sale, own pulse, live-run) |
+| 18 | `fire_grenades` | an HE sets bots on fire: 60 damage a tick for 15 s, orange sprite | 30 | `damage=60 burn=15 radius=300` | ready (off sale, not in the rotation: the bots never throw the HE, measured as "nobody burns") |
+| 19 | `freeze_nades` | a flashbang freezes everybody in the blast for 6 s under an ice-white shell, with ice shards on the blast and its own ice crack (`freeze/ice_crack.wav`) | 30 | `freeze=6 radius=300` | in the free rotation (own pulse, live-run) |
 | 20 | `bazooka_drop` | one bot holds the launcher and fires rockets: 500 blast damage inside 320 units, camera on it | 30 | `damage=500 radius=320` | on sale (stream watch pending: the launcher in hand is unconfirmed by eye) |
 | 21 | `plasma_rifle` | one bot with an energy rifle: 90 damage, blue tracers, 50 rounds | 30 | `damage=90 ammo=50` | planned |
 | 22 | `laser_mines` | three mines on the map, a beam burns whoever crosses it | 45 | `count=3 damage=40` | planned |
@@ -56,32 +57,32 @@ still lets the subtitle be read.
 
 | # | code | What the viewer sees | sec | params | status |
 |---|---|---|---|---|---|
-| 23 | `hex_wave` | a random bot turns into a chicken: model swap, no weapons, ×0.6 speed | 20 | `seconds=20 model=chicken` | ready (off sale, no .mdl) |
-| 24 | `chain_lightning` | every 3 s a bolt jumps through three bots in a row | 20 | `targets=3 damage=40 period=3` | ready (off sale) |
-| 25 | `blink_bots` | every bot teleports 200 units forward every 4 s | 20 | `distance=200 period=4` | ready (off sale) |
-| 26 | `hero_roulette` | one bot gets a random power: invisibility, ×2 speed, 500 HP or an endless deagle | 45 | `pool=invisible,speed,health,deagle` | ready (off sale) |
-| 27 | `vampiric_aura` | everybody heals 50 % of the damage they deal | 30 | `share=50` | ready (off sale) |
+| 23 | `hex_wave` | a random bot turns into a chicken: model swap, no weapons, ×0.6 speed | 20 | `seconds=20 model=chicken` | ready (off sale, no .mdl, not in the rotation) |
+| 24 | `chain_lightning` | every 3 s a bolt jumps through three bots in a row | 20 | `targets=3 damage=40 period=3` | in the free rotation |
+| 25 | `blink_bots` | every bot teleports 200 units forward every 4 s | 20 | `distance=200 period=4` | ready (off sale, not in the rotation: a teleport leaves the bot with a stale goal) |
+| 26 | `hero_roulette` | one bot gets a random power: invisibility, ×2 speed, 500 HP or an endless deagle | 45 | `pool=invisible,speed,health,deagle` | in the free rotation |
+| 27 | `vampiric_aura` | everybody heals 50 % of the damage they deal | 30 | `share=50` | in the free rotation |
 
 ## S5 — chases and arenas (GunGame, Hide'n'Seek, arena formats)
 
 | # | code | What the viewer sees | sec | params | status |
 |---|---|---|---|---|---|
-| 28 | `guntrain` | GunGame ladder: a kill moves the bot one weapon up, chat names the leader | 60 | `ladder=glock18,usp,deagle,mp5navy,ak47,m4a1,awp,knife` | ready (off sale) |
-| 29 | `statues` | a bot freezes while another bot can see it — Hide'n'Seek on autopilot | 30 | `seconds=30` | ready (off sale) |
-| 30 | `head_hunter` | the marked bot's killer gets an AWP for 15 s; the mark moves every 3 s | 45 | `reward=weapon_awp hold=15 period=3` | ready (off sale) |
-| 31 | `king_of_the_hill` | hold the middle of the fight for 3 s and keep 300 HP and an M249 | 60 | `radius=200 hold=3 health=300` | ready (off sale) |
-| 32 | `duel_bell` | every 10 s two random bots are dropped in the middle for a 1 HP knife duel | 40 | `period=10 health=1` | ready (off sale) |
+| 28 | `guntrain` | GunGame ladder: a kill moves the bot one weapon up, chat names the leader | 60 | `ladder=glock18,usp,deagle,mp5navy,ak47,m4a1,awp,knife` | in the free rotation |
+| 29 | `statues` | a bot freezes while another bot can see it — Hide'n'Seek on autopilot | 30 | `seconds=30` | in the free rotation |
+| 30 | `head_hunter` | the marked bot's killer gets an AWP for 15 s; the mark moves every 3 s | 45 | `reward=weapon_awp hold=15 period=3` | in the free rotation |
+| 31 | `king_of_the_hill` | hold the middle of the fight for 3 s and keep 300 HP and an M249 | 60 | `radius=200 hold=3 health=300` | in the free rotation |
+| 32 | `duel_bell` | every 10 s two random bots are dropped in the middle for a 1 HP knife duel | 40 | `period=10 health=1` | in the free rotation |
 
 ## S6 — world and physics (ChaosModV)
 
 | # | code | What the viewer sees | sec | params | status |
 |---|---|---|---|---|---|
-| 33 | `airstrike` | ten explosions converging on the frag leader | 20 | `strikes=10 damage=120 radius=300` | ready (off sale) |
-| 34 | `weapon_rain` | one weapon drops every 2 s, five in total (hard cap, see llvmpipe) | 20 | `count=5 period=2` | ready (off sale) |
-| 35 | `quake` | every 0.7 s everyone is shoved by a random impulse | 15 | `period=0.7 force=400` | ready (off sale) |
-| 36 | `fire_ring` | a damage zone shrinks towards the centre | 30 | `damage=5 period=1 shrink=40` | ready (off sale) |
-| 37 | `invert_velocity` | every bot's velocity is negated: running forwards goes backwards | 10 | `period=0.2` | ready (off sale) |
-| 38 | `low_gravity_knives` | gravity 150, knives only: jump duels | 25 | `gravity=150` | ready (off sale) |
+| 33 | `airstrike` | ten explosions converging on the frag leader | 20 | `strikes=10 damage=120 radius=300` | in the free rotation |
+| 34 | `weapon_rain` | one weapon drops every 2 s, five in total (hard cap, see llvmpipe) | 20 | `count=5 period=2` | in the free rotation |
+| 35 | `quake` | every 0.7 s everyone is shoved by a random impulse | 15 | `period=0.7 force=400` | in the free rotation |
+| 36 | `fire_ring` | a damage zone shrinks towards the centre | 30 | `damage=5 period=1 shrink=40` | in the free rotation |
+| 37 | `invert_velocity` | every bot's velocity is negated: running forwards goes backwards | 10 | `period=0.2` | in the free rotation |
+| 38 | `low_gravity_knives` | gravity 150, knives only: jump duels | 25 | `gravity=150` | in the free rotation |
 
 ## S7 — models
 

@@ -89,12 +89,23 @@ Planned: ffmpeg streaming to YouTube.
 
 `config/auto-events.json` runs one activity every three minutes with no donation at all, so a viewer
 who arrives during a quiet minute still sees something happen. The list is **ranked** (`he_party`
-first), every entry is a short clock, and the paid hero modes (`nemesis`, `survivor`, `juggernaut`,
-`sniper`, `outbreak`, `chaos_plague`) are never in it - a free hero round leaves nothing to buy. A
-donation that just landed keeps the screen for 60 s, the map's finale (`map_duel`) keeps it for as
-long as the duel runs, and the picture counts down to the next free event
-(`ДАЛЬШЕ 2:31 · HE PARTY`) where the queue line used to be. The chaos meter fires only from the
-`chaos` subset - what actually reads as chaos, `he_party` among it.
+first) and holds 23 codes - one full cycle is about 69 minutes: the eight hooks the rotation opened
+with, then the fifteen that were built and parked off sale (`airstrike`, `weapon_rain`, `quake`,
+`fire_ring`, `invert_velocity`, `chain_lightning`, `hero_roulette`, `vampiric_aura`, `freeze_nades`,
+`statues`, `head_hunter`, `king_of_the_hill`, `duel_bell`, `guntrain`, `low_gravity_knives`). They
+stay `enabled: false` in the catalogue, so none of them is sold *and* given away. Every entry is a
+short clock, and the paid hero modes (`nemesis`, `survivor`, `juggernaut`, `sniper`, `outbreak`,
+`chaos_plague`) are never in it - a free hero round leaves nothing to buy. A donation that just landed
+keeps the screen for 60 s, the map's finale (`map_duel`) keeps it for as long as the duel runs, and
+the picture counts down to the next free event (`ДАЛЬШЕ 2:31 · HE PARTY`) where the queue line used to
+be. The chaos meter fires only from the `chaos` subset - what actually reads as chaos, `he_party`
+among it.
+
+Three codes are deliberately left out of the rotation: `hex_wave` (no chicken model), `fire_grenades`
+(the bots never throw the HE the plugin hands them, so nobody burns) and `blink_bots` (it teleports
+every bot, and a teleport here leaves a bot with a stale goal). The four sound codes
+(`announcer_countdown`, `quotes_pack`, `siren`, `music_swap`) stay out as well: the rotation is
+picture, not audio. `test/auto-events.test.ts` pins that exclusion list.
 
 This rotation is the **only** free clock: `chaos_core`'s own timer is off (`chaos_interval 0`), and
 the plugin is kept for `amx_chaos force`, which `chaos_plague` and the meter's fallback still use.

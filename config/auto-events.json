@@ -11,7 +11,22 @@
     "jumpers",
     "glass_cannon",
     "lightsaber_duel",
-    "bazooka_drop"
+    "bazooka_drop",
+    "airstrike",
+    "weapon_rain",
+    "quake",
+    "fire_ring",
+    "invert_velocity",
+    "chain_lightning",
+    "hero_roulette",
+    "vampiric_aura",
+    "freeze_nades",
+    "statues",
+    "head_hunter",
+    "king_of_the_hill",
+    "duel_bell",
+    "guntrain",
+    "low_gravity_knives"
   ],
   "chaos": [
     "he_party",
