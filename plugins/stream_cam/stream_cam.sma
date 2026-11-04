@@ -178,9 +178,6 @@ new const g_weaponModel[MAX_VMODELS][] =
 };
 /* Precache index of each v_ model is not needed: the field takes the ALLOC_STRING index. */
 new g_vmodelString[MAX_VMODELS];
-/* The same index for models/p_<stem>.mdl: the bot's own `pev_weaponmodel` is compared against it to
-   notice a hand model an event has swapped (see StockGunInHand). */
-new g_pmodelString[MAX_VMODELS];
 /* What is on the camera client right now, and which client slot it was written to - a reconnect
    arrives with a different id and must not be skipped by this cache. */
 new g_viewmodelApplied;
@@ -238,13 +235,6 @@ public plugin_precache()
 		format(name, charsmax(name), "models/v_%s.mdl", g_weaponModel[weapon]);
 		precache_model(name);
 		g_vmodelString[weapon] = engfunc(EngFunc_AllocString, name);
-
-		// The p_ model is the one in the bot's hand; the game DLL precaches it for the weapon, and the
-		// string index is what `pev_weaponmodel` holds, so an event that swaps the model (p_bazooka)
-		// can be told apart from the stock one.
-		format(name, charsmax(name), "models/p_%s.mdl", g_weaponModel[weapon]);
-		precache_model(name);
-		g_pmodelString[weapon] = engfunc(EngFunc_AllocString, name);
 	}
 }
 
@@ -554,7 +544,7 @@ stock ApplyCamera()
  */
 stock ApplyViewmodel(mode)
 {
-	new string = (mode == CAM_IN_EYE && StockGunInHand(g_target)) ? VModelIndexFor(g_target) : 0;
+	new string = (mode == CAM_IN_EYE) ? VModelIndexFor(g_target) : 0;
 
 	if (string == g_viewmodelApplied && g_camId == g_viewmodelAppliedFor)
 		return;
@@ -599,34 +589,6 @@ stock VModelIndexFor(id)
 		return 0;
 
 	return g_vmodelString[weapon];
-}
-
-/**
- * Whether the gun in the bot's hand is the stock one for the id `cs_get_user_weapon` reports.
- *
- * The camera draws a stock `v_` model by weapon id, but the model in the third person picture is the
- * bot's `pev_weaponmodel`, and events (plugins/donation_events) swap that field for the length of an
- * effect: the bazooka is `weapon_awp` with `models/p_bazooka.mdl` in the hand, the nemesis knife is
- * `models/p_nemesis_knife.mdl`. The two pictures then show two different guns - reported live as "in
- * the hands one, from third person another". There is no `v_bazooka.mdl` (see
- * docs/activities/assets.md), so the lens simply stays closed while the hand is swapped and the
- * third person picture, where the swapped model is correct, keeps the frame.
- */
-stock bool:StockGunInHand(id)
-{
-	if (id <= 0 || id > MAX_PLAYERS || !is_user_connected(id))
-		return false;
-
-	new weapon = cs_get_user_weapon(id);
-	if (weapon <= 0 || weapon >= MAX_VMODELS || !g_weaponModel[weapon][0])
-		return false;
-
-	// Zero means the model was never precached for that id: the hand holds something our table does
-	// not know, so the lens has nothing correct to draw either.
-	if (g_pmodelString[weapon] == 0)
-		return false;
-
-	return pev(id, pev_weaponmodel) == g_pmodelString[weapon];
 }
 
 /**
@@ -693,17 +655,6 @@ stock UpdateEye()
 		// The detector only runs in the action mode, so whatever it remembered from the last time is a
 		// reading of a moment nobody was watching: the first shot after the mode is switched back on
 		// would look like a burst that started during the pause.
-		ResetEyeTracking();
-		return;
-	}
-
-	// Third person is the only correct picture while the hand model is swapped (see StockGunInHand):
-	// the lens draws a stock `v_` model by weapon id, the bot's hand holds something else.
-	if (!StockGunInHand(g_target))
-	{
-		if (g_povActive)
-			LeavePov("the hand model was swapped");
-
 		ResetEyeTracking();
 		return;
 	}

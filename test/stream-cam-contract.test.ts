@@ -279,23 +279,4 @@ test("only a shot is relayed into the frozen view model", () => {
 });
 
 
-test("the lens closes when an event swapped the gun in the bot's hand", () => {
-  // Third person draws the bot's `pev_weaponmodel`, first person draws a stock `v_` model by weapon id.
-  // donation_events swaps that field for the bazooka and the nemesis knife, so the two pictures showed
-  // two different guns ("in the hands one, from third person another"). There is no `v_bazooka.mdl`, so
-  // the lens stays shut instead of guessing.
-  assert.match(plugin, /new g_pmodelString\[MAX_VMODELS\];/, "the p_ model indexes are not kept");
-  assert.match(plugin, /format\(name, charsmax\(name\), "models\/p_%s\.mdl"/, "the p_ models are never resolved");
-  assert.match(plugin, /stock bool:StockGunInHand\(id\)/, "no StockGunInHand() in the plugin");
-  assert.match(plugin, /return pev\(id, pev_weaponmodel\) == g_pmodelString\[weapon\];/, "the swapped model is never noticed");
-
-  const eye = /stock UpdateEye\(\)\s*\{[\s\S]*?\n\}/.exec(plugin)?.[0] ?? "";
-  assert.ok(eye !== "", "no UpdateEye()");
-  assert.match(eye, /if \(!StockGunInHand\(g_target\)\)/, "the lens opens with a swapped hand model");
-  assert.match(eye, /LeavePov\("the hand model was swapped"\)/, "the open window is not closed on a swap");
-
-  const view = /stock ApplyViewmodel\(mode\)\s*\{[\s\S]*?\n\}/.exec(plugin)?.[0] ?? "";
-  assert.ok(view !== "", "no ApplyViewmodel()");
-  assert.match(view, /mode == CAM_IN_EYE && StockGunInHand\(g_target\)/, "a swapped model is still drawn in the eyes");
-});
 
