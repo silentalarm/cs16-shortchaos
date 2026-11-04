@@ -210,6 +210,8 @@ new g_fireButton;
 
 // Last SVC_WEAPONANIM relayed to the camera client (-1 = nothing yet, so the first anim always goes).
 new g_eyeAnim = -1;
+// Set in the tick a shot was detected: only that tick relays an animation, see TaskFollow().
+new g_firePulse;
 
 new g_msgHealth;
 new g_msgArmor;
@@ -366,6 +368,11 @@ public TaskJoinSpectator(id)
 		return;
 
 	client_cmd(id, "jointeam 6");
+	// The client library decides handedness for the spectator's own view model on its own: a v_ model
+	// drawn mirrored reads on screen as "the gun is in the left hand". userconfig.cfg sets both cvars,
+	// but the engine rewrites config.cfg on exit and the capture container restarts often, so the client
+	// is told again here - once per join, not per frame.
+	client_cmd(id, "cl_righthand 1; r_drawviewmodel 1");
 }
 
 public TaskTick()
@@ -512,6 +519,11 @@ stock ApplyCamera()
 	set_pev(g_camId, pev_iuser1, mode);
 	set_pev(g_camId, pev_iuser2, g_target);
 
+	// Every cut into the eyes repeats the handedness: the client re-applies its own default when the
+	// observer mode changes, and the mirrored v_ model is what the stream showed as a left hand.
+	if (mode == CAM_IN_EYE && g_lastAppliedMode != CAM_IN_EYE)
+		client_cmd(g_camId, "cl_righthand 1; r_drawviewmodel 1");
+
 	// The client draws its OWN view model, not the target's: first person needs that field filled
 	// with the bot's weapon, third person needs it empty again.
 	ApplyViewmodel(mode);
@@ -649,8 +661,13 @@ stock UpdateEye()
 
 	WatchFire();
 
-	if (g_povActive)
+	// Only a shot is relayed. The bot's own sequence index flaps between idle and reload on a real
+	// server, and the client - holding a model but no weapon state - then loops whatever it was last
+	// sent: on the live stream that read as a gun reloading non-stop in first person.
+	if (g_povActive && g_firePulse)
 		RelayWeaponAnim();
+
+	g_firePulse = 0;
 }
 
 /**
@@ -688,6 +705,12 @@ stock WatchFire()
 		g_eyeAmmoCuts++;
 	if (byButton)
 		g_eyeButtonCuts++;
+
+	// The fire animation is relayed in this very tick, and the last index is forgotten so a burst of
+	// identical frames (every shot of the same gun carries the same sequence) still restarts on the
+	// client instead of being deduplicated away.
+	g_firePulse = 1;
+	g_eyeAnim = -1;
 
 	EnterPov(byAmmo ? "shot" : "trigger", get_pcvar_float(cvar_eyeSec));
 }

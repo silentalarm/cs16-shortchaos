@@ -1406,8 +1406,17 @@ the engine draws that field. The window has four rules, all of them in one place
   the alternation read as a camera cut instead of a strobe, and one number tunes both halves.
 
 While the window is open the plugin also relays the bot's `pev_weaponanim` to the client as
-`SVC_WEAPONANIM` (`RelayWeaponAnim`): without it the gun in the picture is drawn, and drawn frozen - a
-spectator has no weapon, so the game DLL never sends it a shoot or reload animation.
+`SVC_WEAPONANIM` (`RelayWeaponAnim`): without it the gun in the picture is drawn, and drawn frozen -
+a spectator has no weapon, so the game DLL never sends it a shoot or reload animation. **Only the tick
+of a shot is relayed** (`g_firePulse`, set in `WatchFire`, cleared in `UpdateEye`): a bot's sequence
+index flaps between idle and reload, and the client - holding a model but no weapon state - loops
+whatever it was last sent, which showed up on the live stream as a gun reloading non-stop. The last
+index is forgotten on every shot, so a burst of identical frames still restarts on the client.
+
+Handedness is repeated, not inherited: `cl_righthand 1` is in `userconfig.cfg`, but the engine rewrites
+`config.cfg` on exit and the client re-applies its own default when the observer mode changes, so
+`TaskJoinSpectator` sends it once per join and `ApplyCamera` repeats it on every cut into the eyes. A
+mirrored `v_` model was the "gun is in the left hand" report from the live picture.
 
 The kill trigger (`stcam_pov`, `stcam_pov_sec`) opens the same window; both ends of it are one observer
 field, so two separate flags would overwrite each other. `stcam_eye 2` is the judging switch - one bot,

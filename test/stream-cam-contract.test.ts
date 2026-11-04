@@ -246,3 +246,35 @@ test("the lens is tuned from .env, and the defaults agree", () => {
   }
 });
 
+
+test("the first person lens keeps the gun in the right hand", () => {
+  // A v_ model drawn mirrored reads on screen as "the gun is in the left hand". userconfig.cfg sets the
+  // cvar, but the engine rewrites config.cfg on exit and the client re-applies its own default whenever
+  // the observer mode changes, so the command is repeated per join and per cut into the eyes.
+  assert.match(
+    plugin,
+    /client_cmd\(id, "cl_righthand 1; r_drawviewmodel 1"\)/,
+    "the stream client never gets the handedness on join",
+  );
+  const apply = /stock ApplyCamera\(\)\s*\{[\s\S]*?\n\}/.exec(plugin)?.[0] ?? "";
+  assert.ok(apply !== "", "no ApplyCamera() in the plugin");
+  assert.match(apply, /mode == CAM_IN_EYE && g_lastAppliedMode != CAM_IN_EYE/, "the cut in is not detected");
+  assert.match(apply, /cl_righthand 1/, "the cut into the eyes does not repeat the handedness");
+});
+
+test("only a shot is relayed into the frozen view model", () => {
+  // The bot's sequence index flaps between idle and reload, and the client holds a model but no weapon
+  // state: it loops whatever it was last sent. Relaying every tick is what put a gun into a permanent
+  // reload animation on the live stream.
+  const follow = /stock UpdateEye\(\)\s*\{[\s\S]*?\n\}/.exec(plugin)?.[0] ?? "";
+  assert.ok(follow !== "", "no UpdateEye() in the plugin");
+  assert.match(follow, /if \(g_povActive && g_firePulse\)/, "the relay is not gated by a shot");
+  assert.doesNotMatch(follow, /if \(g_povActive\)\s*\r?\n\s*RelayWeaponAnim/, "an animation is relayed every tick");
+  assert.match(follow, /g_firePulse = 0/, "the fire pulse is never cleared");
+
+  const watch = /stock WatchFire\(\)\s*\{[\s\S]*?\n\}/.exec(plugin)?.[0] ?? "";
+  assert.ok(watch !== "", "no WatchFire() in the plugin");
+  assert.match(watch, /g_firePulse = 1/, "a detected shot does not raise the pulse");
+  assert.match(watch, /g_eyeAnim = -1/, "a repeated shot of the same gun would be deduplicated away");
+});
+
