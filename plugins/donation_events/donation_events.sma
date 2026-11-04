@@ -1812,6 +1812,14 @@ stock DisarmField()
 		g_heArmed[id] = true;
 		cs_set_user_bpammo(id, CSW_HEGRENADE, HE_PARTY_GRENADES);
 
+		// The hand, not only the inventory. csdm_lite arms every respawn with a knife plus a rifle, the
+		// strip above takes the rifle and leaves the knife, and the engine keeps whatever the bot last
+		// held - on the stream that read as "the party is over, everyone runs with a knife". Switching
+		// the slot is a console command the game DLL executes for a fake client too, so the grenade is
+		// what the picture shows even though YaPB never pulls the trigger on it.
+		if (get_user_weapon(id) != CSW_HEGRENADE)
+			engclient_cmd(id, "weapon_hegrenade");
+
 		// A flashbang next to the HE: two throwables make YaPB reach for one twice as often, and the pop
 		// is the second kind of bang a viewer sees on a party.
 		if (!user_has_weapon(id, CSW_FLASHBANG))

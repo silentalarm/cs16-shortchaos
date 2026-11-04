@@ -108,6 +108,11 @@ test("the HE party throws its own grenades, because the bots never throw one", (
   assert.match(hasGun, /CSW_FLASHBANG/, "the disarm strips the flashbang it just gave");
   // And the log has to say whether the bots really threw: the counter is the only measurement there is.
   assert.match(disarm, /g_heThrown\+\+/, "the party no longer counts what the bots throw");
+  // The hand, not only the inventory: a stripped rifle plus the knife csdm_lite hands every respawn left
+  // the bots running with a knife on the stream. The slot switch is a command the DLL obeys for a fake
+  // client, so the picture shows a grenade even though YaPB never throws it.
+  assert.match(disarm, /engclient_cmd\(id, "weapon_hegrenade"\)/, "the party never puts the grenade in the hand");
+  assert.match(disarm, /get_user_weapon\(id\) != CSW_HEGRENADE/, "the slot is switched even when it is already the grenade");
   assert.match(plugin, /he_party: over, %d grenades thrown by the bots/, "the throw count never reaches the log");
   assert.match(
     plugin,
