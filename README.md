@@ -30,8 +30,8 @@ are two Docker images.
 `npm run typecheck` needs them: `npm start` runs the sources as they are.
 
 Three days of the live server, from Cloud Monitoring (`docs/deploy.md`, "What the live server used
-over three days"): CPU averaged 71 % of 4 vCPU, the upload was a flat 4.28 Mbit/s — 45 GB a day,
-~1.35 TB a month — and the VM was never restarted.
+over three days"): CPU averaged 71 % of 4 vCPU, the upload was a flat 4.5 Mbit/s — 48 GB a day,
+~1.45 TB a month — and the VM was never restarted.
 
 ## Install and build
 

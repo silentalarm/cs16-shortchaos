@@ -43,29 +43,27 @@ build and for the operating system.
 ### What the live server used over three days
 
 Measured on the production VM (`e2-custom-4-8192`, 4 vCPU / 8 GB, `europe-west4-a`) from Cloud
-Monitoring at one-hour resolution, 2026-11-04 09:12Z .. 2026-11-07 09:12Z. The stream ran the whole
-window and the VM was never restarted (uptime 88.6 h at the end of it).
+Monitoring at one-hour resolution over 72 hours, with the stream running the whole time and the VM
+never restarted (uptime 88.6 h at the end of the window). The axis carries hours, not dates: the
+shape is the point, the day is not. Figures are decimal (GB = 10^9 bytes, Mbit = 10^6 bit), the same
+units the bill below uses.
 
-| Day | CPU mean | Egress | Ingress |
-| --- | --- | --- | --- |
-| 4 Nov (from 09:12) | 70.0 % | 26.31 GB | 0.92 GB |
-| 5 Nov | 71.6 % | 45.15 GB | 1.69 GB |
-| 6 Nov | 71.7 % | 45.22 GB | 1.71 GB |
-| 7 Nov (to 09:12) | 70.9 % | 18.77 GB | 0.68 GB |
-| **72 h** | **71.2 %**, hour peak 80.0 % | **135.45 GB** | **5.00 GB** |
+<img src="images/load-72h.svg" width="880" alt="two charts over 72 hours: CPU between 69 and 76 percent of four vCPU under a dashed 80 percent line, and a flat egress line at 2 GB per hour, well above the dashed 1.18 GB per hour of a 2500 kbit/s stream">
 
-- **CPU**: 71 % of 4 vCPU is ~2.85 cores and no hour went above 80 %, so the headroom left is under
-  one core. That is why a recording (`STREAM_OUTPUT` to a file) or a second capture client does not
-  fit on this machine; see the per-container numbers above for where the cores go.
-- **The upload is flat**: 4.28 Mbit/s mean against 4.29 in the busiest hour — CBR with no gaps,
-  45.15 GB per full day, ~1.35 TB a month. The number doubles as a bitrate check: 4.28 Mbit/s is
-  ~4000 kbit/s of video plus 128 kbit/s of audio and TLS, not the 2500 `STREAM_BITRATE_KBPS` default,
-  so this host sets it explicitly.
-- **Ingress** is 1.67 GB a day, 0.16 Mbit/s — an order of magnitude below the upload.
-- **Disk**: 29.62 GB written and 1.99 GB read over the 72 h (~9.9 GB a day) — logs, the ffmpeg log and
-  the SQLite WAL. On a 60 GB boot disk that is worth watching, nothing more.
-- RAM is missing from the table on purpose: Compute Engine has no memory metric without the Ops Agent,
-  and this host does not run it.
+- **CPU**: 71.2 % of 4 vCPU mean (~2.85 cores). The busiest hour averaged 75.9 % and no sample in the
+  window went above 80 %, so the headroom left is under one core - which is why a recording
+  (`STREAM_OUTPUT` to a file) or a second capture client does not fit here; the per-container split is
+  above.
+- **The upload is flat**: 2.02 GB an hour against 2.03 in the busiest one, ~4.5 Mbit/s, 48.5 GB per
+  full day, ~1.45 TB a month. The distance to the grey line is the point of the second chart: 2500
+  kbit/s of video plus 128 kbit/s of audio would be 1.18 GB/h, so this host runs `STREAM_BITRATE_KBPS`
+  at ~4000.
+- **Ingress**: 1.8 GB a day (~0.17 Mbit/s), an order of magnitude below the upload.
+- **Disk**: 31.8 GB written and 2.1 GB read (~10.6 GB a day) - logs, the ffmpeg log and the SQLite
+  WAL. On a 60 GB boot disk that is worth watching, nothing more.
+- **Totals**: 145.4 GB out and 5.4 GB in over the three days.
+- RAM is absent on purpose: Compute Engine has no memory metric without the Ops Agent, and this host
+  does not run it.
 
 The filters behind the numbers, if you want to repeat them: `compute.googleapis.com/instance/cpu/utilization`
 (mean and max), `.../instance/network/sent_bytes_count` and `.../received_bytes_count` (rate),
@@ -278,7 +276,7 @@ must stay out of it.
 ## 12. Appendix: Google Cloud, free-trial credit
 
 The $300 welcome credit (90 days, no billing during the trial) is enough for this stack, but the
-video upload - not the CPU - is what costs: the upload measured 4.3 Mbit/s of RTMPS, ~1.35 TB a
+video upload - not the CPU - is what costs: the upload measured 4.5 Mbit/s of RTMPS, ~1.45 TB a
 month (section 1, "What the live server used over three days"), and GCP charges that as internet
 egress.
 
@@ -330,8 +328,8 @@ still gets is enough for RTMPS out and for SSH in - nothing has to be reserved.
 | ~0.95 TB egress, Standard tier | ~$64 ($0.085/GB after 200 GiB free) |
 | **Total** | **~$157 on Standard, ~$210 on Premium** |
 
-Those egress rows are sized for 3 Mbit/s. At the 45.15 GB a day measured in section 1 (~1.35 TB a
-month) the egress line becomes ~$97 on Standard (~$190 in total) and ~$162 on Premium (~$255). The
+Those egress rows are sized for 3 Mbit/s. At the 48.5 GB a day measured in section 1 (~1.45 TB a
+month) the egress line becomes ~$105 on Standard (~$198 in total) and ~$175 on Premium (~$268). The
 bitrate is the knob: this host runs at ~4000 kbit/s against the 2500 `STREAM_BITRATE_KBPS` default,
 and going back to 2500 at 720p30 removes ~40 % of those two figures.
 
