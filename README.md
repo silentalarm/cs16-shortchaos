@@ -22,12 +22,16 @@ are two Docker images.
 | CPU | x86_64, 4 vCPU | the images carry 32-bit GoldSrc and Xash3D binaries; an ARM host would emulate every frame |
 | RAM | 4 GB (8 GB builds comfortably) | the live stack measures ~1.1 GB, the image build wants ~2 GB |
 | Disk | 40 GB (60 GB comfortable) | two images ~4 GB, the server volume ~1.5 GB, the client volume ~2 GB |
-| Network | 5 Mbit up, 100 Mbit down | the stream is 3 Mbit/s CBR to YouTube over RTMPS on 443 |
+| Network | 5 Mbit up, 100 Mbit down | the upload measured 4.3 Mbit/s CBR on the live host, so 5 Mbit up is a floor, not a comfort |
 | GPU, display | none on the `x11`/Docker path | the capture client renders on its own Xvfb with software OpenGL; `STREAM_SOURCE=desktop` (Windows) grabs a real desktop session instead |
 | Ports | loopback only: 27015, 8080 (panel), 8888/8889 (local view), 4318 (OAuth callback) | nothing listens on a public interface |
 
 `npm install` fetches two dev dependencies (TypeScript and `@types/node`) and only
 `npm run typecheck` needs them: `npm start` runs the sources as they are.
+
+Three days of the live server, from Cloud Monitoring (`docs/deploy.md`, "What the live server used
+over three days"): CPU averaged 71 % of 4 vCPU, the upload was a flat 4.28 Mbit/s — 45 GB a day,
+~1.35 TB a month — and the VM was never restarted.
 
 ## Install and build
 

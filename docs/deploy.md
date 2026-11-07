@@ -31,7 +31,7 @@ sections below are the same path with the reasons and the failure modes.
 | CPU | **x86_64**, 4 vCPU | the images ship 32-bit GoldSrc binaries; an ARM VPS would emulate every frame |
 | RAM | 8 GB (4 GB works, 8 GB builds comfortably) | the live stack measures ~1.1 GB; the image build needs ~2 GB |
 | Disk | 60 GB SSD (40 GB minimum) | two images ~4 GB, the server volume ~1.5 GB, the client volume ~2 GB, logs and rebuilds |
-| Network | 5 Mbit up, 100 Mbit down | the stream is 3 Mbit/s CBR to YouTube, RTMPS on 443 |
+| Network | 5 Mbit up, 100 Mbit down | the upload measured 4.3 Mbit/s CBR on the live host, so 5 Mbit up is a floor, not a comfort |
 | OS | Debian 12 or Ubuntu 22.04+ | `debian:bookworm-slim` and `debian:trixie-slim` are the image bases |
 | Docker | Engine 27+ with the compose plugin 2.30+ | the compose file uses `cpuset:` and `depends_on: condition:` |
 
@@ -39,6 +39,38 @@ Measured on a desktop, per container: the game server 0.05 core / ~190 MB, the c
 cores (software OpenGL, and no encoder setting changes that), the encoder 0.4-0.7 core, Xvfb and
 PulseAudio 0.2 together. So the live stack is ~2.2 cores and ~1.1 GB; the rest of the box is for the
 build and for the operating system.
+
+### What the live server used over three days
+
+Measured on the production VM (`e2-custom-4-8192`, 4 vCPU / 8 GB, `europe-west4-a`) from Cloud
+Monitoring at one-hour resolution, 2026-11-04 09:12Z .. 2026-11-07 09:12Z. The stream ran the whole
+window and the VM was never restarted (uptime 88.6 h at the end of it).
+
+| Day | CPU mean | Egress | Ingress |
+| --- | --- | --- | --- |
+| 4 Nov (from 09:12) | 70.0 % | 26.31 GB | 0.92 GB |
+| 5 Nov | 71.6 % | 45.15 GB | 1.69 GB |
+| 6 Nov | 71.7 % | 45.22 GB | 1.71 GB |
+| 7 Nov (to 09:12) | 70.9 % | 18.77 GB | 0.68 GB |
+| **72 h** | **71.2 %**, hour peak 80.0 % | **135.45 GB** | **5.00 GB** |
+
+- **CPU**: 71 % of 4 vCPU is ~2.85 cores and no hour went above 80 %, so the headroom left is under
+  one core. That is why a recording (`STREAM_OUTPUT` to a file) or a second capture client does not
+  fit on this machine; see the per-container numbers above for where the cores go.
+- **The upload is flat**: 4.28 Mbit/s mean against 4.29 in the busiest hour — CBR with no gaps,
+  45.15 GB per full day, ~1.35 TB a month. The number doubles as a bitrate check: 4.28 Mbit/s is
+  ~4000 kbit/s of video plus 128 kbit/s of audio and TLS, not the 2500 `STREAM_BITRATE_KBPS` default,
+  so this host sets it explicitly.
+- **Ingress** is 1.67 GB a day, 0.16 Mbit/s — an order of magnitude below the upload.
+- **Disk**: 29.62 GB written and 1.99 GB read over the 72 h (~9.9 GB a day) — logs, the ffmpeg log and
+  the SQLite WAL. On a 60 GB boot disk that is worth watching, nothing more.
+- RAM is missing from the table on purpose: Compute Engine has no memory metric without the Ops Agent,
+  and this host does not run it.
+
+The filters behind the numbers, if you want to repeat them: `compute.googleapis.com/instance/cpu/utilization`
+(mean and max), `.../instance/network/sent_bytes_count` and `.../received_bytes_count` (rate),
+`.../instance/disk/write_bytes_count` and `.../read_bytes_count` (rate), `.../instance/uptime_total`,
+all with a 3600 s alignment period.
 
 ## 2. Docker
 
@@ -246,8 +278,9 @@ must stay out of it.
 ## 12. Appendix: Google Cloud, free-trial credit
 
 The $300 welcome credit (90 days, no billing during the trial) is enough for this stack, but the
-video upload - not the CPU - is what costs: 3 Mbit/s of RTMPS to YouTube is ~0.95 TB a month, and
-GCP charges that as internet egress.
+video upload - not the CPU - is what costs: the upload measured 4.3 Mbit/s of RTMPS, ~1.35 TB a
+month (section 1, "What the live server used over three days"), and GCP charges that as internet
+egress.
 
 **Machine.** `e2-custom-4-8192` (4 vCPU / 8 GB): custom, because 8 GB is the measured need and the
 predefined `e2-standard-4` (4 vCPU / 16 GB) costs ~25% more for memory nothing uses.
@@ -296,6 +329,11 @@ still gets is enough for RTMPS out and for SSH in - nothing has to be reserved.
 | ~0.95 TB egress, Premium tier (default) | ~$117 ($0.12/GB, 1 GiB free) |
 | ~0.95 TB egress, Standard tier | ~$64 ($0.085/GB after 200 GiB free) |
 | **Total** | **~$157 on Standard, ~$210 on Premium** |
+
+Those egress rows are sized for 3 Mbit/s. At the 45.15 GB a day measured in section 1 (~1.35 TB a
+month) the egress line becomes ~$97 on Standard (~$190 in total) and ~$162 on Premium (~$255). The
+bitrate is the knob: this host runs at ~4000 kbit/s against the 2500 `STREAM_BITRATE_KBPS` default,
+and going back to 2500 at 720p30 removes ~40 % of those two figures.
 
 So the credit lasts ~2 months with the stack running 24/7, and 3-4 months when the capture client is
 stopped while nothing is broadcast (`bash infra/compose.sh dev up` stops exactly that container and
