@@ -1,5 +1,7 @@
 # cs16-shortchaos
 
+**English** · [Русский](README.ru.md)
+
 Counter-Strike 1.6 (CS 1.6) dedicated server with bots, streamed vertically to YouTube Shorts. A
 viewer donation is turned into an in-game activity: knife round, zombie round, one bot with an
 M249 against everyone, map change, and so on. Everything is driven by donations, nobody plays
