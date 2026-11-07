@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "CS 1.6 bot server where viewer donations trigger in-game activities, streamed to YouTube",
+  "description": "Counter-Strike 1.6 dedicated server with bots, streamed vertically to YouTube Shorts",
   "engines": {
     "node": ">=24"
   },

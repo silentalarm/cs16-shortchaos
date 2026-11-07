@@ -2,15 +2,15 @@
 
 **English** · [Русский](README.ru.md)
 
-Counter-Strike 1.6 (CS 1.6) dedicated server with bots, streamed vertically to YouTube Shorts. A
-viewer donation is turned into an in-game activity: knife round, zombie round, one bot with an
-M249 against everyone, map change, and so on. Everything is driven by donations, nobody plays
-by hand.
+Counter-Strike 1.6 (CS 1.6) dedicated server with bots, streaming itself vertically to YouTube
+Shorts around the clock: no player, no Steam account, nobody at the keyboard. The match runs on its
+own — every few minutes an activity rewrites the rules, a knife round, a zombie round, one bot with
+an M249 against everyone — and the people watching can steer what comes next.
 
-Status: stage 3 works end to end on a live server — the control API polls donations (mock or
-DonationAlerts), maps them to activities, enforces cooldowns, sends RCON commands and stores
-the verdict. Verified on ReHLDS + Metamod-R + AMX Mod X: a 50 RUB donation reached the plugin
-in game (`donation_events ran bot_nick`).
+Status: works end to end on a live server — ReHLDS + Metamod-R + AMX Mod X with twenty bots fighting,
+the capture client rendering the match on its own virtual display, and the control API storing the
+history. Verified in game: an activity sent from the API ran on the server (`donation_events ran
+bot_nick`).
 
 ## Requirements
 
