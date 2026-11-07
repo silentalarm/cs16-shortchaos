@@ -426,3 +426,19 @@ expects the token in `X-Admin-Token`, because it can send RCON commands. On a VP
 3. run `npm test` and rebuild the image.
 
 No changes in the control API or the dashboard are required.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE). Use it, fork it, run it, even sell access to a stream built on it;
+keep the copyright line.
+
+Three things in this repository are not covered by that licence, because they are not mine:
+
+- `infra/maps/*` — the maps come from GameBanana and DS-Servers, each under its author's own terms.
+  `infra/maps/maps.json` pins every one by mod id and SHA256, and some of the archives carry the
+  author's own readme next to them (`*.txt`);
+- `public/hls.min.js` — hls.js, Apache-2.0, with a regenerator-runtime banner on top (MIT, Facebook);
+- the engines and binaries (HLDS, ReHLDS, ReGameDLL, Metamod-R, AMX Mod X, YaPB, Xash3D, CS16Client)
+  are not in this repository at all: the images download them from official releases and verify every
+  SHA256 against `infra/checksums.env`.
+

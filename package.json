@@ -2,6 +2,7 @@
   "name": "cs16-shortchaos",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Counter-Strike 1.6 server, streamed vertically to YouTube Shorts",
   "engines": {
