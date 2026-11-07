@@ -9,6 +9,87 @@ DonationAlerts), maps them to activities, enforces cooldowns, sends RCON command
 the verdict. Verified on ReHLDS + Metamod-R + AMX Mod X: a 50 RUB donation reached the plugin
 in game (`donation_events ran bot_nick`).
 
+## Requirements
+
+The control API is plain Node with no runtime dependencies; the game server and the capture client
+are two Docker images.
+
+| What | Minimum | Why |
+| --- | --- | --- |
+| Node.js | **24** (`engines` in `package.json`) | `npm start`, `npm test` and the scripts run the `.ts` sources directly, so there is no build step and nothing to transpile |
+| Docker | Engine 27+ with the compose plugin 2.30+ (Docker Desktop on Windows) | the compose file uses `cpuset:` and `depends_on: condition:` |
+| CPU | x86_64, 4 vCPU | the images carry 32-bit GoldSrc and Xash3D binaries; an ARM host would emulate every frame |
+| RAM | 4 GB (8 GB builds comfortably) | the live stack measures ~1.1 GB, the image build wants ~2 GB |
+| Disk | 40 GB (60 GB comfortable) | two images ~4 GB, the server volume ~1.5 GB, the client volume ~2 GB |
+| Network | 5 Mbit up, 100 Mbit down | the stream is 3 Mbit/s CBR to YouTube over RTMPS on 443 |
+| GPU, display | none on the `x11`/Docker path | the capture client renders on its own Xvfb with software OpenGL; `STREAM_SOURCE=desktop` (Windows) grabs a real desktop session instead |
+| Ports | loopback only: 27015, 8080 (panel), 8888/8889 (local view), 4318 (OAuth callback) | nothing listens on a public interface |
+
+`npm install` fetches two dev dependencies (TypeScript and `@types/node`) and only
+`npm run typecheck` needs them: `npm start` runs the sources as they are.
+
+## Install and build
+
+A fresh clone is complete — the maps, the navigation graphs the bots read and the hero models are
+committed, so nothing is downloaded from a map site and there is no fetch step to remember.
+
+```bash
+git clone https://github.com/silentalarm/cs1.6-youtube.git
+cd cs1.6-youtube
+npm install                              # dev only: TypeScript for `npm run typecheck`
+cp .env.example .env && chmod 600 .env   # RCON_PASSWORD and ADMIN_TOKEN; the rest may stay empty
+```
+
+On Windows the same steps are `npm install` and `Copy-Item .env.example .env` (the file is already
+owner-only there, and `.gitignore` keeps it out of the repository either way).
+
+**One file is not in git and the build refuses to start without it:** `infra/checksums.env`, the
+pinned URL and SHA256 of every component (HLDS app 90, ReHLDS, ReGameDLL, Metamod-R, AMX Mod X,
+YaPB, Xash3D, CS16Client). Resolve it once on a machine with PowerShell and copy it over; keep it
+LF-clean, because `infra/build-images.sh` strips a stray `\r` for exactly this reason.
+
+```powershell
+./infra/update-checksums.ps1             # resolves the official release assets into that file
+./infra/build-image.ps1                  # game server image
+./infra/build-stream.ps1                 # capture client image
+```
+
+On Linux the last two are one script, `bash infra/build-images.sh` (`hlds`, `stream`, or both - which
+is what a fresh host needs). Every download is verified against its pinned SHA256 during the build;
+`infra/verify-image.ps1` is the supply-chain gate after it (binary whitelist, no suid, trivy
+HIGH/CRITICAL).
+
+Then the stack. `dev` is the mode to start with: the game server and the panel, capture client
+stopped, so no stream key is needed yet.
+
+```powershell
+./infra/compose.ps1 dev                  # hlds + control-api, capture client stopped
+./infra/compose.ps1 logs -f hlds         # wait for "donation_events loaded"
+```
+
+```bash
+bash infra/compose.sh dev                # the same on Linux
+```
+
+`./infra/compose.ps1 up -d` (no `dev`) brings the capture container as well, and that one needs
+`YOUTUBE_STREAM_KEY` or `STREAM_OUTPUT`. Both wrappers pass `--env-file .env` from the repository
+root explicitly: compose would otherwise look for it next to `infra/docker-compose.yml` and fail
+with `required variable RCON_PASSWORD is missing a value`.
+
+Three checks that need no donation, no live channel and no game server:
+
+```powershell
+npm run ui-preview                       # the panel, rendered locally
+$env:RCON_PASSWORD=''; npm start         # dry run: commands are logged, never sent
+npm test                                 # node:test, including the .env.example secret guard
+```
+
+With the stack up, the control API logs `plugin.contract_ok` when `amx_de codes` matches
+`config/activities.json` — that line is the contract between the catalogue and the compiled plugin.
+
+On a VPS the same path is one command, `sudo bash infra/deploy.sh`; `docs/deploy.md` carries the
+host sizing, the Docker install, the firewall, the OAuth round-trip and the failure modes.
+
 ## Layout
 
 ```
@@ -134,18 +215,23 @@ pipeline can be exercised before the game server exists.
 ## Building the game image
 
 The image is assembled only from official releases, each pinned by SHA256; there is no
-`FROM someone/hlds` anywhere. Docker Desktop / Docker Engine with BuildKit is required.
+`FROM someone/hlds` anywhere. `infra/Dockerfile` layers HLDS app 90 (SteamCMD runs at build time,
+never at runtime), ReHLDS, ReGameDLL, Metamod-R, AMX Mod X, YaPB, the map pool committed under
+`infra/maps` and the eight Pawn plugins under `plugins/`. They are compiled during the build
+(`infra/build-plugin.sh`, one `.amxx` per plugin directory), so a `.sma` change is a rebuild, not a
+hand-made binary in git.
+
+The first build is in "Install and build" above. After it, the supply-chain gate and the rebuild
+loop are separate steps:
 
 ```powershell
-./infra/update-checksums.ps1                     # resolve assets, write infra/checksums.env
-./infra/build-image.ps1                          # expands that file into --build-arg
-./infra/verify-image.ps1                         # binary whitelist, suid, trivy HIGH/CRITICAL
-docker compose -f infra/docker-compose.yml up -d hlds
-docker logs -f cs16-youtube-hlds-1               # wait for "donation_events loaded"
+./infra/verify-image.ps1                         # binary whitelist, no suid, trivy HIGH/CRITICAL
+./infra/verify-graphs.ps1                        # the graphs in the volume are still the pinned ones
 ```
 
-Then point the control API at it (`RCON_PASSWORD` in `.env`, `npm start`) and check the
-contract: the API logs `plugin.contract_ok` when `amx_de codes` matches the catalogue.
+A plugin, `.cfg` or `.sma` change is `./infra/build-image.ps1` (Linux: `bash infra/build-images.sh
+hlds`) followed by `./infra/compose.ps1 up -d --force-recreate hlds`: a plain `docker restart` keeps
+the old image and is never the right answer.
 
 ## Deploying on a VPS
 
@@ -324,6 +410,7 @@ The panel needs `ADMIN_TOKEN` in `.env`; without it the server does not start. I
 expects the token in `X-Admin-Token`, because it can send RCON commands. On a VPS reach it through
 `ssh -L 8085:127.0.0.1:8085`.
 
+## Adding an activity
 
 1. append an entry to `config/activities.json` (unique `code`, price >= 50, new price
    keeps mapping unambiguous);
