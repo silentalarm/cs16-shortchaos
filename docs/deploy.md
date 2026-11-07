@@ -238,7 +238,7 @@ admin actions), `data/da-token.json` (the OAuth tokens), `data/activities.overri
 tweaks) and `.env`. A nightly copy is enough:
 
 ```bash
-0 4 * * * cd /srv/cs1.6-youtube && tar czf /srv/backups/cs16-$(date +\%F).tgz \
+0 4 * * * cd /srv/cs16-shortchaos && tar czf /srv/backups/cs16-$(date +\%F).tgz \
   data/control.db data/da-token.json data/activities.override.json .env
 ```
 
