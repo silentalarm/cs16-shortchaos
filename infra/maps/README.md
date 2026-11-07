@@ -16,7 +16,7 @@ Each entry in `maps.json` names a GameBanana **mod id** for Counter-Strike 1.6 -
 also exists for CS2D and CS:GO, so the id is what pins the right upload - and a `sha256` of the
 archive. The script checks GameBanana's own MD5 and its AV verdict on the way in, then the pin:
 a re-uploaded or swapped file fails loudly instead of landing in the game. Archives arrive as `.zip`
-or `.rar`; `tar.exe` (Windows 10+) unpacks both.
+or `.rar`; `bsdtar` unpacks both.
 
 Two shapes of entry exist. A map that is not on GameBanana (`aim_aspect` came from DS-Servers by hand)
 has no `mod` and a `source` URL instead of it, and its `sha256` is the pin of the `.bsp` itself: the

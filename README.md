@@ -18,12 +18,12 @@ are two Docker images.
 | What | Minimum | Why |
 | --- | --- | --- |
 | Node.js | **24** (`engines` in `package.json`) | `npm start`, `npm test` and the scripts run the `.ts` sources directly, so there is no build step and nothing to transpile |
-| Docker | Engine 27+ with the compose plugin 2.30+ (Docker Desktop on Windows) | the compose file uses `cpuset:` and `depends_on: condition:` |
+| Docker | Engine 27+ with the compose plugin 2.30+ | the compose file uses `cpuset:` and `depends_on: condition:` |
 | CPU | x86_64, 4 vCPU | the images carry 32-bit GoldSrc and Xash3D binaries; an ARM host would emulate every frame |
 | RAM | 4 GB (8 GB builds comfortably) | the live stack measures ~1.1 GB, the image build wants ~2 GB |
 | Disk | 40 GB (60 GB comfortable) | two images ~4 GB, the server volume ~1.5 GB, the client volume ~2 GB |
 | Network | 5 Mbit up, 100 Mbit down | the upload measured 4.3 Mbit/s CBR on the live host, so 5 Mbit up is a floor, not a comfort |
-| GPU, display | none on the `x11`/Docker path | the capture client renders on its own Xvfb with software OpenGL; `STREAM_SOURCE=desktop` (Windows) grabs a real desktop session instead |
+| GPU, display | none on the `x11`/Docker path | the capture client renders on its own Xvfb with software OpenGL; `STREAM_SOURCE=desktop` grabs a real desktop session instead |
 | Ports | loopback only: 27015, 8080 (panel), 8888/8889 (local view), 4318 (OAuth callback) | nothing listens on a public interface |
 
 `npm install` fetches two dev dependencies (TypeScript and `@types/node`) and only
@@ -47,47 +47,38 @@ npm install                              # dev only: TypeScript for `npm run typ
 cp .env.example .env && chmod 600 .env   # RCON_PASSWORD and ADMIN_TOKEN; the rest may stay empty
 ```
 
-On Windows the same steps are `npm install` and `Copy-Item .env.example .env` (the file is already
-owner-only there, and `.gitignore` keeps it out of the repository either way).
-
 **One file is not in git and the build refuses to start without it:** `infra/checksums.env`, the
 pinned URL and SHA256 of every component (HLDS app 90, ReHLDS, ReGameDLL, Metamod-R, AMX Mod X,
 YaPB, Xash3D, CS16Client). Resolve it once on a machine with PowerShell and copy it over; keep it
 LF-clean, because `infra/build-images.sh` strips a stray `\r` for exactly this reason.
 
-```powershell
-./infra/update-checksums.ps1             # resolves the official release assets into that file
-./infra/build-image.ps1                  # game server image
-./infra/build-stream.ps1                 # capture client image
+```bash
+pwsh -File infra/update-checksums.ps1    # writes infra/checksums.env; PowerShell, there is no bash twin
+bash infra/build-images.sh               # both images, 10-20 min on 4 vCPU
+bash infra/build-images.sh hlds          # game server only: the usual case for a plugin or config change
 ```
 
-On Linux the last two are one script, `bash infra/build-images.sh` (`hlds`, `stream`, or both - which
-is what a fresh host needs). Every download is verified against its pinned SHA256 during the build;
-`infra/verify-image.ps1` is the supply-chain gate after it (binary whitelist, no suid, trivy
-HIGH/CRITICAL).
+Every download is verified against its pinned SHA256 during the build; `infra/verify-image.ps1` is
+the supply-chain gate after it (binary whitelist, no suid, trivy HIGH/CRITICAL).
 
 Then the stack. `dev` is the mode to start with: the game server and the panel, capture client
 stopped, so no stream key is needed yet.
 
-```powershell
-./infra/compose.ps1 dev                  # hlds + control-api, capture client stopped
-./infra/compose.ps1 logs -f hlds         # wait for "donation_events loaded"
-```
-
 ```bash
-bash infra/compose.sh dev                # the same on Linux
+bash infra/compose.sh dev                # hlds + control-api, capture client stopped
+bash infra/compose.sh logs -f hlds       # wait for "donation_events loaded"
 ```
 
-`./infra/compose.ps1 up -d` (no `dev`) brings the capture container as well, and that one needs
-`YOUTUBE_STREAM_KEY` or `STREAM_OUTPUT`. Both wrappers pass `--env-file .env` from the repository
-root explicitly: compose would otherwise look for it next to `infra/docker-compose.yml` and fail
-with `required variable RCON_PASSWORD is missing a value`.
+`bash infra/compose.sh up -d` (no `dev`) brings the capture container as well, and that one needs
+`YOUTUBE_STREAM_KEY` or `STREAM_OUTPUT`. The wrapper passes `--env-file .env` from the repository root
+explicitly: compose would otherwise look for it next to `infra/docker-compose.yml` and fail with
+`required variable RCON_PASSWORD is missing a value`.
 
 Three checks that need no donation, no live channel and no game server:
 
-```powershell
+```bash
 npm run ui-preview                       # the panel, rendered locally
-$env:RCON_PASSWORD=''; npm start         # dry run: commands are logged, never sent
+RCON_PASSWORD= npm start                 # dry run: commands are logged, never sent
 npm test                                 # node:test, including the .env.example secret guard
 ```
 
@@ -202,12 +193,12 @@ Two randomisers running side by side is what the stream looked like before the a
 
 ## Commands
 
-```powershell
+```bash
 npm test                                  # node:test, no runtime dependencies
 npm run typecheck                         # tsc for src/, test/ and scripts/
 
 npm run fake-donation -- --amount 120 --user Vasya   # mock donation (DA_MOCK=1)
-$env:POLL_ONCE='1'; npm start              # one pass, then exit
+POLL_ONCE=1 npm start                     # one pass, then exit
 npm start                                  # daemon, polls every DA_POLL_SEC
 npm run oauth-login                        # once per account, writes data/da-token.json
 
@@ -231,20 +222,20 @@ hand-made binary in git.
 The first build is in "Install and build" above. After it, the supply-chain gate and the rebuild
 loop are separate steps:
 
-```powershell
-./infra/verify-image.ps1                         # binary whitelist, no suid, trivy HIGH/CRITICAL
-./infra/verify-graphs.ps1                        # the graphs in the volume are still the pinned ones
+```bash
+pwsh -File infra/verify-image.ps1                # binary whitelist, no suid, trivy HIGH/CRITICAL
+pwsh -File infra/verify-graphs.ps1               # the graphs in the volume are still the pinned ones
 ```
 
-A plugin, `.cfg` or `.sma` change is `./infra/build-image.ps1` (Linux: `bash infra/build-images.sh
-hlds`) followed by `./infra/compose.ps1 up -d --force-recreate hlds`: a plain `docker restart` keeps
-the old image and is never the right answer.
+A plugin, `.cfg` or `.sma` change is `bash infra/build-images.sh hlds` followed by
+`bash infra/compose.sh up -d --force-recreate hlds`: a plain `docker restart` keeps the old image and
+is never the right answer.
 
 ## Deploying on a VPS
 
 `docs/deploy.md` is the whole path from an empty host to a live stream: sizing (x86_64, 4 vCPU,
-8 GB, 60 GB), the Docker install, `.env`, firewall, YouTube key, backups and troubleshooting. On
-Linux the PowerShell scripts have bash twins, so one command does the deploy:
+8 GB, 60 GB), the Docker install, `.env`, firewall, YouTube key, backups and troubleshooting. Every
+script has a bash twin, so one command does the deploy:
 
 ```bash
 sudo chown -R 1000:1000 data      # the control API writes its SQLite history as uid 1000
@@ -257,13 +248,13 @@ sudo bash infra/deploy.sh --check # read-only health report, safe on a live serv
 `src/stream.ts` builds and supervises the ffmpeg pipeline; `scripts/stream.ts` is the CLI.
 The stream key lives only in `.env` and is masked in every log line.
 
-```powershell
+```bash
 npm run stream -- --print          # show the exact ffmpeg command, key masked
 npm run stream -- --duration 20    # run for 20 s, then stop (exit code 1 if no frames)
 npm run stream                     # push until Ctrl+C, restarts ffmpeg with backoff
 ```
 
-`STREAM_SOURCE` picks what to capture: `desktop` (Windows `gdigrab`, with
+`STREAM_SOURCE` picks what to capture: `desktop` (a real desktop session through `gdigrab`, with
 `STREAM_OFFSET_X/Y` to grab the game window region), `x11` (Linux `Xvfb` screen, `STREAM_DISPLAY`)
 or `test` (synthetic pattern, no display needed). Setting `STREAM_OUTPUT` records to a local
 `.flv` instead of going live, which is how the pipeline is verified without a stream key.
@@ -350,11 +341,11 @@ So the entrypoint presses the real key through X11 (`xdotool`, 6 = SPECTATE) for
 after the client starts and once a minute afterwards. `plugins/stream_cam` assigns the spectator team
 through the cstrike module, which keeps the server side consistent while the panel is being closed.
 
-```powershell
-./infra/update-checksums.ps1 -Only XASH3D,CS16CLIENT   # pin the two capture assets (keeps the rest)
-./infra/build-stream.ps1                               # builds cs16-stream:local
-./infra/verify-stream.ps1 -SmokeTest                   # static checks + a real server, confirms the join
-docker compose -f infra/docker-compose.yml up -d       # hlds + control-api + stream
+```bash
+pwsh -File infra/update-checksums.ps1 -Only XASH3D,CS16CLIENT   # pin the two capture assets (keeps the rest)
+bash infra/build-images.sh stream                               # builds cs16-stream:local
+pwsh -File infra/verify-stream.ps1 -SmokeTest                   # static checks + a real server, confirms the join
+bash infra/compose.sh up -d                                     # hlds + control-api + stream
 ```
 
 Two upstream facts shape this image:
@@ -380,12 +371,12 @@ Two things make local testing possible without going live and without touching t
 `rtmp://` gives FLV, which is exactly the code path YouTube uses. Compose has an optional
 `mediamtx` service (`--profile local-view`) that receives that push and serves it to a browser:
 
-```powershell
-./infra/compose.ps1 --profile local-view up -d mediamtx hlds
-./infra/compose.ps1 run --rm -e STREAM_OUTPUT=rtmp://mediamtx:1935/live/test stream
+```bash
+bash infra/compose.sh --profile local-view up -d mediamtx hlds
+bash infra/compose.sh run --rm -e STREAM_OUTPUT=rtmp://mediamtx:1935/live/test stream
 ```
 
-`compose.ps1` is a thin wrapper that passes the repository-root environment file explicitly:
+`compose.sh` is a thin wrapper that passes the repository-root environment file explicitly:
 compose would otherwise look for it next to `infra/docker-compose.yml` and fail with
 `required variable RCON_PASSWORD is missing a value`.
 

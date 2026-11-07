@@ -451,7 +451,7 @@ no RCON needed:
 
 The same analysis runs off-stream, which is how the numbers below were produced: a throwaway container with
 `-e MAP=<map>` and its own directory for `/hlds/cstrike/addons/yapb/data`, two minutes on a spare core and no
-interruption of the picture. Not with a **Windows bind mount** for that directory: YaPB writes the graph and
+interruption of the picture. Not with a **bind mount** for that directory: YaPB writes the graph and
 then fails to `_stat` it, so the log says `Unable to load Graph` although the file is complete. A named
 volume, or the live server, reads it back fine.
 
@@ -1509,11 +1509,11 @@ If the machine has to stay responsive while streaming, pin the work instead of s
 `STREAM_CPUSET=0-3` and `HLDS_CPUSET=4-5` in `.env` leave the rest of the cores to the desktop.
 
 
-- `./infra/compose.ps1 ps` — three services `running`, `hlds` and `stream` `healthy`. A stream that
+- `bash infra/compose.sh ps` — three services `running`, `hlds` and `stream` `healthy`. A stream that
   "lags on load" is usually a stream that is not there at all: check this before touching bitrate.
 - the containers carry `restart: unless-stopped`, which brings them back after a Docker restart but
   **not** after a manual `stop`/`down`, and not while the Docker engine itself is not running. If the
-  host or Docker Desktop restarts, wait for the engine, then `./infra/compose.ps1 up -d`.
+  host or the Docker engine restarts, wait for it, then `bash infra/compose.sh up -d`.
 - `docker exec cs16-shortchaos-stream-1 tail -c 400 /tmp/ffmpeg.log` with
   `STREAM_FFMPEG_LOGLEVEL=info` shows `fps=`, `speed=`, `dup=` and `drop=`: `speed` under 1.0 means
   the encoder cannot keep up, a `drop` counter that keeps growing means the network or the ingest is

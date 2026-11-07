@@ -5,9 +5,10 @@ control API that turns a donation into an RCON command (`node:24-bookworm-slim` 
 mounted read-only), and the capture container that renders the match on a virtual display and pushes
 it to YouTube (`cs16-stream:local`). Nothing needs a GPU, a Steam login or a human at the keyboard.
 
-This page is the operator path from an empty VPS to a live stream. Windows is not required: the
-`infra/*.ps1` scripts are the original ones, and every one of them has a bash twin here, so the same
-repository boots on Linux with no rewrite.
+This page is the operator path from an empty VPS to a live stream, and every command runs from a plain
+bash shell. Three steps are PowerShell-only (`update-checksums.ps1` and the two `verify-*.ps1`): call
+them through `pwsh -File`, or run them once on a machine that already has PowerShell and copy the
+result over.
 
 ## Quick path
 
@@ -257,15 +258,15 @@ history is not worth a `.backup` dance, but if it ever is, use `sqlite3 data/con
 | bots do not join | `yb_quota` below 20, or `MAXPLAYERS` below 22 | the camera is a real connection: it needs its own slot |
 | the picture freezes every few rounds | the client fell off the server | the watchdog restarts it: `grep watchdog` in the stream log |
 
-## 11. Windows scripts and their Linux twins
+## 11. The scripts and their bash twins
 
-| Windows | Linux |
+| PowerShell | bash |
 | --- | --- |
-| `./infra/build-image.ps1` | `bash infra/build-images.sh hlds` |
-| `./infra/build-stream.ps1` | `bash infra/build-images.sh stream` |
-| `./infra/compose.ps1 <args>` | `bash infra/compose.sh <args>` |
-| `./infra/verify-image.ps1`, `verify-stream.ps1` | PowerShell only - install `pwsh` on the VPS, or use the section 6 checks |
-| `./infra/update-checksums.ps1` | run once on any machine with PowerShell, then copy `infra/checksums.env` to the host - it is **gitignored**, so a clone does not carry it |
+| `pwsh -File infra/build-image.ps1` | `bash infra/build-images.sh hlds` |
+| `pwsh -File infra/build-stream.ps1` | `bash infra/build-images.sh stream` |
+| `pwsh -File infra/compose.ps1 <args>` | `bash infra/compose.sh <args>` |
+| `pwsh -File infra/verify-image.ps1`, `verify-stream.ps1` | no twin - `pwsh -File`, or the section 6 checks |
+| `pwsh -File infra/update-checksums.ps1` | no twin - run it once, then copy `infra/checksums.env` to the host: it is **gitignored**, so a clone does not carry it |
 
 One rough edge that is already handled: `.dockerignore` keeps the build context at ~14 MB (it was
 ~198 MB with `out/`, `node_modules/` and `.tmp-*`). The file is short on purpose - a pattern there
@@ -273,12 +274,10 @@ that matches a `COPY` source breaks the build with a "not found" that names no c
 under `src/`, `plugins/`, `infra/` or `config/` is filtered. Anything new that a Dockerfile needs
 must stay out of it.
 
-## 12. Appendix: Google Cloud, free-trial credit
+## 12. Appendix: Google Cloud
 
-The $300 welcome credit (90 days, no billing during the trial) is enough for this stack, but the
-video upload - not the CPU - is what costs: the upload measured 4.5 Mbit/s of RTMPS, ~1.45 TB a
-month (section 1, "What the live server used over three days"), and GCP charges that as internet
-egress.
+The video upload - not the CPU - is what costs: it measured 4.5 Mbit/s of RTMPS, ~1.45 TB a month
+(section 1, "What the live server used over three days"), and GCP charges that as internet egress.
 
 **Machine.** `e2-custom-4-8192` (4 vCPU / 8 GB): custom, because 8 GB is the measured need and the
 predefined `e2-standard-4` (4 vCPU / 16 GB) costs ~25% more for memory nothing uses.
@@ -333,16 +332,16 @@ month) the egress line becomes ~$105 on Standard (~$198 in total) and ~$175 on P
 bitrate is the knob: this host runs at ~4000 kbit/s against the 2500 `STREAM_BITRATE_KBPS` default,
 and going back to 2500 at 720p30 removes ~40 % of those two figures.
 
-So the credit lasts ~2 months with the stack running 24/7, and 3-4 months when the capture client is
-stopped while nothing is broadcast (`bash infra/compose.sh dev up` stops exactly that container and
-keeps the game server and the panel). Set a budget alert on day one: `Billing -> Budgets & alerts`.
+A budget alert on day one is the cheap insurance: `Billing -> Budgets & alerts`. Between broadcasts
+`bash infra/compose.sh dev` stops exactly the capture container and keeps the game server and the
+panel, which is the mode the stack spends most of its life in.
 
 **Choices that matter.** `--network-tier=STANDARD` cuts the egress bill by ~45% and RTMPS does not
 notice the difference; ARM machine types (`T2A`, `C4A`) cannot run these images; the always-free
 `e2-micro` is a 1 GB shared-core box, which is not this stack.
 
 **Honest comparison.** For a 24/7 stream a VPS whose price includes traffic (Hetzner, Contabo,
-Timeweb, Selectel - single-digit euros a month with 20 TB or more) is the cheaper home, and the free
-credit is best spent on building and testing this stack and on the first paid broadcasts.
+Timeweb, Selectel - single-digit euros a month with 20 TB or more) is the cheaper home; the hourly
+`e2-custom` box is the right machine to build and test this stack on.
 
 
