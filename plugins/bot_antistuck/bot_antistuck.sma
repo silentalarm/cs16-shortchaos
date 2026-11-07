@@ -112,7 +112,7 @@ new g_nudged, g_respawned;
 
 public plugin_init()
 {
-	register_plugin(PLUGIN_NAME, PLUGIN_VERSION, "cs16-youtube");
+	register_plugin(PLUGIN_NAME, PLUGIN_VERSION, "cs16-shortchaos");
 	register_srvcmd("amx_antistuck", "CmdAntiStuck");
 
 	g_cvarEnabled = register_cvar("bot_antistuck_enabled", "1");

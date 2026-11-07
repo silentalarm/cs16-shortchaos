@@ -73,7 +73,7 @@ new g_timerInterval;
 
 public plugin_init()
 {
-	register_plugin(PLUGIN_NAME, PLUGIN_VERSION, "cs16-youtube");
+	register_plugin(PLUGIN_NAME, PLUGIN_VERSION, "cs16-shortchaos");
 	register_srvcmd("amx_chaos", "CmdChaos");
 
 	g_cvarEnabled = register_cvar("chaos_enabled", "1");

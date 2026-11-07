@@ -24,7 +24,7 @@ $components = (Get-Content (Join-Path $root 'components.json') -Raw | ConvertFro
 if ($Only) {
     $Only = @($Only | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 }
-$headers = @{ 'User-Agent' = 'cs16-youtube-build'; 'Accept' = 'application/vnd.github+json' }
+$headers = @{ 'User-Agent' = 'cs16-shortchaos-build'; 'Accept' = 'application/vnd.github+json' }
 $cacheDir = Join-Path $root '.cache'
 New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
 

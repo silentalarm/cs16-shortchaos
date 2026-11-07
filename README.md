@@ -1,8 +1,9 @@
-# cs16-youtube
+# cs16-shortchaos
 
-CS 1.6 dedicated server with bots, streamed to YouTube. A viewer donation is turned into
-an in-game activity: knife round, zombie round, one bot with an M249 against everyone,
-map change, and so on. Everything is driven by donations, nobody plays by hand.
+Counter-Strike 1.6 (CS 1.6) dedicated server with bots, streamed vertically to YouTube Shorts. A
+viewer donation is turned into an in-game activity: knife round, zombie round, one bot with an
+M249 against everyone, map change, and so on. Everything is driven by donations, nobody plays
+by hand.
 
 Status: stage 3 works end to end on a live server — the control API polls donations (mock or
 DonationAlerts), maps them to activities, enforces cooldowns, sends RCON commands and stores
@@ -34,8 +35,8 @@ A fresh clone is complete — the maps, the navigation graphs the bots read and 
 committed, so nothing is downloaded from a map site and there is no fetch step to remember.
 
 ```bash
-git clone https://github.com/silentalarm/cs1.6-youtube.git
-cd cs1.6-youtube
+git clone https://github.com/silentalarm/cs16-shortchaos.git
+cd cs16-shortchaos
 npm install                              # dev only: TypeScript for `npm run typecheck`
 cp .env.example .env && chmod 600 .env   # RCON_PASSWORD and ADMIN_TOKEN; the rest may stay empty
 ```
@@ -205,8 +206,8 @@ npm start                                  # daemon, polls every DA_POLL_SEC
 npm run oauth-login                        # once per account, writes data/da-token.json
 
 # smoke test: every map of the rotation with one activity on it (needs the stack up)
-docker exec cs16-youtube-control-api-1 node scripts/map-walk.ts
-docker exec cs16-youtube-control-api-1 node scripts/map-walk.ts --maps fy_iceworld,fy_snow --code raptors
+docker exec cs16-shortchaos-control-api-1 node scripts/map-walk.ts
+docker exec cs16-shortchaos-control-api-1 node scripts/map-walk.ts --maps fy_iceworld,fy_snow --code raptors
 ```
 
 Dry run: leave `RCON_PASSWORD` empty and commands are logged instead of sent, so the whole

@@ -23,7 +23,7 @@ $dir = $PSScriptRoot
 $mapsDir = Join-Path $dir 'maps'
 $manifestPath = Join-Path $mapsDir 'maps.json'
 $api = 'https://api.gamebanana.com/Core/Item/Data?itemtype=Mod&itemid={0}&fields=Files().aFiles()'
-$headers = @{ 'User-Agent' = 'cs16-youtube map fetcher (+https://github.com/silentalarm/cs1.6-youtube)' }
+$headers = @{ 'User-Agent' = 'cs16-shortchaos map fetcher (+https://github.com/silentalarm/cs16-shortchaos)' }
 
 if (-not (Test-Path $manifestPath)) { throw "missing $manifestPath" }
 $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json

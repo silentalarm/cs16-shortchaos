@@ -50,7 +50,7 @@ new cvar_nameLen;
 
 public plugin_init()
 {
-	register_plugin(PLUGIN_NAME, PLUGIN_VERSION, "cs16-youtube");
+	register_plugin(PLUGIN_NAME, PLUGIN_VERSION, "cs16-shortchaos");
 	register_srvcmd("amx_team_war", "CmdTeamWar");
 	// One reply for the whole panel: see CmdFullStatus for why the three probes were merged.
 	register_srvcmd("amx_full_status", "CmdFullStatus");

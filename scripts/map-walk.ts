@@ -7,8 +7,8 @@ import { execOnce } from "../src/rcon.ts";
  * differs in size, spawn count and bot paths enough that a class that works on fy_iceworld can leave
  * bots stuck on fy_aztec. Run it inside the control-api container, which already has RCON_*:
  *
- *   docker exec cs16-youtube-control-api-1 node scripts/map-walk.ts
- *   docker exec cs16-youtube-control-api-1 node scripts/map-walk.ts --maps fy_iceworld,fy_snow --code raptors
+ *   docker exec cs16-shortchaos-control-api-1 node scripts/map-walk.ts
+ *   docker exec cs16-shortchaos-control-api-1 node scripts/map-walk.ts --maps fy_iceworld,fy_snow --code raptors
  *
  * Every line the server logs for the activity is echoed, so the output is the evidence, and a map
  * that does not load or an activity that fails to start is a non-zero exit.

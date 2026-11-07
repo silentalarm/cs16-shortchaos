@@ -206,7 +206,7 @@ Two operational notes:
      into `g_redStockCues`: AMXX clears the parameter table as soon as the RCON command handler
      returns, and the phase timers fire 1.5 s and 3.5 s later, so reading it there answered with the
      default 1 and the stock chime and alarm came back after the first cue.
-   - checks: `docker logs cs16-youtube-stream-1 | Select-String "\[voice\]"` shows `said [voice]: text`.
+   - checks: `docker logs cs16-shortchaos-stream-1 | Select-String "\[voice\]"` shows `said [voice]: text`.
 
 YouTube chat is **not** wired yet: reading the live chat needs the YouTube Data API (`YOUTUBE_API_KEY`
 and the live video id). The TTS side is ready for it - `src/voice.ts` already has `botSpeech()`, which

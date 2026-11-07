@@ -58,8 +58,8 @@ docker version && docker compose version && docker buildx version
 ## 3. The repository
 
 ```bash
-git clone https://github.com/silentalarm/cs1.6-youtube.git
-cd cs1.6-youtube
+git clone https://github.com/silentalarm/cs16-shortchaos.git
+cd cs16-shortchaos
 ```
 
 A fresh clone is complete: the maps (`infra/maps/*.bsp`, `.nav`, `.res`, the `.wad` they need), the

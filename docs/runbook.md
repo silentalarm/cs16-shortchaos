@@ -280,9 +280,9 @@ keeps the mode of its first seed forever.
 Check after a start:
 
 ```bash
-docker exec cs16-youtube-hlds-1 ls -ld /hlds/cstrike/addons/yapb/data/train   # drwxr-xr-x
-docker exec cs16-youtube-hlds-1 ls /hlds/cstrike/addons/yapb/data/train        # <map>.pmx after a map load
-docker logs cs16-youtube-hlds-1 2>&1 | grep -c Pathmatrix                      # 0
+docker exec cs16-shortchaos-hlds-1 ls -ld /hlds/cstrike/addons/yapb/data/train   # drwxr-xr-x
+docker exec cs16-shortchaos-hlds-1 ls /hlds/cstrike/addons/yapb/data/train        # <map>.pmx after a map load
+docker logs cs16-shortchaos-hlds-1 2>&1 | grep -c Pathmatrix                      # 0
 ```
 
 ### Why the bots stood still (measured 2026-11-03)
@@ -335,9 +335,9 @@ Reading it off a running server:
 # what the bot actually has, not what the repository says
 docker run --rm -v cs16-youtube_server-data:/hlds:ro --entrypoint sh cs16-stream:local -c "grep -E '^yb_(camping|walking)' /hlds/cstrike/addons/yapb/conf/yapb.cfg"
 # every value YaPB refused to take lands here, one line per write, per map change
-docker logs cs16-youtube-hlds-1 2>&1 | grep -c 'Bogus value'
+docker logs cs16-shortchaos-hlds-1 2>&1 | grep -c 'Bogus value'
 # how often the net had to act, and how often a bot had to be respawned for it
-docker logs cs16-youtube-hlds-1 2>&1 | grep -c 'unstick:'
+docker logs cs16-shortchaos-hlds-1 2>&1 | grep -c 'unstick:'
 ```
 
 ### `team_semiclip`: teammates do not block each other
@@ -436,7 +436,7 @@ volume.
 docker run --rm -v cs16-youtube_server-data:/hlds --entrypoint sh cs16-hlds:local \
   -c 'rm -f /hlds/cstrike/addons/yapb/data/graph/fy_aztec.graph'
 # load the map, wait for "Completed map analysis", then pin the result
-docker cp cs16-youtube-hlds-1:/hlds/cstrike/addons/yapb/data/graph/fy_aztec.graph infra/maps/graph/
+docker cp cs16-shortchaos-hlds-1:/hlds/cstrike/addons/yapb/data/graph/fy_aztec.graph infra/maps/graph/
 ```
 
 Before blaming a map, check that the graph in the volume is the pinned one: `entrypoint.sh` never overwrites
@@ -1088,7 +1088,7 @@ A second pass with the same DB must report `cursor` equal to the last id and pro
 docker buildx build --build-arg-file infra/checksums.env -t cs16-hlds:local .
 ./infra/verify-image.ps1              # must pass before the image is allowed near a stream
 docker compose -f infra/docker-compose.yml up -d hlds
-docker logs -f cs16-youtube-hlds-1
+docker logs -f cs16-shortchaos-hlds-1
 ```
 
 Expected in the log: Metamod loaded, `yapb_mm_i386.so` loaded, `donation_events loaded, API 1,
@@ -1514,7 +1514,7 @@ If the machine has to stay responsive while streaming, pin the work instead of s
 - the containers carry `restart: unless-stopped`, which brings them back after a Docker restart but
   **not** after a manual `stop`/`down`, and not while the Docker engine itself is not running. If the
   host or Docker Desktop restarts, wait for the engine, then `./infra/compose.ps1 up -d`.
-- `docker exec cs16-youtube-stream-1 tail -c 400 /tmp/ffmpeg.log` with
+- `docker exec cs16-shortchaos-stream-1 tail -c 400 /tmp/ffmpeg.log` with
   `STREAM_FFMPEG_LOGLEVEL=info` shows `fps=`, `speed=`, `dup=` and `drop=`: `speed` under 1.0 means
   the encoder cannot keep up, a `drop` counter that keeps growing means the network or the ingest is
   behind, and a `dup` that keeps growing means the game client renders slower than the capture rate.

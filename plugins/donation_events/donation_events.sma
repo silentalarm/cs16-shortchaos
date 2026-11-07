@@ -721,7 +721,7 @@ new g_classSavedHealth[MAX_SLOTS];
 
 public plugin_init()
 {
-	register_plugin(PLUGIN_NAME, PLUGIN_VERSION, "cs16-youtube");
+	register_plugin(PLUGIN_NAME, PLUGIN_VERSION, "cs16-shortchaos");
 	register_srvcmd("amx_de", "CmdDonationEvent");
 
 	register_logevent("OnRoundEnd", 2, "1=Round_End");

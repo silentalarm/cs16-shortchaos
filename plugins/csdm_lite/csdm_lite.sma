@@ -52,7 +52,7 @@ new g_cvarCleanSec;
 
 public plugin_init()
 {
-	register_plugin(PLUGIN_NAME, PLUGIN_VERSION, "cs16-youtube");
+	register_plugin(PLUGIN_NAME, PLUGIN_VERSION, "cs16-shortchaos");
 
 	g_cvarEnabled = register_cvar("csdm_lite_enabled", "1");
 	g_cvarDelay = register_cvar("csdm_lite_delay", "0.5");

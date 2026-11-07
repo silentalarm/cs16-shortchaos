@@ -88,10 +88,10 @@ fi
 
 YAPB_CFG=/hlds/cstrike/addons/yapb/conf/yapb.cfg
 if [ -f "$YAPB_CFG" ]; then
-  sed -i -E '/cs16-youtube overrides/d' "$YAPB_CFG"
+  sed -i -E '/cs16-shortchaos overrides/d' "$YAPB_CFG"
   sed -i -E '/^yb_(radio_mode|chat|chat_percent|display_welcome_text|autovacate|quota|difficulty|shoots_thru_walls|csdm_mode|camping_allowed|camping_time_min|camping_time_max|walking_allowed|has_team_semiclip|random_knife_attacks|graph_analyze_distance|graph_analyze_optimize_nodes_on_finish)[[:space:]]/d' "$YAPB_CFG"
   {
-    echo "// cs16-youtube overrides: rewritten on every start, keep this block last"
+    echo "// cs16-shortchaos overrides: rewritten on every start, keep this block last"
     echo "yb_radio_mode \"${BOT_RADIO_MODE:-0}\""
     echo "yb_chat \"0\""
     echo "yb_chat_percent \"0\""

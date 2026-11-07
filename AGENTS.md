@@ -1,4 +1,4 @@
-# cs16-youtube
+# cs16-shortchaos
 
 CS 1.6 dedicated server with bots. Viewer donations trigger in-game activities,
 streamed to YouTube. Node 24 + TypeScript; game side is AMX Mod X Pawn plugins.

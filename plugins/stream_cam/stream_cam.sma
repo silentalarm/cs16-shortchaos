@@ -240,7 +240,7 @@ public plugin_precache()
 
 public plugin_init()
 {
-	register_plugin(PLUGIN_NAME, PLUGIN_VERSION, "cs16-youtube");
+	register_plugin(PLUGIN_NAME, PLUGIN_VERSION, "cs16-shortchaos");
 
 	cvar_enabled     = register_cvar("stcam_enable", "1");
 	cvar_mode        = register_cvar("stcam_mode", "1");

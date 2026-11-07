@@ -3,7 +3,7 @@
 #
 # hlds and stream share the server-data volume: the stream container reads valve/ and cstrike/
 # from it (read-only) and keeps its own writable copy for the engine in client-data.
-name: cs16-youtube
+name: cs16-shortchaos
 
 services:
   hlds:
@@ -241,9 +241,17 @@ services:
       # reads it as root, so the panel and the encoder always see one directory.
       - overlay-data:/overlay
 
+# The physical volume names predate the rename to cs16-shortchaos and are pinned on purpose: without
+# an explicit `name:` Docker would prefix each volume with the new project name, create four empty
+# ones, and the installed server and client data (~3.5 GB) would have to be initialised again.
+# Moving them to new names is a manual copy, not a compose change.
 volumes:
   hlds-logs:
+    name: cs16-youtube_hlds-logs
   server-data:
+    name: cs16-youtube_server-data
   client-data:
+    name: cs16-youtube_client-data
   overlay-data:
+    name: cs16-youtube_overlay-data
 

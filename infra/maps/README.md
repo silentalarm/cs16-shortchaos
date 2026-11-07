@@ -66,7 +66,7 @@ whatever the volume has. Regenerating one (`docs/runbook.md`, "Navigation graphs
 docker run --rm -v cs16-youtube_server-data:/hlds --entrypoint sh cs16-hlds:local \
   -c 'rm -f /hlds/cstrike/addons/yapb/data/graph/my_map.graph'
 # load my_map, wait for "Analysis finished", then:
-docker cp cs16-youtube-hlds-1:/hlds/cstrike/addons/yapb/data/graph/my_map.graph infra/maps/graph/
+docker cp cs16-shortchaos-hlds-1:/hlds/cstrike/addons/yapb/data/graph/my_map.graph infra/maps/graph/
 ```
 
 ## Adding a map by hand

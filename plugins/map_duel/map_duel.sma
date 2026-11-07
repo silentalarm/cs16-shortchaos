@@ -71,7 +71,7 @@ new cvar_weapons;
 
 public plugin_init()
 {
-	register_plugin(PLUGIN_NAME, PLUGIN_VERSION, "cs16-youtube");
+	register_plugin(PLUGIN_NAME, PLUGIN_VERSION, "cs16-shortchaos");
 	register_srvcmd("amx_map_duel", "CmdMapDuel");
 
 	// DeathMsg: 1 = killer, 2 = victim.
