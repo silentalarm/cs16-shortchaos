@@ -223,6 +223,22 @@ backend, only ALSA), and ffmpeg records `cs.monitor`. The client volume is lower
 `STREAM_GAME_VOLUME` (0.6 by default) — GoldSrc mixes at full scale and the capture measured peaks
 at +8 dB, i.e. clipped — and the encoder adds a limiter as a safety net.
 
+### What one frame contains
+
+Two frames of a recording (`STREAM_OUTPUT` to a file, no stream key), so neither is a mock:
+
+| Third person — the default lens | First person — `STREAM_EYE=1` |
+|---|---|
+| <img src="docs/images/vertical-third-person.png" width="340" alt="720x1280 frame in third person: bots behind crates, overlay on top and bottom"> | <img src="docs/images/vertical-first-person.png" width="340" alt="720x1280 frame in first person: the followed bot's rifle and a muzzle flash"> |
+
+Top to bottom, the overlay is five text lines the encoder draws with `drawtext` (`src/ui/panel.ts`):
+the frag bar, whose middle moves with the ratio while each end carries a team's score; the `TOP` name
+per side; the followed bot with its health and armour; then the bottom strip — the chaos meter, the
+last donation and the countdown to the next free event. The picture between the bands *is* the frame:
+the two spectator bands CS16Client paints are cut off before scaling, and nothing is padded. The two
+frames are one step apart in the same countdown (1:04 and 1:40 to `hero_roulette`): the picture changes
+every three minutes, the layout never does.
+
 ### Autonomous capture (no human, no Steam account)
 
 `infra/stream` is a second image that renders the match itself: Xash3D-FWGS (open-source
