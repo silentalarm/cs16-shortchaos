@@ -200,14 +200,20 @@ sudo ufw allow 22/tcp        # SSH, and nothing else
 sudo ufw enable
 ```
 
-That is the whole firewall: the game port (27015) and the panel (8080) are published to `127.0.0.1`
-on purpose, because RCON rides the game port and the panel can send RCON commands. The capture
-container pushes out to YouTube on 443; nothing has to come in. To play from your desktop, use a
-tunnel rather than a published port:
+That is the whole firewall for a stream-only install: the game port (27015) and the panel (8080) are
+published to `127.0.0.1` on purpose, because RCON rides the game port and the panel can send RCON
+commands. The capture container pushes out to YouTube on 443; nothing has to come in. To play from
+your desktop, use a tunnel rather than a published port:
 
 ```bash
 ssh -L 27015:127.0.0.1:27015 <user>@<host>     # then connect to 127.0.0.1:27015 in the game
 ```
+
+To let other people in instead, open the game side only: `sudo ufw allow 27015/udp` (plus the
+`cs16-game` rule in the Google Cloud appendix on a GCE host) and publish the UDP side of the port in
+compose, `0.0.0.0:27015:27015/udp`, leaving TCP on loopback for RCON. Half of that is useless on its
+own: a rule without a published port reaches a host with no listener, and a published port without a
+rule never gets the packet.
 
 If SSH itself does not get through - some networks reset the connection right after the TCP
 handshake, on :22 and on any other port, while sshd on the host is perfectly healthy - tunnel it over
@@ -295,8 +301,8 @@ gcloud compute instances create cs16 \
   --network-tier=STANDARD \
   --tags=cs16
 
-# SSH only, from one address: the game port and the panel stay loopback (section 8), so no other rule
-# is needed. Explicit direction/action/priority so the rule reads the same as the console shows it.
+# SSH only, from one address. Explicit direction/action/priority so the rule reads the same as the
+# console shows it.
 gcloud compute firewall-rules create cs16-ssh \
   --direction=INGRESS \
   --priority=1000 \
@@ -305,6 +311,17 @@ gcloud compute firewall-rules create cs16-ssh \
   --rules=tcp:22 \
   --source-ranges="$(curl -s https://ifconfig.me)/32" \
   --target-tags=cs16
+
+# Only if people are meant to join: UDP 27015 is the game. TCP 27015 stays closed, because RCON rides
+# it and nothing else on that socket should ever come from the internet.
+gcloud compute firewall-rules create cs16-game \
+  --direction=INGRESS \
+  --priority=1000 \
+  --network=default \
+  --action=ALLOW \
+  --rules=udp:27015 \
+  --source-ranges=0.0.0.0/0 \
+  --target-tags=cs16
 ```
 
 The default VPC also ships `default-allow-ssh`, which allows port 22 from every address at priority
@@ -312,6 +329,11 @@ The default VPC also ships `default-allow-ssh`, which allows port 22 from every 
 is still there for any untagged VM in the project: delete it if the project is dedicated
 (`gcloud compute firewall-rules delete default-allow-ssh`), or leave it and treat `--source-ranges`
 as the real gate.
+
+The `cs16-game` rule is only half of a public server: the compose file also has to publish the UDP
+side of the port (`0.0.0.0:27015:27015/udp`), or the packet arrives at a host that is not listening.
+With both in place players connect by IP - `sv_lan` keeps the server out of the master list, so it
+never shows up in the browser.
 
 Two flags worth knowing about the create call: `--network-tier=STANDARD` is set on the instance's
 NIC and is the one that changes the egress price (section below), and the ephemeral external IP it
