@@ -31,7 +31,9 @@ are two Docker images.
 
 Three days of the live server, from Cloud Monitoring (`docs/deploy.md`, "What the live server used
 over three days"): CPU averaged 71 % of 4 vCPU, the upload was a flat 4.5 Mbit/s — 48 GB a day,
-~1.45 TB a month — and the VM was never restarted.
+~1.45 TB a month — and the VM was never restarted. No dates on the axis; the shape is the point.
+
+<img src="docs/images/load-72h.svg" width="880" alt="two charts over 72 hours of the live server: CPU stays between 69 and 76 percent of four vCPU under a dashed 80 percent line, and egress is a flat line at 2 GB per hour, well above the dashed 1.18 GB per hour that a 2500 kbit/s stream would use">
 
 ## Install and build
 
