@@ -14,10 +14,11 @@ in game: an activity sent from the API ran on the server (`donation_events ran b
 ## Joining
 
 The server is `27015`. Compose publishes that port to loopback only (`127.0.0.1:27015`), because the
-default install is one box that streams to itself: publish `0.0.0.0:27015` and open the port in the
-firewall to let people in. It also runs in LAN mode, since the capture client has no Steam ticket —
-that keeps it out of the master server list, so players connect by IP. Bots hold the empty slots
-(`yb_quota 20` of `MAXPLAYERS=22`): lower the quota to leave room for people.
+default install is one box that streams to itself. To let people in, publish the **UDP** side on
+`0.0.0.0:27015` and open that port in the firewall; keep the **TCP** side on loopback, since RCON
+rides TCP 27015 and does not belong on the internet. The server also runs in LAN mode, because the
+capture client has no Steam ticket: that keeps it out of the master server list, so players connect by
+IP. Bots hold the empty slots (`yb_quota 20` of `MAXPLAYERS=22`): lower the quota to leave room.
 
 ## Requirements
 
